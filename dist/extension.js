@@ -42,31 +42,79 @@ var path = __toESM(require("path"));
 var os = __toESM(require("os"));
 var fs = __toESM(require("fs"));
 var cp = __toESM(require("child_process"));
-var StorageService = class _StorageService {
+
+// src/constants.ts
+var OAUTH_CONFIG = {
+  CLIENT_ID: Buffer.from(
+    "MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==",
+    "base64"
+  ).toString("utf-8"),
+  CLIENT_SECRET: Buffer.from(
+    "R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=",
+    "base64"
+  ).toString("utf-8"),
+  PORTS: [8888, 8889, 8890, 8891, 8892, 45213],
+  REDIRECT_PATH: "/oauth-callback",
+  SCOPES: [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/cclog",
+    "https://www.googleapis.com/auth/experimentsandconfigs"
+  ]
+};
+var API_ENDPOINTS = {
+  OAUTH_TOKEN_HOST: "oauth2.googleapis.com",
+  USER_INFO_HOST: "www.googleapis.com",
+  USER_INFO_PATH: "/oauth2/v3/userinfo",
+  CLOUD_CODE_HOSTS: [
+    "daily-cloudcode-pa.googleapis.com",
+    // Primary backend with Claude & GPT rolling quotas
+    "cloudcode-pa.googleapis.com"
+    // Fallback backend
+  ]
+};
+var STORAGE_KEYS = {
+  ACCOUNTS: "antigravitySwap.accounts",
+  ACTIVE_ACCOUNT: "antigravitySwap.activeEmail",
+  AUTO_SWITCH: "antigravitySwap.autoSwitch"
+};
+var CONFIG_KEYS = {
+  SECTION: "antigravitySwap",
+  HEARTBEAT_INTERVAL: "heartbeatIntervalSeconds",
+  AUTO_SWITCH_WHEN_LOW: "autoSwitchWhenQuotaLow",
+  LOW_QUOTA_THRESHOLD: "lowQuotaThresholdPercent"
+};
+var EXTENSION_DEFAULTS = {
+  DEFAULT_HEARTBEAT_SECONDS: 30,
+  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 5,
+  ACCOUNT_REFRESH_COOLDOWN_MS: 1e4,
+  GLOBAL_REFRESH_COOLDOWN_MS: 1e4
+};
+
+// src/storage.ts
+var StorageService = class {
   constructor(context, secrets) {
     this.context = context;
     this.secrets = secrets;
   }
-  static ACCOUNTS_KEY = "antigravitySwap.accounts";
-  static ACTIVE_ACCOUNT_KEY = "antigravitySwap.activeEmail";
-  static AUTO_SWITCH_KEY = "antigravitySwap.autoSwitch";
   getAccounts() {
-    return this.context.globalState.get(_StorageService.ACCOUNTS_KEY, []);
+    return this.context.globalState.get(STORAGE_KEYS.ACCOUNTS, []);
   }
   async saveAccounts(accounts) {
-    await this.context.globalState.update(_StorageService.ACCOUNTS_KEY, accounts);
+    await this.context.globalState.update(STORAGE_KEYS.ACCOUNTS, accounts);
   }
   getActiveAccountEmail() {
-    return this.context.globalState.get(_StorageService.ACTIVE_ACCOUNT_KEY);
+    return this.context.globalState.get(STORAGE_KEYS.ACTIVE_ACCOUNT);
   }
   async setActiveAccountEmail(email) {
-    await this.context.globalState.update(_StorageService.ACTIVE_ACCOUNT_KEY, email);
+    await this.context.globalState.update(STORAGE_KEYS.ACTIVE_ACCOUNT, email);
   }
   getAutoSwitchEnabled() {
-    return this.context.globalState.get(_StorageService.AUTO_SWITCH_KEY, true);
+    return this.context.globalState.get(STORAGE_KEYS.AUTO_SWITCH, true);
   }
   async setAutoSwitchEnabled(enabled) {
-    await this.context.globalState.update(_StorageService.AUTO_SWITCH_KEY, enabled);
+    await this.context.globalState.update(STORAGE_KEYS.AUTO_SWITCH, enabled);
   }
   async getAccountTokens(email) {
     const raw = await this.secrets.get(`antigravitySwap.tokens.${email}`);
@@ -691,18 +739,7 @@ var https = __toESM(require("https"));
 var url = __toESM(require("url"));
 var crypto = __toESM(require("crypto"));
 var vscode2 = __toESM(require("vscode"));
-var OAuthService = class _OAuthService {
-  static CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-  static CLIENT_SECRET = "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";
-  static PORTS = [8888, 8889, 8890, 8891, 8892, 45213];
-  static REDIRECT_PATH = "/oauth-callback";
-  static SCOPES = [
-    "https://www.googleapis.com/auth/cloud-platform",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile",
-    "https://www.googleapis.com/auth/cclog",
-    "https://www.googleapis.com/auth/experimentsandconfigs"
-  ];
+var OAuthService = class {
   /**
    * Signs in a Google account via browser OAuth flow.
    */
@@ -713,14 +750,14 @@ var OAuthService = class _OAuthService {
    * Starts local HTTP callback server on first available port and initiates Google OAuth in browser.
    */
   async startOAuthServerFlow(loginHint) {
-    const { server, port } = await this.bindAvailableServer(_OAuthService.PORTS, 0);
-    const redirectUri = `http://127.0.0.1:${port}${_OAuthService.REDIRECT_PATH}`;
+    const { server, port } = await this.bindAvailableServer(OAUTH_CONFIG.PORTS, 0);
+    const redirectUri = `http://127.0.0.1:${port}${OAUTH_CONFIG.REDIRECT_PATH}`;
     const state = crypto.randomBytes(16).toString("hex");
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    authUrl.searchParams.set("client_id", _OAuthService.CLIENT_ID);
+    authUrl.searchParams.set("client_id", OAUTH_CONFIG.CLIENT_ID);
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope", _OAuthService.SCOPES.join(" "));
+    authUrl.searchParams.set("scope", OAUTH_CONFIG.SCOPES.join(" "));
     authUrl.searchParams.set("access_type", "offline");
     authUrl.searchParams.set("prompt", "consent select_account");
     authUrl.searchParams.set("state", state);
@@ -746,7 +783,7 @@ var OAuthService = class _OAuthService {
       activeServer.on("request", async (req, res) => {
         try {
           const reqUrl = url.parse(req.url || "", true);
-          if (reqUrl.pathname === _OAuthService.REDIRECT_PATH) {
+          if (reqUrl.pathname === OAUTH_CONFIG.REDIRECT_PATH) {
             const queryState = reqUrl.query.state;
             const code = reqUrl.query.code;
             const error = reqUrl.query.error;
@@ -871,13 +908,13 @@ var OAuthService = class _OAuthService {
    */
   async exchangeCodeForTokens(code, redirectUri) {
     const postData = new URLSearchParams({
-      client_id: _OAuthService.CLIENT_ID,
-      client_secret: _OAuthService.CLIENT_SECRET,
+      client_id: OAUTH_CONFIG.CLIENT_ID,
+      client_secret: OAUTH_CONFIG.CLIENT_SECRET,
       code,
       grant_type: "authorization_code",
       redirect_uri: redirectUri
     }).toString();
-    const response = await this.httpsPost("oauth2.googleapis.com", "/token", postData, {
+    const response = await this.httpsPost(API_ENDPOINTS.OAUTH_TOKEN_HOST, "/token", postData, {
       "Content-Type": "application/x-www-form-urlencoded"
     });
     const parsed = JSON.parse(response);
@@ -896,12 +933,12 @@ var OAuthService = class _OAuthService {
    */
   async refreshAccessToken(refreshToken) {
     const postData = new URLSearchParams({
-      client_id: _OAuthService.CLIENT_ID,
-      client_secret: _OAuthService.CLIENT_SECRET,
+      client_id: OAUTH_CONFIG.CLIENT_ID,
+      client_secret: OAUTH_CONFIG.CLIENT_SECRET,
       refresh_token: refreshToken,
       grant_type: "refresh_token"
     }).toString();
-    const response = await this.httpsPost("oauth2.googleapis.com", "/token", postData, {
+    const response = await this.httpsPost(API_ENDPOINTS.OAUTH_TOKEN_HOST, "/token", postData, {
       "Content-Type": "application/x-www-form-urlencoded"
     });
     const parsed = JSON.parse(response);
@@ -927,9 +964,9 @@ var OAuthService = class _OAuthService {
     return new Promise((resolve, reject) => {
       const req = https.request(
         {
-          hostname: "www.googleapis.com",
+          hostname: API_ENDPOINTS.USER_INFO_HOST,
           port: 443,
-          path: "/oauth2/v3/userinfo",
+          path: API_ENDPOINTS.USER_INFO_PATH,
           method: "GET",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -996,9 +1033,6 @@ var OAuthService = class _OAuthService {
       req.end();
     });
   }
-  base64URLEncode(buffer) {
-    return buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
 };
 
 // src/quotaService.ts
@@ -1023,12 +1057,15 @@ var QuotaService = class _QuotaService {
         console.warn(`[QuotaService] Token auto-refresh failed for ${account.email}:`, err);
         if (err.message && (err.message.includes("AUTH_EXPIRED") || err.message.includes("invalid_grant"))) {
           return {
-            quotas: [],
-            averagePercentage: 0,
-            hasWeeklyQuota: false,
-            has5HourQuota: false,
-            accountType: "Standard Free",
-            tierBadge: "STANDARD FREE",
+            quotas: account.quotas && account.quotas.length > 0 ? account.quotas : [],
+            quotaGroups: account.quotaGroups,
+            geminiGroup: account.geminiGroup,
+            claudeGptGroup: account.claudeGptGroup,
+            averagePercentage: account.averageQuotaPercentage ?? 0,
+            hasWeeklyQuota: account.hasWeeklyQuota ?? false,
+            has5HourQuota: account.has5HourQuota ?? false,
+            accountType: account.accountType || "Google Account",
+            tierBadge: account.tierBadge || "STANDARD FREE",
             status: "auth_failed",
             isBanned: false,
             statusMessage: "Refresh token expired or revoked. Please re-login."
@@ -1038,32 +1075,11 @@ var QuotaService = class _QuotaService {
     }
     try {
       const quotaData = await this.fetchLiveQuotaData(currentTokens.accessToken);
-      let parsedQuotas = this.parseQuotaResponse(quotaData);
-      const { accountType, tierBadge } = this.determineAccountTier(quotaData, parsedQuotas);
-      const isFree = tierBadge === "STANDARD FREE";
-      if (parsedQuotas.length === 0) {
-        console.log(`[QuotaService] No quota data returned for ${account.email}. Generating free-tier placeholder quotas.`);
-        parsedQuotas = this.generateFreeTierPlaceholders();
-      }
-      const avgPercent = this.calculateAveragePercentage(parsedQuotas);
-      const fiveHourQuotas = isFree ? [] : parsedQuotas.filter((q) => q.windowType === "5h");
-      const weeklyQuotas = parsedQuotas.filter((q) => q.windowType === "weekly");
-      const fiveHourPct = fiveHourQuotas.length > 0 ? this.calculateAveragePercentage(fiveHourQuotas) : void 0;
-      const weeklyPct = weeklyQuotas.length > 0 ? this.calculateAveragePercentage(weeklyQuotas) : void 0;
-      const isLow = avgPercent < 15 && avgPercent > 0;
-      return {
-        quotas: parsedQuotas,
-        averagePercentage: avgPercent,
-        fiveHourPercentage: fiveHourPct,
-        weeklyPercentage: weeklyPct,
-        has5HourQuota: fiveHourQuotas.length > 0,
-        hasWeeklyQuota: weeklyQuotas.length > 0,
-        accountType,
-        tierBadge,
-        status: isLow ? "low_balance" : "active",
-        isBanned: false,
-        statusMessage: isLow ? "Low quota warning" : void 0
-      };
+      console.log(`[QuotaService] Raw response keys for ${account.email}: ${Object.keys(quotaData || {}).join(", ")}`);
+      console.log(`[QuotaService] paidTier=${JSON.stringify(quotaData?.paidTier)}, currentTier=${JSON.stringify(quotaData?.currentTier)}, userTier=${JSON.stringify(quotaData?.userTier)}`);
+      console.log(`[QuotaService] models keys: ${Object.keys(quotaData?.models || {}).join(", ") || "(none)"}`);
+      console.log(`[QuotaService] groups count: ${(quotaData?.groups || quotaData?.response?.groups || []).length}`);
+      return this.processQuotaData(quotaData, account);
     } catch (err) {
       const errMsg = err.message || "";
       if (errMsg.includes("USER_SUSPENDED") || errMsg.includes("ACCOUNT_DISABLED") || errMsg.includes("TOS_VIOLATION") || errMsg.includes("Google Account disabled")) {
@@ -1072,8 +1088,8 @@ var QuotaService = class _QuotaService {
           averagePercentage: 0,
           hasWeeklyQuota: false,
           has5HourQuota: false,
-          accountType: "Standard Free",
-          tierBadge: "STANDARD FREE",
+          accountType: account.accountType || "Standard Free",
+          tierBadge: account.tierBadge || "STANDARD FREE",
           status: "banned",
           isBanned: true,
           statusMessage: "Account disabled or suspended by Google Terms of Service"
@@ -1086,108 +1102,419 @@ var QuotaService = class _QuotaService {
             await onTokenRefreshed(currentTokens);
           }
           const quotaData = await this.fetchLiveQuotaData(currentTokens.accessToken);
-          const parsedQuotas = this.parseQuotaResponse(quotaData);
-          const avgPercent = this.calculateAveragePercentage(parsedQuotas);
-          const { accountType, tierBadge } = this.determineAccountTier(quotaData, parsedQuotas);
-          const isFree = tierBadge === "STANDARD FREE";
-          const fiveHourQuotas = isFree ? [] : parsedQuotas.filter((q) => q.windowType === "5h");
-          const weeklyQuotas = parsedQuotas.filter((q) => q.windowType === "weekly");
-          const fiveHourPct = fiveHourQuotas.length > 0 ? this.calculateAveragePercentage(fiveHourQuotas) : void 0;
-          const weeklyPct = weeklyQuotas.length > 0 ? this.calculateAveragePercentage(weeklyQuotas) : void 0;
-          const isLow = avgPercent < 15 && avgPercent > 0;
-          return {
-            quotas: parsedQuotas,
-            averagePercentage: avgPercent,
-            fiveHourPercentage: fiveHourPct,
-            weeklyPercentage: weeklyPct,
-            has5HourQuota: fiveHourQuotas.length > 0,
-            hasWeeklyQuota: weeklyQuotas.length > 0,
-            accountType,
-            tierBadge,
-            status: isLow ? "low_balance" : "active",
-            isBanned: false,
-            statusMessage: isLow ? "Low quota warning" : void 0
-          };
+          return this.processQuotaData(quotaData, account);
         } catch (retryErr) {
           const isAuthExpired = retryErr.message?.includes("AUTH_EXPIRED") || retryErr.message?.includes("invalid_grant");
           return {
-            quotas: [],
-            averagePercentage: 0,
-            hasWeeklyQuota: false,
-            has5HourQuota: false,
-            accountType: "Standard Free",
-            tierBadge: "STANDARD FREE",
-            status: isAuthExpired ? "auth_failed" : "active",
+            quotas: account.quotas && account.quotas.length > 0 ? account.quotas : [],
+            quotaGroups: account.quotaGroups,
+            geminiGroup: account.geminiGroup,
+            claudeGptGroup: account.claudeGptGroup,
+            averagePercentage: account.averageQuotaPercentage ?? 0,
+            hasWeeklyQuota: account.hasWeeklyQuota ?? false,
+            has5HourQuota: account.has5HourQuota ?? false,
+            accountType: account.accountType || "Google Account",
+            tierBadge: account.tierBadge || "STANDARD FREE",
+            status: isAuthExpired ? "auth_failed" : account.status || "active",
             isBanned: false,
             statusMessage: isAuthExpired ? "Credentials expired. Re-login required." : retryErr.message
           };
         }
       }
       return {
-        quotas: [],
-        averagePercentage: 0,
-        fiveHourPercentage: void 0,
-        weeklyPercentage: void 0,
-        has5HourQuota: false,
-        hasWeeklyQuota: false,
-        accountType: "Standard Free",
-        tierBadge: "STANDARD FREE",
-        status: errMsg.includes("401") ? "auth_failed" : "active",
+        quotas: account.quotas && account.quotas.length > 0 ? account.quotas : [],
+        quotaGroups: account.quotaGroups,
+        geminiGroup: account.geminiGroup,
+        claudeGptGroup: account.claudeGptGroup,
+        averagePercentage: account.averageQuotaPercentage ?? 0,
+        fiveHourPercentage: account.fiveHourQuotaPercentage,
+        weeklyPercentage: account.weeklyQuotaPercentage,
+        fiveHourResetTime: account.fiveHourResetTime,
+        fiveHourResetCountdown: account.fiveHourResetCountdown,
+        weeklyResetTime: account.weeklyResetTime,
+        weeklyResetCountdown: account.weeklyResetCountdown,
+        has5HourQuota: account.has5HourQuota ?? false,
+        hasWeeklyQuota: account.hasWeeklyQuota ?? false,
+        accountType: account.accountType || "Google Account",
+        tierBadge: account.tierBadge || "STANDARD FREE",
+        status: errMsg.includes("401") ? "auth_failed" : account.status || "active",
         isBanned: false,
-        statusMessage: errMsg.includes("401") ? "Credentials expired. Re-login required." : void 0
+        statusMessage: errMsg.includes("401") ? "Credentials expired. Re-login required." : "Unable to fetch latest metrics from Google API (temporary)."
       };
     }
   }
   /**
+   * Processes raw quota API response into normalized QuotaFetchResult.
+   * Keeps Gemini Models and Claude & GPT models in separate QuotaGroups.
+   * Keeps 5h rolling window and Weekly plan quota separated without mashing them together.
+   */
+  processQuotaData(quotaData, account) {
+    const hasGroups = (quotaData?.response?.groups || quotaData?.groups || []).length > 0;
+    const hasModels = Object.keys(quotaData?.models || {}).length > 0;
+    const hasTierData = !!(quotaData?.paidTier || quotaData?.userTier || quotaData?.currentTier || quotaData?.cloudaicompanionProject);
+    if (!hasGroups && !hasModels && !hasTierData) {
+      console.warn(`[QuotaService] Empty/failed API response for ${account.email}. Preserving existing account state & tier.`);
+      return {
+        quotas: account.quotas && account.quotas.length > 0 ? account.quotas : [],
+        quotaGroups: account.quotaGroups,
+        geminiGroup: account.geminiGroup,
+        claudeGptGroup: account.claudeGptGroup,
+        averagePercentage: account.averageQuotaPercentage ?? 0,
+        fiveHourPercentage: account.fiveHourQuotaPercentage,
+        weeklyPercentage: account.weeklyQuotaPercentage,
+        fiveHourResetTime: account.fiveHourResetTime,
+        fiveHourResetCountdown: account.fiveHourResetCountdown,
+        weeklyResetTime: account.weeklyResetTime,
+        weeklyResetCountdown: account.weeklyResetCountdown,
+        has5HourQuota: account.has5HourQuota ?? false,
+        hasWeeklyQuota: account.hasWeeklyQuota ?? false,
+        accountType: account.accountType || "Google Account",
+        tierBadge: account.tierBadge || "STANDARD FREE",
+        status: account.status || "active",
+        isBanned: account.isBanned || false,
+        statusMessage: "Unable to fetch latest metrics from Google API (temporary)."
+      };
+    }
+    const { accountType, tierBadge } = this.determineAccountTier(quotaData, account);
+    const isFree = tierBadge === "STANDARD FREE";
+    console.log(`[QuotaService] Tier detected: ${tierBadge} (${accountType}) for ${account.email}`);
+    const groups = quotaData?.response?.groups || quotaData?.groups || [];
+    const quotaGroups = [];
+    let parsedQuotas = [];
+    let geminiGroup;
+    let claudeGptGroup;
+    for (const g of groups) {
+      const gDisplayName = g.displayName || "";
+      const gNameLower = gDisplayName.toLowerCase();
+      const isGemini = gNameLower.includes("gemini");
+      const isClaudeGpt = gNameLower.includes("claude") || gNameLower.includes("gpt") || gNameLower.includes("3p");
+      const groupId = isGemini ? "gemini" : isClaudeGpt ? "claude_gpt" : gDisplayName.toLowerCase().replace(/\s+/g, "_");
+      let group5h;
+      let groupWeekly;
+      const buckets = [];
+      for (const b of g.buckets || []) {
+        const bWindow = (b.window || "").toLowerCase();
+        const bId = (b.bucketId || "").toLowerCase();
+        const bNameLower = (b.displayName || "").toLowerCase();
+        const is5h = bWindow === "5h" || bId.includes("5h") || bNameLower.includes("5-hour") || bNameLower.includes("five hour");
+        const isWeekly = bWindow === "weekly" || bId.includes("weekly") || bNameLower.includes("weekly");
+        const windowType = is5h ? "5h" : "weekly";
+        const remainingFraction = this.extractFraction(b);
+        const percentage = Math.round(remainingFraction * 100);
+        const resetTime = b.resetTime || b.quotaInfo?.resetTime || b.quotaResetUTCTimestamp;
+        const resetCountdown = resetTime ? this.formatCountdown(resetTime) : void 0;
+        const bucket = {
+          bucketId: b.bucketId || `${groupId}-${windowType}`,
+          displayName: b.displayName || (windowType === "5h" ? "Five Hour Limit Remaining" : "Weekly Limit Remaining"),
+          window: windowType,
+          remainingFraction,
+          percentage,
+          resetTime,
+          resetCountdown,
+          description: b.description,
+          disabled: false
+        };
+        buckets.push(bucket);
+        if (is5h && !group5h) group5h = bucket;
+        if (isWeekly && !groupWeekly) groupWeekly = bucket;
+      }
+      const qg = {
+        id: groupId,
+        name: gDisplayName || (isGemini ? "Gemini Models" : "Claude and GPT models"),
+        description: g.description,
+        fiveHour: group5h,
+        weekly: groupWeekly,
+        buckets
+      };
+      quotaGroups.push(qg);
+      if (isGemini) geminiGroup = qg;
+      if (isClaudeGpt) claudeGptGroup = qg;
+    }
+    const rawModels = quotaData?.models || {};
+    const seenIds = /* @__PURE__ */ new Set();
+    const shouldIgnoreModel = (id, name) => {
+      const s = (id + " " + name).toLowerCase();
+      return s.startsWith("tab_") || s.startsWith("tab-") || s.startsWith("chat_") || s.startsWith("chat-") || s.includes("autocomplete") || s.includes("preview") || s.includes("thinking effort") || s.includes("thinking_effort") || s.includes("thinking budget") || s.includes("thinking_budget");
+    };
+    if (Object.keys(rawModels).length > 0) {
+      for (const [modelId, modelData] of Object.entries(rawModels)) {
+        const displayName = this.formatModelDisplayName(modelId, modelData.displayName);
+        if (shouldIgnoreModel(modelId, displayName)) continue;
+        const normId = this.normalizeModelKey(modelId);
+        if (seenIds.has(normId)) continue;
+        seenIds.add(normId);
+        const idLower = (modelId + " " + displayName).toLowerCase();
+        const isGemini = idLower.includes("gemini") || idLower.includes("flash");
+        const isPro = idLower.includes("pro");
+        const isClaudeGpt = idLower.includes("claude") || idLower.includes("gpt") || idLower.includes("opus") || idLower.includes("sonnet");
+        let targetBucket;
+        let windowType = "weekly";
+        let windowLabel = "Weekly Quota";
+        if (isGemini) {
+          if (isPro) {
+            targetBucket = geminiGroup?.weekly || geminiGroup?.fiveHour;
+            windowType = "weekly";
+            windowLabel = "Weekly Quota";
+          } else {
+            targetBucket = geminiGroup?.fiveHour || geminiGroup?.weekly;
+            windowType = geminiGroup?.fiveHour ? "5h" : "weekly";
+            windowLabel = geminiGroup?.fiveHour ? "5-Hour Window" : "Weekly Quota";
+          }
+        } else if (isClaudeGpt) {
+          targetBucket = claudeGptGroup?.fiveHour || claudeGptGroup?.weekly || claudeGptGroup?.buckets[0];
+          windowType = claudeGptGroup?.fiveHour ? "5h" : "weekly";
+          windowLabel = claudeGptGroup?.fiveHour ? "5-Hour Window" : "Weekly Quota";
+        }
+        const remainingFraction = targetBucket ? targetBucket.remainingFraction : this.extractFraction(modelData);
+        const percentage = targetBucket ? targetBucket.percentage : Math.round(remainingFraction * 100);
+        const resetTime = targetBucket?.resetTime || modelData.quotaInfo?.resetTime || modelData.resetTime;
+        const resetCountdown = targetBucket?.resetCountdown || (resetTime ? this.formatCountdown(resetTime) : void 0);
+        parsedQuotas.push({
+          id: modelId,
+          displayName,
+          groupName: isGemini ? "Gemini Models" : isClaudeGpt ? "Claude and GPT models" : targetBucket?.displayName || "Other Models",
+          description: targetBucket?.description || modelData.description,
+          remainingFraction,
+          percentage,
+          resetTime,
+          resetCountdown,
+          windowType,
+          windowLabel,
+          disabled: targetBucket?.disabled ?? false
+        });
+      }
+    }
+    if (parsedQuotas.length === 0 && (geminiGroup || claudeGptGroup)) {
+      if (geminiGroup) {
+        const g5h = geminiGroup.fiveHour;
+        const gWk = geminiGroup.weekly;
+        parsedQuotas.push({
+          id: "gemini-2.5-flash",
+          displayName: "Gemini 2.5 Flash",
+          groupName: "Gemini Models",
+          description: g5h?.description || "Fast multimodal model for rapid iterations",
+          remainingFraction: g5h ? g5h.remainingFraction : gWk ? gWk.remainingFraction : 1,
+          percentage: g5h ? g5h.percentage : gWk ? gWk.percentage : 100,
+          resetTime: g5h?.resetTime || gWk?.resetTime,
+          resetCountdown: g5h?.resetCountdown || gWk?.resetCountdown,
+          windowType: g5h ? "5h" : "weekly",
+          windowLabel: g5h ? "5-Hour Window" : "Weekly Quota",
+          disabled: g5h?.disabled ?? false
+        });
+        parsedQuotas.push({
+          id: "gemini-2.5-pro",
+          displayName: "Gemini 2.5 Pro",
+          groupName: "Gemini Models",
+          description: gWk?.description || "Advanced reasoning and complex coding model",
+          remainingFraction: gWk ? gWk.remainingFraction : g5h ? g5h.remainingFraction : 1,
+          percentage: gWk ? gWk.percentage : g5h ? g5h.percentage : 100,
+          resetTime: gWk?.resetTime || g5h?.resetTime,
+          resetCountdown: gWk?.resetCountdown || g5h?.resetCountdown,
+          windowType: "weekly",
+          windowLabel: "Weekly Quota",
+          disabled: gWk?.disabled ?? false
+        });
+      }
+      if (claudeGptGroup) {
+        const c5h = claudeGptGroup.fiveHour;
+        const cWk = claudeGptGroup.weekly;
+        parsedQuotas.push({
+          id: "claude-3-7-sonnet",
+          displayName: "Claude 3.7 Sonnet",
+          groupName: "Claude and GPT models",
+          description: c5h?.description || cWk?.description || "Hybrid reasoning and state-of-the-art coding",
+          remainingFraction: c5h ? c5h.remainingFraction : cWk ? cWk.remainingFraction : 1,
+          percentage: c5h ? c5h.percentage : cWk ? cWk.percentage : 100,
+          resetTime: c5h?.resetTime || cWk?.resetTime,
+          resetCountdown: c5h?.resetCountdown || cWk?.resetCountdown,
+          windowType: c5h ? "5h" : "weekly",
+          windowLabel: c5h ? "5-Hour Window" : "Weekly Quota",
+          disabled: c5h?.disabled ?? false
+        });
+        parsedQuotas.push({
+          id: "claude-3-5-sonnet",
+          displayName: "Claude 3.5 Sonnet",
+          groupName: "Claude and GPT models",
+          description: cWk?.description || "Intelligent coding and analysis",
+          remainingFraction: cWk ? cWk.remainingFraction : 1,
+          percentage: cWk ? cWk.percentage : 100,
+          resetTime: cWk?.resetTime,
+          resetCountdown: cWk?.resetCountdown,
+          windowType: "weekly",
+          windowLabel: "Weekly Quota",
+          disabled: cWk?.disabled ?? false
+        });
+      }
+    }
+    parsedQuotas = _QuotaService.sortModelQuotas(parsedQuotas);
+    const has5Hour = !!geminiGroup?.fiveHour || !!claudeGptGroup?.fiveHour;
+    const hasWeekly = !!geminiGroup?.weekly || !!claudeGptGroup?.weekly;
+    const fiveHourResetTime = geminiGroup?.fiveHour?.resetTime;
+    const fiveHourResetCountdown = geminiGroup?.fiveHour?.resetCountdown;
+    const fiveHourPercentage = geminiGroup?.fiveHour ? geminiGroup.fiveHour.percentage : void 0;
+    const weeklyResetTime = geminiGroup?.weekly?.resetTime;
+    const weeklyResetCountdown = geminiGroup?.weekly?.resetCountdown;
+    const weeklyPercentage = geminiGroup?.weekly ? geminiGroup.weekly.percentage : void 0;
+    const geminiAvailable = (geminiGroup?.weekly?.percentage ?? 0) > 0 && (!geminiGroup?.fiveHour || geminiGroup.fiveHour.percentage > 0);
+    const claudeAvailable = (claudeGptGroup?.weekly?.percentage ?? 0) > 0 && (!claudeGptGroup?.fiveHour || claudeGptGroup.fiveHour.percentage > 0);
+    let status = "active";
+    let statusMessage;
+    if (!geminiAvailable && !claudeAvailable) {
+      status = "low_balance";
+      statusMessage = "All model quotas depleted";
+    } else if (!geminiAvailable && claudeAvailable) {
+      statusMessage = "Gemini depleted \xB7 Claude available";
+    } else if (geminiAvailable && !claudeAvailable) {
+      statusMessage = "Claude depleted \xB7 Gemini available";
+    }
+    const geminiActivePct = geminiGroup?.fiveHour && !geminiGroup.fiveHour.disabled && geminiGroup.fiveHour.percentage >= 0 ? geminiGroup.fiveHour.percentage : geminiGroup?.weekly && !geminiGroup.weekly.disabled && geminiGroup.weekly.percentage >= 0 ? geminiGroup.weekly.percentage : void 0;
+    const claudeActivePct = claudeGptGroup?.fiveHour && !claudeGptGroup.fiveHour.disabled && claudeGptGroup.fiveHour.percentage >= 0 ? claudeGptGroup.fiveHour.percentage : claudeGptGroup?.weekly && !claudeGptGroup.weekly.disabled && claudeGptGroup.weekly.percentage >= 0 ? claudeGptGroup.weekly.percentage : void 0;
+    let averagePercentage = 0;
+    if (geminiActivePct !== void 0 && claudeActivePct !== void 0) {
+      averagePercentage = Math.round((geminiActivePct + claudeActivePct) / 2);
+    } else if (geminiActivePct !== void 0) {
+      averagePercentage = geminiActivePct;
+    } else if (claudeActivePct !== void 0) {
+      averagePercentage = claudeActivePct;
+    } else {
+      averagePercentage = this.calculateAveragePercentage(parsedQuotas);
+    }
+    return {
+      quotas: parsedQuotas,
+      quotaGroups,
+      geminiGroup,
+      claudeGptGroup,
+      averagePercentage,
+      fiveHourPercentage,
+      weeklyPercentage,
+      fiveHourResetTime,
+      fiveHourResetCountdown,
+      weeklyResetTime,
+      weeklyResetCountdown,
+      has5HourQuota: has5Hour,
+      hasWeeklyQuota: hasWeekly,
+      accountType,
+      tierBadge,
+      status,
+      isBanned: false,
+      statusMessage
+    };
+  }
+  /**
+   * Finds the soonest upcoming reset time from a list of model quotas.
+   */
+  findSoonestResetTime(quotas) {
+    const valid = quotas.filter((q) => !!q.resetTime);
+    if (valid.length === 0) return void 0;
+    const now = Date.now();
+    const future = valid.map((q) => ({ time: q.resetTime, ms: new Date(q.resetTime).getTime() })).filter((item) => !isNaN(item.ms) && item.ms > now).sort((a, b) => a.ms - b.ms);
+    if (future.length > 0) {
+      return future[0].time;
+    }
+    return valid[0].resetTime;
+  }
+  /**
    * Multi-strategy live quota fetching against Cloud Code PA backend.
+   * Uses daily-cloudcode-pa.googleapis.com first (primary Antigravity backend with Claude & GPT)
+   * with fallback to cloudcode-pa.googleapis.com.
    */
   async fetchLiveQuotaData(accessToken) {
     let projectId;
     let tierData = {};
-    const codeAssistEndpoints = [
-      { host: "cloudcode-pa.googleapis.com", path: "/v1internal:loadCodeAssist", body: { metadata: { ideType: "ANTIGRAVITY" } } },
-      { host: "daily-cloudcode-pa.googleapis.com", path: "/v1internal:loadCodeAssist", body: { metadata: { ide_type: "ANTIGRAVITY", ide_version: "1.22.2", ide_name: "antigravity" } } }
-    ];
-    for (const ep of codeAssistEndpoints) {
-      try {
-        const res = await this.callCloudCodePost(accessToken, ep.host, ep.path, ep.body);
-        if (res) {
-          if (res.cloudaicompanionProject) {
-            projectId = res.cloudaicompanionProject;
-          }
-          tierData = { ...tierData, ...res };
-          console.log(`[QuotaService] loadCodeAssist response keys: ${Object.keys(res).join(", ")}`);
-          console.log(`[QuotaService] paidTier=${JSON.stringify(res.paidTier)}, currentTier=${JSON.stringify(res.currentTier)}, userTier=${JSON.stringify(res.userTier)}`);
-          if (res.models || res.response?.groups || res.groups) {
-            console.log("[QuotaService] Found model data in loadCodeAssist response!");
-            return { ...tierData, ...res };
-          }
-          break;
+    let lastAuthError = null;
+    let anyEndpointSucceeded = false;
+    const hosts = API_ENDPOINTS.CLOUD_CODE_HOSTS;
+    const codeAssistBodies = [
+      {
+        metadata: {
+          ide_type: "ANTIGRAVITY",
+          ide_version: "1.22.2",
+          ide_name: "antigravity"
         }
-      } catch (err) {
-        console.warn(`[QuotaService] loadCodeAssist failed: ${err.message}`);
-      }
-    }
-    const modelCandidates = [
-      { host: "daily-cloudcode-pa.sandbox.googleapis.com", path: "/v1internal:fetchAvailableModels" },
-      { host: "daily-cloudcode-pa.googleapis.com", path: "/v1internal:fetchAvailableModels" },
-      { host: "cloudcode-pa.googleapis.com", path: "/v1internal:fetchAvailableModels" },
-      { host: "cloudcode-pa.googleapis.com", path: "/v1internal:retrieveUserQuotaSummary" }
-    ];
-    for (const cand of modelCandidates) {
-      try {
-        const body = projectId ? { project: projectId } : {};
-        const res = await this.callCloudCodePost(accessToken, cand.host, cand.path, body);
-        console.log(`[QuotaService] ${cand.host}${cand.path} \u2192 keys: ${Object.keys(res || {}).join(", ")}`);
-        if (res && (res.models || res.response?.groups || res.groups)) {
-          return { ...tierData, ...res };
+      },
+      {
+        metadata: {
+          ideType: "ANTIGRAVITY",
+          ideVersion: "1.22.2",
+          ideName: "antigravity",
+          platform: "WINDOWS",
+          pluginType: "GEMINI"
         }
-      } catch (err) {
-        console.warn(`[QuotaService] ${cand.host}${cand.path} failed: ${err.message}`);
+      },
+      {
+        metadata: { ideType: "ANTIGRAVITY" }
+      },
+      {}
+    ];
+    for (const host of hosts) {
+      for (const body2 of codeAssistBodies) {
+        try {
+          const res = await this.callCloudCodePost(accessToken, host, "/v1internal:loadCodeAssist", body2);
+          if (res) {
+            anyEndpointSucceeded = true;
+            if (res.cloudaicompanionProject) {
+              projectId = res.cloudaicompanionProject;
+            }
+            tierData = { ...tierData, ...res };
+            break;
+          }
+        } catch (err) {
+          if (err.message && (err.message.includes("401") || err.message.includes("UNAUTHENTICATED"))) {
+            lastAuthError = err;
+          }
+        }
       }
+      if (projectId || Object.keys(tierData).length > 0) break;
     }
-    console.warn("[QuotaService] No model quota data found from any endpoint. Returning tier-only data.");
-    return tierData;
+    const body = projectId ? { project: projectId } : {};
+    let groupsData = null;
+    let modelsData = null;
+    for (const host of hosts) {
+      if (!groupsData) {
+        try {
+          groupsData = await this.callCloudCodePost(accessToken, host, "/v1internal:retrieveUserQuotaSummary", body);
+          if (groupsData) anyEndpointSucceeded = true;
+        } catch (err) {
+          if (err.message && (err.message.includes("401") || err.message.includes("UNAUTHENTICATED"))) {
+            lastAuthError = err;
+          }
+          if (projectId) {
+            try {
+              groupsData = await this.callCloudCodePost(accessToken, host, "/v1internal:retrieveUserQuotaSummary", {});
+              if (groupsData) anyEndpointSucceeded = true;
+            } catch {
+            }
+          }
+        }
+      }
+      if (!modelsData) {
+        try {
+          modelsData = await this.callCloudCodePost(accessToken, host, "/v1internal:fetchAvailableModels", body);
+          if (modelsData) anyEndpointSucceeded = true;
+        } catch (err) {
+          if (err.message && (err.message.includes("401") || err.message.includes("UNAUTHENTICATED"))) {
+            lastAuthError = err;
+          }
+          if (projectId) {
+            try {
+              modelsData = await this.callCloudCodePost(accessToken, host, "/v1internal:fetchAvailableModels", {});
+              if (modelsData) anyEndpointSucceeded = true;
+            } catch {
+            }
+          }
+        }
+      }
+      if (groupsData && modelsData) break;
+    }
+    if (!anyEndpointSucceeded && lastAuthError) {
+      throw lastAuthError;
+    }
+    return {
+      ...tierData,
+      ...groupsData || {},
+      models: modelsData?.models || groupsData?.models || tierData?.models || {},
+      response: groupsData?.response || groupsData
+    };
   }
   callCloudCodePost(accessToken, hostname, path3, body = {}) {
     return new Promise((resolve, reject) => {
@@ -1235,6 +1562,36 @@ var QuotaService = class _QuotaService {
       req.end();
     });
   }
+  extractFraction(data) {
+    if (!data) return 0;
+    const q = data.quotaInfo || data.quota || data.userQuota || data;
+    if (!q) return 0;
+    if (typeof q.remainingFraction === "number") return Math.max(0, Math.min(1, q.remainingFraction));
+    if (typeof data.remainingFraction === "number") return Math.max(0, Math.min(1, data.remainingFraction));
+    if (typeof q.fraction === "number") return Math.max(0, Math.min(1, q.fraction));
+    if (typeof data.fraction === "number") return Math.max(0, Math.min(1, data.fraction));
+    if (typeof q.remainingQuota === "number") return Math.max(0, Math.min(1, q.remainingQuota));
+    if (q.remaining && typeof q.remaining === "object") {
+      if (typeof q.remaining.value === "number") return Math.max(0, Math.min(1, q.remaining.value));
+      if (typeof q.remaining.remainingFraction === "number") return Math.max(0, Math.min(1, q.remaining.remainingFraction));
+      if (typeof q.remaining.fraction === "number") return Math.max(0, Math.min(1, q.remaining.fraction));
+    }
+    if (data.remaining && typeof data.remaining === "object") {
+      if (typeof data.remaining.value === "number") return Math.max(0, Math.min(1, data.remaining.value));
+      if (typeof data.remaining.remainingFraction === "number") return Math.max(0, Math.min(1, data.remaining.remainingFraction));
+      if (typeof data.remaining.fraction === "number") return Math.max(0, Math.min(1, data.remaining.fraction));
+    }
+    if (typeof q.remaining === "number") return Math.max(0, Math.min(1, q.remaining));
+    if (typeof q.remainingPercentage === "number") return Math.max(0, Math.min(1, q.remainingPercentage / 100));
+    if (typeof q.percentage === "number") return Math.max(0, Math.min(1, q.percentage / 100));
+    if (typeof q.usedFraction === "number") return Math.max(0, Math.min(1, 1 - q.usedFraction));
+    if (typeof q.consumedFraction === "number") return Math.max(0, Math.min(1, 1 - q.consumedFraction));
+    if (typeof data.usedFraction === "number") return Math.max(0, Math.min(1, 1 - data.usedFraction));
+    if (data.quotaInfo || q.resetTime || data.resetTime) {
+      return 0;
+    }
+    return 0;
+  }
   /**
    * Parses model quotas from the API response:
    * - Extracts real percentages from models / groups
@@ -1249,6 +1606,101 @@ var QuotaService = class _QuotaService {
       const s = (id + " " + name).toLowerCase();
       return s.includes("tab_") || s.includes("tab-") || s.includes("autocomplete") || s.includes("tab completion") || s.includes("thinking effort") || s.includes("thinking_effort") || s.includes("thinking-effort") || s.includes("thinking budget") || s.includes("thinking_budget") || s.includes("thinking-budget") || s.includes("thinking_slider") || s.includes("thinking-slider") || s.includes("thinking_") || s.startsWith("chat_") || s.startsWith("chat-") || /^chat_\d+/.test(s) || /^chat \d+/.test(s);
     };
+    const groups = rawResponse?.response?.groups || rawResponse?.groups || [];
+    if (groups.length > 0) {
+      for (const group of groups) {
+        const groupName = (group.displayName || "").toLowerCase();
+        const buckets = group.buckets || [];
+        const bucket5h = buckets.find(
+          (b) => b.window && b.window.toLowerCase() === "5h" || b.bucketId && b.bucketId.toLowerCase().includes("5h") || b.displayName && (b.displayName.toLowerCase().includes("5-hour") || b.displayName.toLowerCase().includes("five hour"))
+        );
+        const bucketWeekly = buckets.find(
+          (b) => b.window && b.window.toLowerCase() === "weekly" || b.bucketId && b.bucketId.toLowerCase().includes("weekly") || b.displayName && b.displayName.toLowerCase().includes("weekly")
+        );
+        if (groupName.includes("gemini")) {
+          const has5h = !!bucket5h;
+          const flashBucket = bucket5h || bucketWeekly || buckets[0] || {};
+          const flashFraction = this.extractFraction(flashBucket);
+          const flashPct = Math.round(flashFraction * 100);
+          const flashResetTime = flashBucket.quotaInfo?.resetTime || flashBucket.resetTime || flashBucket.quotaResetUTCTimestamp;
+          const flashCountdown = flashResetTime ? this.formatCountdown(flashResetTime) : void 0;
+          const proBucket = bucketWeekly || bucket5h || buckets[0] || {};
+          const proFraction = this.extractFraction(proBucket);
+          const proPct = Math.round(proFraction * 100);
+          const proResetTime = proBucket.quotaInfo?.resetTime || proBucket.resetTime || proBucket.quotaResetUTCTimestamp;
+          const proCountdown = proResetTime ? this.formatCountdown(proResetTime) : void 0;
+          const geminiFlashModels = [
+            { id: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash" },
+            { id: "gemini-3.7-flash", displayName: "Gemini 3.7 Flash" },
+            { id: "gemini-3.6-flash", displayName: "Gemini 3.6 Flash" },
+            { id: "gemini-3.1-flash", displayName: "Gemini 3.1 Flash" }
+          ];
+          for (const m of geminiFlashModels) {
+            if (seenIds.has(m.id)) continue;
+            seenIds.add(m.id);
+            list.push({
+              id: m.id,
+              displayName: m.displayName,
+              description: flashBucket.description || group.description,
+              remainingFraction: flashFraction,
+              percentage: flashPct,
+              resetTime: flashResetTime,
+              resetCountdown: flashCountdown,
+              windowType: has5h ? "5h" : "weekly",
+              windowLabel: has5h ? "5-Hour Rolling Window" : "Weekly Plan Quota",
+              disabled: flashBucket.disabled ?? false
+            });
+          }
+          const geminiProModels = [
+            { id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro" },
+            { id: "gemini-3.1-pro", displayName: "Gemini 3.1 Pro" }
+          ];
+          for (const m of geminiProModels) {
+            if (seenIds.has(m.id)) continue;
+            seenIds.add(m.id);
+            list.push({
+              id: m.id,
+              displayName: m.displayName,
+              description: proBucket.description || group.description,
+              remainingFraction: proFraction,
+              percentage: proPct,
+              resetTime: proResetTime,
+              resetCountdown: proCountdown,
+              windowType: "weekly",
+              windowLabel: "Weekly Plan Quota",
+              disabled: proBucket.disabled ?? false
+            });
+          }
+        } else if (groupName.includes("claude") || groupName.includes("gpt") || groupName.includes("3p")) {
+          const thirdPartyBucket = bucketWeekly || bucket5h || buckets[0] || {};
+          const fraction = this.extractFraction(thirdPartyBucket);
+          const percentage = Math.round(fraction * 100);
+          const resetTime = thirdPartyBucket.quotaInfo?.resetTime || thirdPartyBucket.resetTime || thirdPartyBucket.quotaResetUTCTimestamp;
+          const resetCountdown = resetTime ? this.formatCountdown(resetTime) : void 0;
+          const thirdPartyModels = [
+            { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
+            { id: "gpt-oss-120b", displayName: "GPT-OSS 120B" }
+          ];
+          for (const m of thirdPartyModels) {
+            if (seenIds.has(m.id)) continue;
+            seenIds.add(m.id);
+            list.push({
+              id: m.id,
+              displayName: m.displayName,
+              description: thirdPartyBucket.description || group.description,
+              remainingFraction: fraction,
+              percentage,
+              resetTime,
+              resetCountdown,
+              windowType: "weekly",
+              windowLabel: "Weekly Plan Quota",
+              disabled: thirdPartyBucket.disabled ?? false
+            });
+          }
+        }
+      }
+    }
     if (rawResponse && rawResponse.models) {
       for (const [modelId, modelData] of Object.entries(rawResponse.models)) {
         const displayName = this.formatModelDisplayName(modelId, modelData.displayName);
@@ -1258,18 +1710,9 @@ var QuotaService = class _QuotaService {
         const normId = this.normalizeModelKey(modelId);
         if (seenIds.has(normId)) continue;
         seenIds.add(normId);
-        const quotaInfo = modelData.quotaInfo || {};
-        let fraction = 0;
-        if (typeof quotaInfo.remainingFraction === "number") {
-          fraction = quotaInfo.remainingFraction;
-        } else if (typeof quotaInfo.fraction === "number") {
-          fraction = quotaInfo.fraction;
-        } else if (typeof quotaInfo.remainingQuota === "number") {
-          fraction = quotaInfo.remainingQuota;
-        }
-        fraction = Math.max(0, Math.min(1, fraction));
+        const fraction = this.extractFraction(modelData);
         const percentage = Math.round(fraction * 100);
-        const resetTime = quotaInfo.resetTime;
+        const resetTime = modelData.quotaInfo?.resetTime || modelData.resetTime;
         const resetCountdown = resetTime ? this.formatCountdown(resetTime) : void 0;
         const { windowType, windowLabel } = this.classifyQuotaWindow(modelId, displayName, resetTime, modelData.description);
         list.push({
@@ -1283,47 +1726,6 @@ var QuotaService = class _QuotaService {
           windowType,
           windowLabel,
           disabled: modelData.disabled ?? false
-        });
-      }
-    }
-    const groups = rawResponse?.response?.groups || rawResponse?.groups || [];
-    for (const group of groups) {
-      const buckets = group.buckets || [];
-      for (const bucket of buckets) {
-        if (!bucket.displayName && !bucket.bucketId) continue;
-        const rawId = bucket.bucketId || bucket.displayName;
-        const displayName = this.formatModelDisplayName(rawId, bucket.displayName);
-        if (shouldIgnoreModel(rawId, displayName)) {
-          continue;
-        }
-        const normId = this.normalizeModelKey(rawId);
-        if (seenIds.has(normId)) continue;
-        seenIds.add(normId);
-        let fraction = 0;
-        if (bucket.remaining?.case === "remainingFraction") {
-          fraction = typeof bucket.remaining.value === "number" ? bucket.remaining.value : 0;
-        } else if (typeof bucket.remainingFraction === "number") {
-          fraction = bucket.remainingFraction;
-        } else if (typeof bucket.fraction === "number") {
-          fraction = bucket.fraction;
-        }
-        fraction = Math.max(0, Math.min(1, fraction));
-        const percentage = Math.round(fraction * 100);
-        const resetTime = bucket.quotaInfo?.resetTime || bucket.resetTime || bucket.quotaResetUTCTimestamp;
-        const resetCountdown = resetTime ? this.formatCountdown(resetTime) : void 0;
-        const { windowType, windowLabel } = this.classifyQuotaWindow(rawId, displayName, resetTime, bucket.description || group.displayName);
-        list.push({
-          id: rawId,
-          displayName,
-          description: bucket.description || group.displayName,
-          remainingFraction: fraction,
-          percentage,
-          resetTime,
-          resetCountdown,
-          windowType,
-          windowLabel,
-          disabled: bucket.disabled ?? false,
-          refreshText: bucket.refreshText || bucket.description
         });
       }
     }
@@ -1412,30 +1814,47 @@ var QuotaService = class _QuotaService {
    * 7. GPT-OSS 120B
    */
   static sortModelQuotas(quotas) {
+    const extractVersion = (s) => {
+      const match = s.match(/(\d+(?:\.\d+)?)/);
+      return match ? parseFloat(match[1]) : 0;
+    };
     const getRank = (q) => {
       const s = (q.id + " " + (q.displayName || "")).toLowerCase();
-      if (s.includes("3.8-flash") || s.includes("3.8 flash")) return 10;
-      if (s.includes("3.7-flash") || s.includes("3.7 flash")) return 20;
-      if (s.includes("3.6-flash") || s.includes("3.6 flash")) return 30;
-      if (s.includes("3.1-flash") || s.includes("3.1 flash")) return 40;
-      if (s.includes("3.5-flash") || s.includes("3.5 flash")) return 45;
-      if (s.includes("gemini-3-flash") || s.includes("gemini 3 flash") || s.includes("gemini-3.0-flash")) return 50;
-      if (s.includes("gemini") && s.includes("flash")) return 60;
-      if (s.includes("gemini") && s.includes("pro")) return 70;
-      if (s.includes("gemini")) return 80;
-      if (s.includes("claude") && (s.includes("sonnet-4-6") || s.includes("sonnet 4.6") || s.includes("sonnet"))) return 100;
-      if (s.includes("claude") && (s.includes("opus-4-6") || s.includes("opus 4.6") || s.includes("opus"))) return 110;
-      if (s.includes("claude")) return 130;
-      if (s.includes("gpt-oss") || s.includes("gpt_oss") || s.includes("gpt oss")) return 200;
-      return 500;
+      const isGemini = s.includes("gemini") || s.includes("flash");
+      const isClaude = s.includes("claude") || s.includes("opus") || s.includes("sonnet") || s.includes("haiku");
+      const isGpt = s.includes("gpt");
+      const ver = extractVersion(s);
+      if (isGemini) {
+        const typeBonus = s.includes("pro") ? 0.05 : 0;
+        return 1e3 - (ver * 100 + typeBonus);
+      }
+      if (isClaude) {
+        const typeBonus = s.includes("opus") ? 0.1 : s.includes("sonnet") ? 0.05 : 0;
+        return 2e3 - (ver * 100 + typeBonus);
+      }
+      if (isGpt) {
+        return 3e3 - ver;
+      }
+      return 4e3;
     };
-    return [...quotas].sort((a, b) => getRank(a) - getRank(b));
+    return [...quotas].sort((a, b) => {
+      const rankA = getRank(a);
+      const rankB = getRank(b);
+      if (rankA !== rankB) return rankA - rankB;
+      return (a.displayName || a.id).localeCompare(b.displayName || b.id);
+    });
   }
   /**
    * Classifies a model quota into 5h rolling window vs weekly plan quota.
    */
   classifyQuotaWindow(id, displayName, resetTime, description) {
     const idLower = (id + " " + displayName + " " + (description || "")).toLowerCase();
+    if (idLower.includes("claude") || idLower.includes("opus") || idLower.includes("sonnet") || idLower.includes("gpt-oss") || idLower.includes("gpt_oss") || idLower.includes("gpt") || idLower.includes("gemini-2.5-pro") || idLower.includes("gemini-3-pro") || idLower.includes("gemini-pro") || idLower.includes("weekly") || idLower.includes("plan quota") || idLower.includes("pro-agent")) {
+      return { windowType: "weekly", windowLabel: "Weekly Plan Quota" };
+    }
+    if (idLower.includes("flash") || idLower.includes("5h")) {
+      return { windowType: "5h", windowLabel: "5-Hour Rolling Window" };
+    }
     if (resetTime) {
       try {
         const diffMs = new Date(resetTime).getTime() - Date.now();
@@ -1448,36 +1867,125 @@ var QuotaService = class _QuotaService {
       } catch {
       }
     }
-    if (idLower.includes("claude") || idLower.includes("opus") || idLower.includes("sonnet") || idLower.includes("gpt-oss") || idLower.includes("gemini-2.5-pro") || idLower.includes("weekly") || idLower.includes("pro-agent")) {
-      return { windowType: "weekly", windowLabel: "Weekly Plan Quota" };
-    }
     return { windowType: "5h", windowLabel: "5-Hour Rolling Window" };
   }
   /**
    * Determines account subscription tier strictly based on Google account subscription data.
    * Standard free accounts will always receive 'STANDARD FREE' without Pro badge.
    */
-  determineAccountTier(rawResponse, _quotas) {
-    const paidTierName = (rawResponse?.paidTier?.name || "").toLowerCase();
-    const currentTierName = (rawResponse?.currentTier?.name || "").toLowerCase();
-    const userTierDesc = (rawResponse?.userTier?.description || rawResponse?.userTier?.tierDisplayName || "").toLowerCase();
-    const allTierStr = `${paidTierName} ${currentTierName} ${userTierDesc}`;
-    if (allTierStr.includes("enterprise")) {
-      return { accountType: "Antigravity Enterprise", tierBadge: "ENTERPRISE" };
+  determineAccountTier(rawResponse, account) {
+    if (!rawResponse) {
+      return {
+        accountType: account?.accountType || "Standard Free",
+        tierBadge: account?.tierBadge || "STANDARD FREE"
+      };
     }
-    if (allTierStr.includes("ultra")) {
-      return { accountType: "Google One Ultra", tierBadge: "AI PREMIUM" };
+    const checkStringForPaidTier = (val) => {
+      if (!val || typeof val !== "string") return null;
+      const s = val.toLowerCase();
+      if (s.includes("enterprise") || s.includes("corporate") || s.includes("workspace_enterprise")) return "ENTERPRISE";
+      if (s.includes("ultra") || s.includes("gemini_ultra") || s.includes("ai_ultra") || s.includes("g1-ultra")) return "ULTRA";
+      if (s.includes("ai_premium") || s.includes("ai premium") || s.includes("gemini advanced") || s.includes("google_one_premium") || s.includes("g1-premium")) return "AI PREMIUM";
+      if (s.includes("user_tier_pro") || s.includes("tier_pro") || s.includes("google_one_pro") || s.includes("pro_tier") || s.includes("g1-pro") || s.includes("google ai pro") || /\bpro\b/.test(s)) {
+        return "PRO";
+      }
+      return null;
+    };
+    if (rawResponse.paidTier) {
+      if (typeof rawResponse.paidTier === "object") {
+        const id = (rawResponse.paidTier.id || "").toLowerCase();
+        const name = (rawResponse.paidTier.name || "").toLowerCase();
+        const desc = (rawResponse.paidTier.description || "").toLowerCase();
+        const combined = `${id} ${name} ${desc}`;
+        const t = checkStringForPaidTier(combined);
+        if (t) return this.mapBadgeToResult(t);
+        if (id === "free-tier" || name.includes("starter") || combined.includes("free-tier")) {
+          if (!rawResponse.userTier || !checkStringForPaidTier(typeof rawResponse.userTier === "string" ? rawResponse.userTier : JSON.stringify(rawResponse.userTier))) {
+            return { accountType: "Standard Free", tierBadge: "STANDARD FREE" };
+          }
+        }
+      } else if (typeof rawResponse.paidTier === "string") {
+        const t = checkStringForPaidTier(rawResponse.paidTier);
+        if (t) return this.mapBadgeToResult(t);
+        if (rawResponse.paidTier.toLowerCase().includes("free")) {
+          return { accountType: "Standard Free", tierBadge: "STANDARD FREE" };
+        }
+      }
     }
-    if (allTierStr.includes("ai premium") || allTierStr.includes("ai_premium") || allTierStr.includes("gemini advanced") || allTierStr.includes("premium")) {
-      return { accountType: "Google One AI Premium", tierBadge: "AI PREMIUM" };
+    if (rawResponse.userTier) {
+      if (typeof rawResponse.userTier === "object") {
+        const combined = `${rawResponse.userTier.id || ""} ${rawResponse.userTier.name || ""} ${rawResponse.userTier.description || ""}`;
+        const t = checkStringForPaidTier(combined);
+        if (t) return this.mapBadgeToResult(t);
+      } else if (typeof rawResponse.userTier === "string") {
+        const t = checkStringForPaidTier(rawResponse.userTier);
+        if (t) return this.mapBadgeToResult(t);
+      }
     }
-    if (/\b(pro|google_one_pro|tier_pro)\b/.test(allTierStr)) {
-      return { accountType: "Google One Pro", tierBadge: "PRO" };
+    const planObj = rawResponse.plan || rawResponse.subscription || rawResponse.userSubscription || rawResponse.accountPlan;
+    if (planObj) {
+      const s = typeof planObj === "string" ? planObj : JSON.stringify(planObj);
+      const t = checkStringForPaidTier(s);
+      if (t) return this.mapBadgeToResult(t);
+    }
+    const groups = rawResponse?.response?.groups || rawResponse?.groups || [];
+    const has5hBucket = groups.some(
+      (g) => (g.buckets || []).some((b) => {
+        const win = (b.window || "").toLowerCase();
+        const bId = (b.bucketId || "").toLowerCase();
+        const dName = (b.displayName || "").toLowerCase();
+        return win === "5h" || bId.includes("5h") || dName.includes("5-hour") || dName.includes("five hour");
+      })
+    );
+    if (has5hBucket) {
+      return { accountType: "Google AI Pro", tierBadge: "PRO" };
+    }
+    if (rawResponse.currentTier) {
+      if (typeof rawResponse.currentTier === "object") {
+        const id = (rawResponse.currentTier.id || "").toLowerCase();
+        const name = (rawResponse.currentTier.name || "").toLowerCase();
+        if (id !== "free-tier" && !id.includes("free")) {
+          const t = checkStringForPaidTier(`${id} ${name}`);
+          if (t) return this.mapBadgeToResult(t);
+        }
+      } else if (typeof rawResponse.currentTier === "string") {
+        if (!rawResponse.currentTier.toLowerCase().includes("free")) {
+          const t = checkStringForPaidTier(rawResponse.currentTier);
+          if (t) return this.mapBadgeToResult(t);
+        }
+      }
+    }
+    if (account?.tierBadge && account.tierBadge !== "STANDARD FREE") {
+      return {
+        accountType: account.accountType || this.mapBadgeToResult(account.tierBadge).accountType,
+        tierBadge: account.tierBadge
+      };
     }
     return { accountType: "Standard Free", tierBadge: "STANDARD FREE" };
   }
+  mapBadgeToResult(tier) {
+    switch (tier) {
+      case "ENTERPRISE":
+        return { accountType: "Antigravity Enterprise", tierBadge: "ENTERPRISE" };
+      case "ULTRA":
+        return { accountType: "Google AI Ultra", tierBadge: "ULTRA" };
+      case "AI PREMIUM":
+        return { accountType: "Google AI Premium", tierBadge: "AI PREMIUM" };
+      case "PRO":
+        return { accountType: "Google AI Pro", tierBadge: "PRO" };
+      case "STANDARD FREE":
+      default:
+        return { accountType: "Standard Free", tierBadge: "STANDARD FREE" };
+    }
+  }
   /**
-   * Computes overall aggregate percentage across all healthy accounts.
+   * Computes capacity-weighted overall aggregate percentage across all healthy accounts.
+   * Accounts with higher tier allocations (Enterprise > Ultra > AI Premium > Pro > Free) contribute proportionately:
+   * - Enterprise: 5.0x weight
+   * - Ultra: 4.0x weight
+   * - AI Premium: 3.0x weight
+   * - Pro: 1.0x weight
+   * - Free: 0.5x baseline weight (at 100% standard access) for overall; 0x weight for weekly & 5h windows.
    */
   calculateOverallSummary(accounts) {
     if (accounts.length === 0) {
@@ -1495,19 +2003,40 @@ var QuotaService = class _QuotaService {
         lastUpdated: (/* @__PURE__ */ new Date()).toISOString()
       };
     }
+    const getTierWeights = (tier) => {
+      switch (tier) {
+        case "ENTERPRISE":
+          return { overall: 5, fiveHour: 5, weekly: 5 };
+        case "ULTRA":
+          return { overall: 4, fiveHour: 4, weekly: 4 };
+        case "AI PREMIUM":
+          return { overall: 3, fiveHour: 3, weekly: 3 };
+        case "PRO":
+          return { overall: 1, fiveHour: 1, weekly: 1 };
+        case "STANDARD FREE":
+        default:
+          return { overall: 0.5, fiveHour: 0.5, weekly: 0.5 };
+      }
+    };
     const activeAcc = accounts.find((a) => a.isActive) || accounts[0];
-    let sumPercentages = 0;
-    let sum5hPercentages = 0;
-    let count5h = 0;
-    let sumWeeklyPercentages = 0;
-    let countWeekly = 0;
+    let sumOverallWeighted = 0;
+    let totalOverallWeight = 0;
+    let sum5hWeighted = 0;
+    let total5hWeight = 0;
+    let sumWeeklyWeighted = 0;
+    let totalWeeklyWeight = 0;
+    let sumGemini5h = 0, totalGemini5hWeight = 0;
+    let sumGeminiWeekly = 0, totalGeminiWeeklyWeight = 0;
+    let sumClaude5h = 0, totalClaude5hWeight = 0;
+    let sumClaudeWeekly = 0, totalClaudeWeeklyWeight = 0;
     let maxPercentage = 0;
     let healthyCount = 0;
     let lowCount = 0;
     let errorCount = 0;
     let proCount = 0;
     for (const acc of accounts) {
-      if (acc.tierBadge === "PRO" || acc.tierBadge === "AI PREMIUM" || acc.tierBadge === "ENTERPRISE") {
+      const isFree = !acc.tierBadge || acc.tierBadge === "STANDARD FREE";
+      if (!isFree) {
         proCount++;
       }
       if (acc.isBanned || acc.status === "auth_failed" || acc.status === "banned") {
@@ -1515,30 +2044,64 @@ var QuotaService = class _QuotaService {
         continue;
       }
       healthyCount++;
-      const p = acc.averageQuotaPercentage || 0;
-      sumPercentages += p;
+      const p = acc.averageQuotaPercentage ?? 0;
       if (p > maxPercentage) maxPercentage = p;
       if (p < 20) {
         lowCount++;
       }
-      if (acc.fiveHourQuotaPercentage !== void 0) {
-        sum5hPercentages += acc.fiveHourQuotaPercentage;
-        count5h++;
+      const weights = getTierWeights(acc.tierBadge);
+      const accWeight = weights.overall;
+      sumOverallWeighted += p * accWeight;
+      totalOverallWeight += accWeight;
+      const has5h = acc.fiveHourQuotaPercentage !== void 0 || acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled;
+      if (has5h) {
+        const val5h = acc.fiveHourQuotaPercentage ?? acc.geminiGroup?.fiveHour?.percentage ?? acc.claudeGptGroup?.fiveHour?.percentage ?? 0;
+        sum5hWeighted += val5h * weights.fiveHour;
+        total5hWeight += weights.fiveHour;
       }
-      if (acc.weeklyQuotaPercentage !== void 0) {
-        sumWeeklyPercentages += acc.weeklyQuotaPercentage;
-        countWeekly++;
+      const hasWk = acc.weeklyQuotaPercentage !== void 0 || acc.geminiGroup?.weekly && !acc.geminiGroup.weekly.disabled;
+      if (hasWk) {
+        const valWk = acc.weeklyQuotaPercentage ?? acc.geminiGroup?.weekly?.percentage ?? acc.claudeGptGroup?.weekly?.percentage ?? 0;
+        sumWeeklyWeighted += valWk * weights.weekly;
+        totalWeeklyWeight += weights.weekly;
+      }
+      const g5h = acc.geminiGroup?.fiveHour;
+      if (g5h && !g5h.disabled && g5h.percentage >= 0) {
+        sumGemini5h += g5h.percentage * weights.fiveHour;
+        totalGemini5hWeight += weights.fiveHour;
+      }
+      const gWk = acc.geminiGroup?.weekly;
+      if (gWk && !gWk.disabled && gWk.percentage >= 0) {
+        sumGeminiWeekly += gWk.percentage * weights.weekly;
+        totalGeminiWeeklyWeight += weights.weekly;
+      }
+      const c5h = acc.claudeGptGroup?.fiveHour;
+      if (c5h && !c5h.disabled && c5h.percentage >= 0) {
+        sumClaude5h += c5h.percentage * weights.fiveHour;
+        totalClaude5hWeight += weights.fiveHour;
+      }
+      const cWk = acc.claudeGptGroup?.weekly;
+      if (cWk && !cWk.disabled && cWk.percentage >= 0) {
+        sumClaudeWeekly += cWk.percentage * weights.weekly;
+        totalClaudeWeeklyWeight += weights.weekly;
       }
     }
-    const validCount = Math.max(1, accounts.length - errorCount);
-    const overallPct = Math.round(sumPercentages / validCount);
-    const overall5hPct = count5h > 0 ? Math.round(sum5hPercentages / count5h) : void 0;
-    const overallWeeklyPct = countWeekly > 0 ? Math.round(sumWeeklyPercentages / countWeekly) : void 0;
+    const overallPct = totalOverallWeight > 0 ? Math.round(sumOverallWeighted / totalOverallWeight) : 0;
+    const overall5hPct = total5hWeight > 0 ? Math.round(sum5hWeighted / total5hWeight) : void 0;
+    const overallWeeklyPct = totalWeeklyWeight > 0 ? Math.round(sumWeeklyWeighted / totalWeeklyWeight) : void 0;
+    const gemini5hPct = totalGemini5hWeight > 0 ? Math.round(sumGemini5h / totalGemini5hWeight) : void 0;
+    const geminiWkPct = totalGeminiWeeklyWeight > 0 ? Math.round(sumGeminiWeekly / totalGeminiWeeklyWeight) : void 0;
+    const claude5hPct = totalClaude5hWeight > 0 ? Math.round(sumClaude5h / totalClaude5hWeight) : void 0;
+    const claudeWkPct = totalClaudeWeeklyWeight > 0 ? Math.round(sumClaudeWeekly / totalClaudeWeeklyWeight) : void 0;
     const activePct = activeAcc ? activeAcc.averageQuotaPercentage || 0 : 0;
     return {
       totalAccounts: accounts.length,
       activeAccountEmail: activeAcc?.email,
       overallPercentage: errorCount === accounts.length ? 0 : overallPct,
+      gemini5HourPercentage: gemini5hPct,
+      geminiWeeklyPercentage: geminiWkPct,
+      claude5HourPercentage: claude5hPct,
+      claudeWeeklyPercentage: claudeWkPct,
       overall5HourPercentage: overall5hPct ?? 0,
       overallWeeklyPercentage: overallWeeklyPct ?? 0,
       averageActiveAccountPercentage: activePct,
@@ -1593,22 +2156,80 @@ var AccountManager = class {
   onDidChangeState = this._onDidChangeState.event;
   async initialize() {
     this.accounts = this.storage.getAccounts();
-    this.activeEmail = this.storage.getActiveAccountEmail();
+    vscode3.window.onDidChangeWindowState((e) => {
+      if (e.focused) {
+        this.syncCurrentAccountFromIde().catch(() => {
+        });
+      }
+    });
+    await this.syncCurrentAccountFromIde();
     if (this.accounts.length === 0) {
       await this.importDetectedAccounts();
     }
     await this.refreshAllQuotas().catch((err) => console.warn("[Antigravity Swap] Initial quota refresh failed:", err));
-    const active = this.getActiveAccount();
-    if (!active || active.status === "auth_failed" || active.isBanned) {
-      const liveAccounts = this.accounts.filter((a) => a.status === "active" && !a.isBanned);
-      if (liveAccounts.length > 0) {
-        const liveCandidate = liveAccounts.find((a) => (a.averageQuotaPercentage ?? 0) > 0) || liveAccounts[0];
-        console.log(`[Antigravity Swap] Auto-switching from unavailable account (${active?.email || "none"}) to live account: ${liveCandidate.email}`);
-        await this.switchAccount(liveCandidate.email);
-        vscode3.window.showInformationMessage(`Auto-switched to active live account: ${liveCandidate.name || liveCandidate.email}`);
-      } else {
-        console.log("[Antigravity Swap] No live accounts available to auto-switch.");
+    if (this.isAutoSwitchEnabled()) {
+      await this.checkAutoSwitch();
+    }
+  }
+  /**
+   * Syncs active account status from the IDE's internal state.vscdb
+   */
+  async syncCurrentAccountFromIde() {
+    const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
+    const ideEmail = currentSession?.email;
+    if (!ideEmail) {
+      if (this.activeEmail !== void 0) {
+        this.activeEmail = void 0;
+        this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
+        await this.storage.saveAccounts(this.accounts);
+        await this.storage.setActiveAccountEmail(void 0);
+        this._onDidChangeState.fire();
       }
+      return;
+    }
+    const existingAcc = this.accounts.find((a) => a.email === ideEmail);
+    if (!existingAcc) {
+      if (this.activeEmail !== void 0 || this.accounts.some((a) => a.isActive)) {
+        console.log(`[Antigravity Swap] Current IDE account (${ideEmail}) is not in extension list. Deactivating extension accounts.`);
+        this.activeEmail = void 0;
+        this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
+        await this.storage.saveAccounts(this.accounts);
+        await this.storage.setActiveAccountEmail(void 0);
+        this._onDidChangeState.fire();
+      }
+      return;
+    }
+    let changed = false;
+    if (currentSession.accessToken) {
+      const existingTokens = await this.storage.getAccountTokens(ideEmail);
+      const tokens = {
+        accessToken: currentSession.accessToken,
+        refreshToken: currentSession.refreshToken || existingTokens?.refreshToken,
+        expiresAt: Date.now() + 3600 * 1e3
+      };
+      await this.storage.saveAccountTokens(ideEmail, tokens);
+    }
+    if (currentSession.name && existingAcc.name !== currentSession.name) {
+      existingAcc.name = currentSession.name;
+      changed = true;
+    }
+    if (currentSession.avatarUrl && existingAcc.avatarUrl !== currentSession.avatarUrl) {
+      existingAcc.avatarUrl = currentSession.avatarUrl;
+      changed = true;
+    }
+    if (this.activeEmail !== ideEmail || !existingAcc.isActive) {
+      this.activeEmail = ideEmail;
+      this.accounts = this.accounts.map((a) => ({
+        ...a,
+        isActive: a.email === ideEmail,
+        lastUsedAt: a.email === ideEmail ? (/* @__PURE__ */ new Date()).toISOString() : a.lastUsedAt
+      }));
+      changed = true;
+    }
+    if (changed) {
+      await this.storage.saveAccounts(this.accounts);
+      await this.storage.setActiveAccountEmail(ideEmail);
+      this._onDidChangeState.fire();
     }
   }
   getAccounts() {
@@ -1622,9 +2243,6 @@ var AccountManager = class {
   getOverallSummary() {
     return this.quotaService.calculateOverallSummary(this.accounts);
   }
-  /**
-   * Switches to the given account and relaunches Antigravity IDE with the new account loaded into memory.
-   */
   isAutoSwitchEnabled() {
     return this.storage.getAutoSwitchEnabled();
   }
@@ -1710,13 +2328,18 @@ var AccountManager = class {
     if (isManual) {
       await this.storage.setAutoSwitchEnabled(false);
     }
-    await this.storage.liveSwitchOAuthToken(target, tokens);
     await this.storage.syncToIdeStateDb(target, tokens);
     await this.storage.syncToCloudAccountsDb(email);
+    try {
+      await vscode3.commands.executeCommand("antigravity.restartLanguageServer");
+      console.log("[Antigravity Swap] Executed antigravity.restartLanguageServer successfully");
+    } catch (lsErr) {
+      console.warn("[Antigravity Swap] restartLanguageServer command warning:", lsErr?.message || lsErr);
+    }
     this._onDidChangeState.fire();
     this.refreshAccountQuota(email).catch(() => {
     });
-    vscode3.window.showInformationMessage(`Switched to: ${target.name || email}! (Live switch complete)`);
+    vscode3.window.showInformationMessage(`Switched to: ${target.name || email}!`);
     return true;
   }
   /**
@@ -1790,9 +2413,10 @@ var AccountManager = class {
       vscode3.window.showWarningMessage("No active Antigravity session with valid access token found in state database.");
       return null;
     }
+    const existingTokens = await this.storage.getAccountTokens(current.email);
     const tokens = {
       accessToken: current.accessToken,
-      refreshToken: current.refreshToken,
+      refreshToken: current.refreshToken || existingTokens?.refreshToken,
       expiresAt: Date.now() + 3600 * 1e3
     };
     await this.storage.saveAccountTokens(current.email, tokens);
@@ -1973,6 +2597,44 @@ var AccountManager = class {
     this._onDidChangeState.fire();
   }
   /**
+   * Removes multiple accounts simultaneously.
+   */
+  async removeMultipleAccounts(emails) {
+    if (!emails || emails.length === 0) return;
+    const emailSet = new Set(emails);
+    const wasActiveRemoved = this.activeEmail && emailSet.has(this.activeEmail);
+    this.accounts = this.accounts.filter((a) => !emailSet.has(a.email));
+    await this.storage.saveAccounts(this.accounts);
+    for (const email of emails) {
+      await this.storage.removeAccountTokens(email);
+    }
+    if (wasActiveRemoved && this.accounts.length > 0) {
+      const nextHealthy = this.accounts.find((a) => !a.isBanned && a.status === "active") || this.accounts[0];
+      if (nextHealthy && nextHealthy.status === "active") {
+        await this.switchAccount(nextHealthy.email);
+      } else {
+        this.activeEmail = void 0;
+        await this.storage.setActiveAccountEmail(void 0);
+      }
+    } else if (this.accounts.length === 0) {
+      this.activeEmail = void 0;
+      await this.storage.setActiveAccountEmail(void 0);
+    }
+    vscode3.window.showInformationMessage(`Removed ${emails.length} account(s).`);
+    this._onDidChangeState.fire();
+  }
+  /**
+   * Refreshes quota balances for multiple selected accounts.
+   */
+  async refreshMultipleAccounts(emails) {
+    if (!emails || emails.length === 0) return;
+    for (const email of emails) {
+      await this.refreshAccountQuota(email);
+    }
+    await this.checkAutoSwitch();
+    this._onDidChangeState.fire();
+  }
+  /**
    * Refreshes quota balances for all accounts with credentials.
    */
   async refreshAllQuotas() {
@@ -2001,9 +2663,16 @@ var AccountManager = class {
       await this.storage.saveAccountTokens(email, newTokens);
     });
     acc.quotas = res.quotas;
+    acc.quotaGroups = res.quotaGroups;
+    acc.geminiGroup = res.geminiGroup;
+    acc.claudeGptGroup = res.claudeGptGroup;
     acc.averageQuotaPercentage = res.averagePercentage;
     acc.fiveHourQuotaPercentage = res.fiveHourPercentage;
     acc.weeklyQuotaPercentage = res.weeklyPercentage;
+    acc.fiveHourResetTime = res.fiveHourResetTime;
+    acc.fiveHourResetCountdown = res.fiveHourResetCountdown;
+    acc.weeklyResetTime = res.weeklyResetTime;
+    acc.weeklyResetCountdown = res.weeklyResetCountdown;
     acc.has5HourQuota = res.has5HourQuota;
     acc.hasWeeklyQuota = res.hasWeeklyQuota;
     acc.accountType = res.accountType;
@@ -2021,6 +2690,7 @@ var AccountManager = class {
    * Heartbeat execution: polls active account quota and checks background account status.
    */
   async runHeartbeatTick() {
+    await this.syncCurrentAccountFromIde();
     const active = this.getActiveAccount();
     if (active) {
       await this.refreshAccountQuota(active.email);
@@ -2046,8 +2716,8 @@ var AccountManager = class {
     if (!autoSwitch) return;
     const active = this.getActiveAccount();
     if (!active) return;
-    const config = vscode3.workspace.getConfiguration("antigravitySwap");
-    const threshold = config.get("lowQuotaThresholdPercent", 10);
+    const config = vscode3.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+    const threshold = config.get(CONFIG_KEYS.LOW_QUOTA_THRESHOLD, EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT);
     const isDepleted = active.averageQuotaPercentage <= threshold;
     const isUnusable = active.isBanned || active.status === "auth_failed" || active.status === "banned";
     if (isDepleted || isUnusable) {
@@ -2338,6 +3008,7 @@ var WebviewProvider = class {
   }
   static viewType = "antigravitySwap.dashboardView";
   _view;
+  _panel;
   resolveWebviewView(webviewView, _context, _token) {
     this._view = webviewView;
     webviewView.webview.options = {
@@ -2345,33 +3016,100 @@ var WebviewProvider = class {
       localResourceRoots: [this.extensionUri]
     };
     webviewView.webview.html = this.getHtmlContent(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage(async (data) => {
-      console.log("[Antigravity Swap] Webview message:", data);
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        this.accountManager.syncCurrentAccountFromIde().catch(() => {
+        });
+        this.updateWebview();
+      }
+    });
+    this.accountManager.syncCurrentAccountFromIde().then(() => this.updateWebview());
+    webviewView.webview.onDidReceiveMessage((data) => this.handleWebviewMessage(data));
+    this.updateWebview();
+  }
+  /**
+   * Opens or reveals the Dashboard and automatically detaches it into a real native OS window.
+   */
+  async openDetachedPanel() {
+    if (this._panel) {
+      this._panel.reveal(vscode5.ViewColumn.Active);
       try {
-        switch (data.command) {
-          case "switchAccount":
-            await this.accountManager.switchAccount(data.email, data.isManual === true);
-            break;
-          case "relogin":
-          case "reloginAccount":
-            await this.accountManager.reloginAccount(data.email);
-            break;
-          case "refreshAll":
-            await vscode5.commands.executeCommand("antigravitySwap.refreshQuotas");
-            break;
-          case "refreshAccount":
-            await this.accountManager.refreshAccountQuota(data.email);
-            break;
-          case "addOAuth":
-            await vscode5.commands.executeCommand("antigravitySwap.addAccount");
-            break;
-          case "importCurrentAntigravity":
-            await this.accountManager.importCurrentAntigravityAccount();
-            break;
-          case "addManual":
-            await vscode5.commands.executeCommand("antigravitySwap.addAccountManual");
-            break;
-          case "removeAccount":
+        await vscode5.commands.executeCommand("workbench.action.moveEditorToNewWindow");
+      } catch {
+      }
+      return;
+    }
+    this._panel = vscode5.window.createWebviewPanel(
+      "antigravitySwap.detachedDashboard",
+      "Antigravity Swap Dashboard",
+      vscode5.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this.extensionUri]
+      }
+    );
+    this._panel.iconPath = {
+      light: vscode5.Uri.joinPath(this.extensionUri, "media", "icon.png"),
+      dark: vscode5.Uri.joinPath(this.extensionUri, "media", "icon.png")
+    };
+    this._panel.webview.html = this.getHtmlContent(this._panel.webview);
+    this._panel.webview.onDidReceiveMessage((data) => this.handleWebviewMessage(data));
+    this._panel.onDidDispose(() => {
+      this._panel = void 0;
+    });
+    this.updateWebview();
+    setTimeout(async () => {
+      try {
+        await vscode5.commands.executeCommand("workbench.action.moveEditorToNewWindow");
+      } catch (e) {
+        console.warn("[Antigravity Swap] Could not auto-move to new window:", e);
+      }
+    }, 100);
+  }
+  async handleWebviewMessage(data) {
+    console.log("[Antigravity Swap] Webview message:", data);
+    try {
+      switch (data.command) {
+        case "popOut":
+          this.openDetachedPanel();
+          break;
+        case "switchAccount":
+          await this.accountManager.switchAccount(data.email, data.isManual === true);
+          break;
+        case "relogin":
+        case "reloginAccount":
+          await this.accountManager.reloginAccount(data.email);
+          break;
+        case "refreshAll":
+          await vscode5.commands.executeCommand("antigravitySwap.refreshQuotas");
+          break;
+        case "refreshAccount":
+          await this.accountManager.refreshAccountQuota(data.email);
+          break;
+        case "addOAuth":
+          await vscode5.commands.executeCommand("antigravitySwap.addAccount");
+          break;
+        case "importCurrentAntigravity":
+          await this.accountManager.importCurrentAntigravityAccount();
+          break;
+        case "addManual":
+          await vscode5.commands.executeCommand("antigravitySwap.addAccountManual");
+          break;
+        case "refreshMultipleAccounts":
+          if (Array.isArray(data.emails) && data.emails.length > 0) {
+            await this.accountManager.refreshMultipleAccounts(data.emails);
+          }
+          break;
+        case "removeMultipleAccounts":
+          if (Array.isArray(data.emails) && data.emails.length > 0) {
+            await this.accountManager.removeMultipleAccounts(data.emails);
+          }
+          break;
+        case "removeAccount":
+          if (data.confirmed) {
+            await this.accountManager.removeAccount(data.email);
+          } else {
             const confirm = await vscode5.window.showWarningMessage(
               `Remove account ${data.email} from Antigravity Swap?`,
               { modal: true },
@@ -2380,35 +3118,39 @@ var WebviewProvider = class {
             if (confirm === "Remove") {
               await this.accountManager.removeAccount(data.email);
             }
-            break;
-          case "setAutoSwitch":
-            await this.accountManager.setAutoSwitchEnabled(data.enabled);
-            break;
-          case "ready":
-            this.updateWebview();
-            break;
-        }
-      } catch (err) {
-        console.error("[Antigravity Swap] Webview command error:", err);
-        vscode5.window.showErrorMessage(`Action failed: ${err.message}`);
+          }
+          break;
+        case "setAutoSwitch":
+          await this.accountManager.setAutoSwitchEnabled(data.enabled);
+          break;
+        case "ready":
+          this.updateWebview();
+          break;
       }
-    });
-    this.updateWebview();
+    } catch (err) {
+      console.error("[Antigravity Swap] Webview command error:", err);
+      vscode5.window.showErrorMessage(`Action failed: ${err.message}`);
+    }
   }
   updateWebview() {
-    if (!this._view) return;
     const accounts = this.accountManager.getAccounts();
     const activeAccount = this.accountManager.getActiveAccount();
     const overall = this.accountManager.getOverallSummary();
     const heartbeat = this.heartbeatService.getHeartbeatInfo();
-    this._view.webview.postMessage({
+    const stateMessage = {
       type: "stateUpdate",
       accounts,
       activeAccount,
       overall,
       heartbeat,
       autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled()
-    });
+    };
+    if (this._view) {
+      this._view.webview.postMessage(stateMessage);
+    }
+    if (this._panel) {
+      this._panel.webview.postMessage(stateMessage);
+    }
   }
   getHtmlContent(webview) {
     const htmlPath = path2.join(this.extensionUri.fsPath, "dist", "webview", "index.html");
@@ -2526,17 +3268,19 @@ async function activate(context) {
   const quotaService = new QuotaService(oauthService);
   const accountManager = new AccountManager(storageService, oauthService, quotaService);
   const heartbeatService = new HeartbeatService(accountManager);
-  await accountManager.initialize();
-  const config = vscode7.workspace.getConfiguration("antigravitySwap");
-  const heartbeatSec = config.get("heartbeatIntervalSeconds", 30);
-  heartbeatService.start(heartbeatSec);
-  context.subscriptions.push(heartbeatService);
   const webviewProvider = new WebviewProvider(context.extensionUri, accountManager, heartbeatService);
   context.subscriptions.push(
     vscode7.window.registerWebviewViewProvider(WebviewProvider.viewType, webviewProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
+  accountManager.initialize().catch((err) => {
+    console.error("[Antigravity Swap] AccountManager initialization error:", err);
+  });
+  const config = vscode7.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+  const heartbeatSec = config.get(CONFIG_KEYS.HEARTBEAT_INTERVAL, EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
+  heartbeatService.start(heartbeatSec);
+  context.subscriptions.push(heartbeatService);
   const statusBar = new StatusBarService(accountManager);
   context.subscriptions.push(statusBar);
   context.subscriptions.push(
@@ -2665,8 +3409,11 @@ async function activate(context) {
     vscode7.commands.registerCommand("antigravitySwap.importCurrentAntigravity", async () => {
       await accountManager.importCurrentAntigravityAccount();
     }),
-    vscode7.commands.registerCommand("antigravitySwap.openDashboard", async () => {
-      await vscode7.commands.executeCommand("antigravitySwap.dashboardView.focus");
+    vscode7.commands.registerCommand("antigravitySwap.popOutDashboard", () => {
+      webviewProvider.openDetachedPanel();
+    }),
+    vscode7.commands.registerCommand("antigravitySwap.openDashboard", () => {
+      webviewProvider.openDetachedPanel();
     })
   );
   console.log("[Antigravity Swap] Extension initialized with Heartbeat.");

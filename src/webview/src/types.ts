@@ -1,7 +1,30 @@
+export interface QuotaBucket {
+  bucketId: string;
+  displayName: string;
+  window: '5h' | 'weekly';
+  remainingFraction: number; // 0.0 to 1.0
+  percentage: number; // 0 to 100
+  resetTime?: string; // ISO string
+  resetCountdown?: string; // e.g. "in 2h 15m" or "6d 21h"
+  description?: string;
+  disabled?: boolean;
+  notStarted?: boolean;
+}
+
+export interface QuotaGroup {
+  id: string; // 'gemini' | 'claude_gpt'
+  name: string; // 'Gemini Models' | 'Claude and GPT models'
+  description?: string;
+  fiveHour?: QuotaBucket;
+  weekly?: QuotaBucket;
+  buckets: QuotaBucket[];
+}
+
 // Must mirror ModelQuota in src/types.ts (sent from the extension host).
 export interface ModelQuota {
   id: string;
   displayName: string;
+  groupName?: string;
   description?: string;
   remainingFraction: number; // 0.0 to 1.0
   percentage: number; // 0 to 100, -1 = unlimited/placeholder
@@ -30,9 +53,16 @@ export interface Account {
   banReason?: string;
   statusMessage?: string;
   quotas?: ModelQuota[];
+  quotaGroups?: QuotaGroup[];
+  geminiGroup?: QuotaGroup;
+  claudeGptGroup?: QuotaGroup;
   averageQuotaPercentage?: number;
   fiveHourQuotaPercentage?: number;
   weeklyQuotaPercentage?: number;
+  fiveHourResetTime?: string;
+  fiveHourResetCountdown?: string;
+  weeklyResetTime?: string;
+  weeklyResetCountdown?: string;
   hasWeeklyQuota?: boolean;
   has5HourQuota?: boolean;
 }
@@ -41,6 +71,13 @@ export interface OverallQuotaSummary {
   totalAccounts: number;
   activeAccountEmail?: string;
   overallPercentage: number;
+  
+  // Separated Group Aggregate Percentages
+  gemini5HourPercentage?: number;
+  geminiWeeklyPercentage?: number;
+  claude5HourPercentage?: number;
+  claudeWeeklyPercentage?: number;
+
   overall5HourPercentage?: number;
   overallWeeklyPercentage?: number;
   averageActiveAccountPercentage: number;

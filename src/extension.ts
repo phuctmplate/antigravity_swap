@@ -6,6 +6,7 @@ import { AccountManager } from './accountManager';
 import { StatusBarService } from './statusBar';
 import { WebviewProvider } from './webviewProvider';
 import { HeartbeatService } from './heartbeatService';
+import { CONFIG_KEYS, EXTENSION_DEFAULTS } from './constants';
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('[Antigravity Swap] Activating extension with Heartbeat & Ban detection...');
@@ -16,22 +17,24 @@ export async function activate(context: vscode.ExtensionContext) {
   const accountManager = new AccountManager(storageService, oauthService, quotaService);
   const heartbeatService = new HeartbeatService(accountManager);
 
-  // Initialize accounts and discovery
-  await accountManager.initialize();
-
-  // Start Heartbeat service
-  const config = vscode.workspace.getConfiguration('antigravitySwap');
-  const heartbeatSec = config.get<number>('heartbeatIntervalSeconds', 30);
-  heartbeatService.start(heartbeatSec);
-  context.subscriptions.push(heartbeatService);
-
-  // Register Webview Sidebar Provider
+  // Register Webview Sidebar Provider immediately (synchronous to prevent ServiceWorker invalid state)
   const webviewProvider = new WebviewProvider(context.extensionUri, accountManager, heartbeatService);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(WebviewProvider.viewType, webviewProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     })
   );
+
+  // Initialize accounts in background without blocking webview registration
+  accountManager.initialize().catch((err) => {
+    console.error('[Antigravity Swap] AccountManager initialization error:', err);
+  });
+
+  // Start Heartbeat service
+  const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+  const heartbeatSec = config.get<number>(CONFIG_KEYS.HEARTBEAT_INTERVAL, EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
+  heartbeatService.start(heartbeatSec);
+  context.subscriptions.push(heartbeatService);
 
   // Register Status Bar
   const statusBar = new StatusBarService(accountManager);
@@ -182,8 +185,12 @@ export async function activate(context: vscode.ExtensionContext) {
       await accountManager.importCurrentAntigravityAccount();
     }),
 
-    vscode.commands.registerCommand('antigravitySwap.openDashboard', async () => {
-      await vscode.commands.executeCommand('antigravitySwap.dashboardView.focus');
+    vscode.commands.registerCommand('antigravitySwap.popOutDashboard', () => {
+      webviewProvider.openDetachedPanel();
+    }),
+
+    vscode.commands.registerCommand('antigravitySwap.openDashboard', () => {
+      webviewProvider.openDetachedPanel();
     })
   );
 

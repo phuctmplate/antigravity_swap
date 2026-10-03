@@ -3,24 +3,10 @@ import * as https from 'https';
 import * as url from 'url';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import * as path from 'path';
-import * as os from 'os';
-import * as fs from 'fs';
 import { OAuthTokens } from './types';
+import { OAUTH_CONFIG, API_ENDPOINTS } from './constants';
 
 export class OAuthService {
-  public static readonly CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-  public static readonly CLIENT_SECRET = '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';
-  public static readonly PORTS = [8888, 8889, 8890, 8891, 8892, 45213] as const;
-  public static readonly REDIRECT_PATH = '/oauth-callback';
-  public static readonly SCOPES = [
-    'https://www.googleapis.com/auth/cloud-platform',
-    'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile',
-    'https://www.googleapis.com/auth/cclog',
-    'https://www.googleapis.com/auth/experimentsandconfigs'
-  ];
-
   /**
    * Signs in a Google account via browser OAuth flow.
    */
@@ -32,15 +18,15 @@ export class OAuthService {
    * Starts local HTTP callback server on first available port and initiates Google OAuth in browser.
    */
   private async startOAuthServerFlow(loginHint?: string): Promise<{ tokens: OAuthTokens; userInfo: { email: string; name: string; avatarUrl?: string } }> {
-    const { server, port } = await this.bindAvailableServer(OAuthService.PORTS, 0);
-    const redirectUri = `http://127.0.0.1:${port}${OAuthService.REDIRECT_PATH}`;
+    const { server, port } = await this.bindAvailableServer(OAUTH_CONFIG.PORTS, 0);
+    const redirectUri = `http://127.0.0.1:${port}${OAUTH_CONFIG.REDIRECT_PATH}`;
     const state = crypto.randomBytes(16).toString('hex');
 
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    authUrl.searchParams.set('client_id', OAuthService.CLIENT_ID);
+    authUrl.searchParams.set('client_id', OAUTH_CONFIG.CLIENT_ID);
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', OAuthService.SCOPES.join(' '));
+    authUrl.searchParams.set('scope', OAUTH_CONFIG.SCOPES.join(' '));
     authUrl.searchParams.set('access_type', 'offline');
     authUrl.searchParams.set('prompt', 'consent select_account');
     authUrl.searchParams.set('state', state);
@@ -69,7 +55,7 @@ export class OAuthService {
       activeServer.on('request', async (req, res) => {
         try {
           const reqUrl = url.parse(req.url || '', true);
-          if (reqUrl.pathname === OAuthService.REDIRECT_PATH) {
+          if (reqUrl.pathname === OAUTH_CONFIG.REDIRECT_PATH) {
             const queryState = reqUrl.query.state;
             const code = reqUrl.query.code as string;
             const error = reqUrl.query.error as string;
@@ -206,14 +192,14 @@ export class OAuthService {
    */
   public async exchangeCodeForTokens(code: string, redirectUri: string): Promise<OAuthTokens> {
     const postData = new URLSearchParams({
-      client_id: OAuthService.CLIENT_ID,
-      client_secret: OAuthService.CLIENT_SECRET,
+      client_id: OAUTH_CONFIG.CLIENT_ID,
+      client_secret: OAUTH_CONFIG.CLIENT_SECRET,
       code: code,
       grant_type: 'authorization_code',
       redirect_uri: redirectUri
     }).toString();
 
-    const response = await this.httpsPost('oauth2.googleapis.com', '/token', postData, {
+    const response = await this.httpsPost(API_ENDPOINTS.OAUTH_TOKEN_HOST, '/token', postData, {
       'Content-Type': 'application/x-www-form-urlencoded'
     });
 
@@ -235,13 +221,13 @@ export class OAuthService {
    */
   public async refreshAccessToken(refreshToken: string): Promise<OAuthTokens> {
     const postData = new URLSearchParams({
-      client_id: OAuthService.CLIENT_ID,
-      client_secret: OAuthService.CLIENT_SECRET,
+      client_id: OAUTH_CONFIG.CLIENT_ID,
+      client_secret: OAUTH_CONFIG.CLIENT_SECRET,
       refresh_token: refreshToken,
       grant_type: 'refresh_token'
     }).toString();
 
-    const response = await this.httpsPost('oauth2.googleapis.com', '/token', postData, {
+    const response = await this.httpsPost(API_ENDPOINTS.OAUTH_TOKEN_HOST, '/token', postData, {
       'Content-Type': 'application/x-www-form-urlencoded'
     });
 
@@ -270,9 +256,9 @@ export class OAuthService {
     return new Promise((resolve, reject) => {
       const req = https.request(
         {
-          hostname: 'www.googleapis.com',
+          hostname: API_ENDPOINTS.USER_INFO_HOST,
           port: 443,
-          path: '/oauth2/v3/userinfo',
+          path: API_ENDPOINTS.USER_INFO_PATH,
           method: 'GET',
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -339,9 +325,5 @@ export class OAuthService {
       req.write(body);
       req.end();
     });
-  }
-
-  private base64URLEncode(buffer: Buffer): string {
-    return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 }

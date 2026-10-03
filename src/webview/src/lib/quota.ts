@@ -19,3 +19,26 @@ export const quotaStrokeColor = (p: number): string => {
   if (p > 20) return '#f59e0b';
   return '#ef4444';
 };
+
+export const formatCountdown = (isoString?: string): string | undefined => {
+  if (!isoString) return undefined;
+  try {
+    const target = new Date(isoString).getTime();
+    if (isNaN(target)) return undefined;
+    const diff = target - Date.now();
+    if (diff <= 0) return 'Ready';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 24) {
+      const days = Math.floor(hours / 24);
+      const remHours = hours % 24;
+      return `${days}d ${remHours}h`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${mins}m`;
+    }
+    return `${mins}m`;
+  } catch {
+    return undefined;
+  }
+};

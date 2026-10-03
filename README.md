@@ -36,9 +36,9 @@
 
 ## ⚙️ Configuration Settings
 
-- `antigravitySwap.autoRefreshIntervalMinutes`: (Default: `3`) Interval in minutes to automatically poll quota updates.
+- `antigravitySwap.heartbeatIntervalSeconds`: (Default: `30`) Heartbeat interval in seconds to poll quota health and detect expired/banned accounts.
 - `antigravitySwap.autoSwitchWhenQuotaLow`: (Default: `false`) Automatically switch to another account when current active quota is exhausted.
-- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `10`) Percentage threshold to consider an account low on quota.
+- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `5`) Percentage threshold (default 5%) below which the active account triggers auto-switching to another healthy account.
 
 ---
 

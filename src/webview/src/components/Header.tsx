@@ -25,8 +25,10 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
   const getTextColor = quotaTextClass;
   const getProgressIndicator = quotaFillClass;
 
-  const fhPct = overall.overall5HourPercentage;
-  const wkPct = overall.overallWeeklyPercentage;
+  const gemini5h = overall.gemini5HourPercentage;
+  const geminiWk = overall.geminiWeeklyPercentage;
+  const claude5h = overall.claude5HourPercentage;
+  const claudeWk = overall.claudeWeeklyPercentage;
   const hasPro = (overall.proAccountsCount || 0) > 0;
 
   return (
@@ -90,39 +92,105 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
         </CardContent>
       </Card>
 
-      {/* 5-Hour and Weekly Overall Cards */}
+      {/* Separated Gemini and Claude & GPT Overall Cards */}
       <div className="grid grid-cols-2 gap-2">
+        {/* Gemini Models Card */}
         <Card className="bg-card/70 border-border/80">
-          <CardContent className="flex flex-col gap-1 p-2.5">
-            <div className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
-              <Clock className="w-3 h-3 text-muted-foreground" />
-              <span>5h Window</span>
+          <CardContent className="flex flex-col gap-1.5 p-2.5">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold text-foreground flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                <span>Gemini</span>
+              </div>
             </div>
-            <div className={`text-sm font-bold ${fhPct != null && hasPro ? getTextColor(fhPct) : 'text-muted-foreground'}`}>
-              {fhPct != null && hasPro ? `${fhPct}%` : '—'}
+
+            {/* 5h Rolling Window */}
+            {hasPro && (
+              <div className="flex flex-col gap-0.5">
+                <div className="flex justify-between items-center text-[9px]">
+                  <span className="text-muted-foreground flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5 text-sky-400" />
+                    <span>5h Window</span>
+                  </span>
+                  <span className={`font-bold ${gemini5h != null ? getTextColor(gemini5h) : 'text-muted-foreground'}`}>
+                    {gemini5h != null ? `${gemini5h}%` : '—'}
+                  </span>
+                </div>
+                <Progress
+                  value={gemini5h ?? 0}
+                  indicatorClassName={gemini5h != null ? getProgressIndicator(gemini5h) : 'bg-muted'}
+                  className="h-1.5"
+                />
+              </div>
+            )}
+
+            {/* Weekly Plan Quota */}
+            <div className="flex flex-col gap-0.5">
+              <div className="flex justify-between items-center text-[9px]">
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <Calendar className="w-2.5 h-2.5 text-purple-400" />
+                  <span>Weekly</span>
+                </span>
+                <span className={`font-bold ${geminiWk != null ? getTextColor(geminiWk) : 'text-muted-foreground'}`}>
+                  {geminiWk != null ? `${geminiWk}%` : '—'}
+                </span>
+              </div>
+              <Progress
+                value={geminiWk ?? 0}
+                indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-muted'}
+                className="h-1.5"
+              />
             </div>
-            <Progress
-              value={fhPct != null && hasPro ? fhPct : 0}
-              indicatorClassName={fhPct != null && hasPro ? getProgressIndicator(fhPct) : 'bg-muted'}
-              className="h-1.5 mt-0.5"
-            />
           </CardContent>
         </Card>
 
+        {/* Claude & GPT Models Card */}
         <Card className="bg-card/70 border-border/80">
-          <CardContent className="flex flex-col gap-1 p-2.5">
-            <div className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider flex items-center gap-1">
-              <Calendar className="w-3 h-3 text-muted-foreground" />
-              <span>Weekly</span>
+          <CardContent className="flex flex-col gap-1.5 p-2.5">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold text-foreground flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                <span>Claude & GPT</span>
+              </div>
             </div>
-            <div className={`text-sm font-bold ${wkPct != null && wkPct > 0 ? getTextColor(wkPct) : 'text-muted-foreground'}`}>
-              {wkPct != null && wkPct > 0 ? `${wkPct}%` : '—'}
+
+            {/* 5h Rolling Window */}
+            {hasPro && (
+              <div className="flex flex-col gap-0.5">
+                <div className="flex justify-between items-center text-[9px]">
+                  <span className="text-muted-foreground flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5 text-sky-400" />
+                    <span>5h Window</span>
+                  </span>
+                  <span className={`font-bold ${claude5h != null ? getTextColor(claude5h) : 'text-muted-foreground'}`}>
+                    {claude5h != null ? `${claude5h}%` : '—'}
+                  </span>
+                </div>
+                <Progress
+                  value={claude5h ?? 0}
+                  indicatorClassName={claude5h != null ? getProgressIndicator(claude5h) : 'bg-muted'}
+                  className="h-1.5"
+                />
+              </div>
+            )}
+
+            {/* Weekly Plan Quota */}
+            <div className="flex flex-col gap-0.5">
+              <div className="flex justify-between items-center text-[9px]">
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <Calendar className="w-2.5 h-2.5 text-purple-400" />
+                  <span>Weekly</span>
+                </span>
+                <span className={`font-bold ${claudeWk != null ? getTextColor(claudeWk) : 'text-muted-foreground'}`}>
+                  {claudeWk != null ? `${claudeWk}%` : '—'}
+                </span>
+              </div>
+              <Progress
+                value={claudeWk ?? 0}
+                indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-muted'}
+                className="h-1.5"
+              />
             </div>
-            <Progress
-              value={wkPct != null && wkPct > 0 ? wkPct : 0}
-              indicatorClassName={wkPct != null && wkPct > 0 ? getProgressIndicator(wkPct) : 'bg-muted'}
-              className="h-1.5 mt-0.5"
-            />
           </CardContent>
         </Card>
       </div>

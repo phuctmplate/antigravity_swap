@@ -80,44 +80,76 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
           </CardContent>
         </Card>
       ) : quotas.length === 0 ? (
-        <Card className="bg-card/50">
-          <CardContent className="p-4 text-center text-xs text-muted-foreground">
-            No quota data found for this account. Click <b className="inline-flex items-center gap-0.5"><RotateCw className="w-3 h-3" />Refresh Quotas</b> to poll balances.
+        <Card className="bg-card/50 border-border/80">
+          <CardContent className="flex flex-col items-center justify-center gap-1.5 p-4 text-center text-xs text-muted-foreground">
+            <div className="flex items-center gap-1.5 text-amber-400 font-medium">
+              <RotateCw className="w-3.5 h-3.5 animate-spin" />
+              <span>Unable to load live models from Google API.</span>
+            </div>
+            <span>Extension will automatically retry fetching in background. You can also click <b>Refresh Quotas</b> to poll now.</span>
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2">
-          {filteredQuotas.map((q, idx) => {
-            const isUnlimited = q.percentage === -1;
-            const pct = isUnlimited ? 100 : Math.max(0, Math.min(100, q.percentage || 0));
+        <div className="flex flex-col gap-4">
+          {['Gemini Models', 'Claude and GPT models'].map((groupTitle) => {
+            const isGem = groupTitle.includes('Gemini');
+            const groupModels = filteredQuotas.filter((q) => {
+              const gName = (q.groupName || '').toLowerCase();
+              if (isGem) {
+                return gName.includes('gemini') || q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash');
+              } else {
+                return gName.includes('claude') || gName.includes('gpt') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt');
+              }
+            });
+
+            if (groupModels.length === 0) return null;
 
             return (
-              <Card
-                key={`${q.id || quotaLabel(q)}-${idx}`}
-                className="bg-card/70 border-transparent hover:bg-card transition-colors"
-              >
-                <CardContent className="flex flex-col p-2.5">
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="font-semibold text-xs text-foreground truncate">{quotaLabel(q)}</span>
-                    <span className={`text-[10px] font-bold ${isUnlimited ? 'text-sky-400' : getTextColor(pct)}`}>
-                      {isUnlimited ? 'Unlimited' : `${pct}%`}
-                    </span>
-                  </div>
+              <div key={groupTitle} className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                  <span className={`w-2 h-2 rounded-full ${isGem ? 'bg-blue-500' : 'bg-amber-500'}`} />
+                  <span>{groupTitle}</span>
+                </div>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2">
+                  {groupModels.map((q, idx) => {
+                    const isPlaceholder = q.percentage === -1;
+                    const pct = isPlaceholder ? 100 : Math.max(0, Math.min(100, q.percentage || 0));
 
-                  {/* Progress bar */}
-                  <Progress
-                    value={pct}
-                    indicatorClassName={isUnlimited ? 'bg-sky-500' : getFillClass(pct)}
-                    className="h-1.5 mb-1.5"
-                  />
+                    return (
+                      <Card
+                        key={`${q.id || quotaLabel(q)}-${idx}`}
+                        className="bg-card/70 border-border/80 hover:border-border transition-colors"
+                      >
+                        <CardContent className="flex flex-col p-2.5">
+                          <div className="flex items-center justify-between gap-1 mb-1">
+                            <span className="font-semibold text-xs text-foreground truncate" title={quotaLabel(q)}>{quotaLabel(q)}</span>
+                            <span className={`text-[10px] font-bold shrink-0 ${q.disabled ? 'text-muted-foreground' : isPlaceholder ? 'text-muted-foreground' : getTextColor(pct)}`}>
+                              {q.disabled ? 'Disabled' : isPlaceholder ? 'Free Tier' : `${pct}%`}
+                            </span>
+                          </div>
 
-                  {/* Footer metadata: remaining & window type */}
-                  <div className="flex items-center justify-between text-[9px] text-muted-foreground">
-                    <span>{q.windowLabel || q.windowType}</span>
-                    {q.resetCountdown && <span className="text-muted-foreground/80">Resets {q.resetCountdown}</span>}
-                  </div>
-                </CardContent>
-              </Card>
+                          {/* Progress bar */}
+                          <Progress
+                            value={q.disabled ? 0 : pct}
+                            indicatorClassName={q.disabled ? 'bg-muted-foreground/30' : isPlaceholder ? 'bg-primary/50' : getFillClass(pct)}
+                            className="h-1.5 mb-1.5"
+                          />
+
+                          {/* Footer metadata: remaining & window type */}
+                          <div className="flex items-center justify-between text-[9px] text-muted-foreground gap-1">
+                            <span className="truncate">{q.windowLabel || q.windowType}</span>
+                            {q.disabled ? (
+                              <span className="text-amber-400 font-medium shrink-0">Limit reached</span>
+                            ) : q.resetCountdown ? (
+                              <span className="text-muted-foreground/80 shrink-0">Resets {q.resetCountdown}</span>
+                            ) : null}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
             );
           })}
         </div>

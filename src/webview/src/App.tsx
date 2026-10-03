@@ -4,9 +4,10 @@ import { Header } from './components/Header';
 import { ControllerBar } from './components/ControllerBar';
 import { AccountList } from './components/AccountList';
 import { ModelQuotas } from './components/ModelQuotas';
+import { ToastProvider } from './components/Toast';
 import { getVsCodeApi } from './vscode';
 
-export const App: React.FC = () => {
+export const AppContent: React.FC = () => {
   const [state, setState] = useState<WebviewState>({
     accounts: [],
     activeAccount: null,
@@ -26,8 +27,7 @@ export const App: React.FC = () => {
 
   const [selectedEmail, setSelectedEmail] = useState<string | null>(null);
   // Use a ref so the message handler always sees the latest selectedEmail
-  // without needing to be in the useEffect dependency array (which caused
-  // the listener to detach/reattach on every account selection).
+  // without needing to be in the useEffect dependency array
   const selectedEmailRef = useRef<string | null>(null);
   selectedEmailRef.current = selectedEmail;
 
@@ -64,7 +64,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []); // stable — no deps needed thanks to ref
+  }, []);
 
   const handleToggleAutoSwitch = (enabled: boolean) => {
     setState((prev) => ({ ...prev, autoSwitchEnabled: enabled }));
@@ -84,19 +84,34 @@ export const App: React.FC = () => {
         onToggleAutoSwitch={handleToggleAutoSwitch}
       />
 
-      {/* Accounts & Fast Switch Section */}
-      <AccountList
-        accounts={state.accounts}
-        activeAccount={state.activeAccount}
-        selectedEmail={selectedEmail}
-        onSelectAccount={setSelectedEmail}
-      />
+      {/* Main Content Area: Responsive side-by-side on wide screens */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[1.1fr_1fr] 2xl:grid-cols-[1.15fr_1fr] gap-4 items-start">
+        {/* Accounts & Fast Switch Section */}
+        <div className="min-w-0">
+          <AccountList
+            accounts={state.accounts}
+            activeAccount={state.activeAccount}
+            selectedEmail={selectedEmail}
+            onSelectAccount={setSelectedEmail}
+          />
+        </div>
 
-      {/* Model Quotas Section */}
-      <ModelQuotas
-        selectedAccount={selectedAcc}
-        activeAccount={state.activeAccount}
-      />
+        {/* Model Quotas Section (Sticky on wide screens) */}
+        <div className="min-w-0 lg:sticky lg:top-2">
+          <ModelQuotas
+            selectedAccount={selectedAcc}
+            activeAccount={state.activeAccount}
+          />
+        </div>
+      </div>
     </div>
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 };

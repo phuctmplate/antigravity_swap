@@ -2,7 +2,7 @@
   "name": "antigravity-swap",
   "displayName": "Antigravity Swap",
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "antigravity-community",
   "repository": {
     "type": "git",
@@ -90,24 +90,35 @@
         "title": "Import Active Antigravity Account",
         "category": "Antigravity Swap",
         "icon": "$(zap)"
+      },
+      {
+        "command": "antigravitySwap.popOutDashboard",
+        "title": "Pop Out Dashboard (Detach Window)",
+        "category": "Antigravity Swap",
+        "icon": "$(link-external)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "antigravitySwap.refreshQuotas",
+          "command": "antigravitySwap.popOutDashboard",
           "when": "view == antigravitySwap.dashboardView",
           "group": "navigation@1"
         },
         {
-          "command": "antigravitySwap.addAccount",
+          "command": "antigravitySwap.refreshQuotas",
           "when": "view == antigravitySwap.dashboardView",
           "group": "navigation@2"
         },
         {
-          "command": "antigravitySwap.switchAccount",
+          "command": "antigravitySwap.addAccount",
           "when": "view == antigravitySwap.dashboardView",
           "group": "navigation@3"
+        },
+        {
+          "command": "antigravitySwap.switchAccount",
+          "when": "view == antigravitySwap.dashboardView",
+          "group": "navigation@4"
         }
       ]
     },
@@ -119,11 +130,6 @@
           "default": 30,
           "description": "Heartbeat interval in seconds to poll quota health and detect expired/banned accounts."
         },
-        "antigravitySwap.autoRefreshIntervalMinutes": {
-          "type": "number",
-          "default": 3,
-          "description": "Interval in minutes to automatically refresh quota balances for all accounts."
-        },
         "antigravitySwap.autoSwitchWhenQuotaLow": {
           "type": "boolean",
           "default": false,
@@ -131,8 +137,8 @@
         },
         "antigravitySwap.lowQuotaThresholdPercent": {
           "type": "number",
-          "default": 10,
-          "description": "Threshold percentage below which an account is considered low quota."
+          "default": 5,
+          "description": "Percentage threshold (default 5%) below which the active account triggers auto-switching to another healthy account."
         }
       }
     }

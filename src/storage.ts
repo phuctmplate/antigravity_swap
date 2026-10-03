@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import { AccountInfo, OAuthTokens } from './types';
+import { STORAGE_KEYS } from './constants';
 
 export interface DiscoveredAccount {
   email: string;
@@ -14,37 +15,33 @@ export interface DiscoveredAccount {
 }
 
 export class StorageService {
-  private static readonly ACCOUNTS_KEY = 'antigravitySwap.accounts';
-  private static readonly ACTIVE_ACCOUNT_KEY = 'antigravitySwap.activeEmail';
-  private static readonly AUTO_SWITCH_KEY = 'antigravitySwap.autoSwitch';
-
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly secrets: vscode.SecretStorage
   ) {}
 
   public getAccounts(): AccountInfo[] {
-    return this.context.globalState.get<AccountInfo[]>(StorageService.ACCOUNTS_KEY, []);
+    return this.context.globalState.get<AccountInfo[]>(STORAGE_KEYS.ACCOUNTS, []);
   }
 
   public async saveAccounts(accounts: AccountInfo[]): Promise<void> {
-    await this.context.globalState.update(StorageService.ACCOUNTS_KEY, accounts);
+    await this.context.globalState.update(STORAGE_KEYS.ACCOUNTS, accounts);
   }
 
   public getActiveAccountEmail(): string | undefined {
-    return this.context.globalState.get<string>(StorageService.ACTIVE_ACCOUNT_KEY);
+    return this.context.globalState.get<string>(STORAGE_KEYS.ACTIVE_ACCOUNT);
   }
 
   public async setActiveAccountEmail(email: string | undefined): Promise<void> {
-    await this.context.globalState.update(StorageService.ACTIVE_ACCOUNT_KEY, email);
+    await this.context.globalState.update(STORAGE_KEYS.ACTIVE_ACCOUNT, email);
   }
 
   public getAutoSwitchEnabled(): boolean {
-    return this.context.globalState.get<boolean>(StorageService.AUTO_SWITCH_KEY, true);
+    return this.context.globalState.get<boolean>(STORAGE_KEYS.AUTO_SWITCH, true);
   }
 
   public async setAutoSwitchEnabled(enabled: boolean): Promise<void> {
-    await this.context.globalState.update(StorageService.AUTO_SWITCH_KEY, enabled);
+    await this.context.globalState.update(STORAGE_KEYS.AUTO_SWITCH, enabled);
   }
 
   public async getAccountTokens(email: string): Promise<OAuthTokens | null> {

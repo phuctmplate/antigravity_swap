@@ -7,6 +7,7 @@ import { HeartbeatService } from './heartbeatService';
 export class WebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravitySwap.dashboardView';
   private _view?: vscode.WebviewView;
+  private _panel?: vscode.WebviewPanel;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -31,33 +32,112 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtmlContent(webviewView.webview);
 
-    webviewView.webview.onDidReceiveMessage(async (data) => {
-      console.log('[Antigravity Swap] Webview message:', data);
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        this.accountManager.syncCurrentAccountFromIde().catch(() => {});
+        this.updateWebview();
+      }
+    });
+
+    this.accountManager.syncCurrentAccountFromIde().then(() => this.updateWebview());
+
+    webviewView.webview.onDidReceiveMessage((data) => this.handleWebviewMessage(data));
+
+    this.updateWebview();
+  }
+
+  /**
+   * Opens or reveals the Dashboard and automatically detaches it into a real native OS window.
+   */
+  public async openDetachedPanel(): Promise<void> {
+    if (this._panel) {
+      this._panel.reveal(vscode.ViewColumn.Active);
       try {
-        switch (data.command) {
-          case 'switchAccount':
-            await this.accountManager.switchAccount(data.email, data.isManual === true);
-            break;
-          case 'relogin':
-          case 'reloginAccount':
-            await this.accountManager.reloginAccount(data.email);
-            break;
-          case 'refreshAll':
-            await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
-            break;
-          case 'refreshAccount':
-            await this.accountManager.refreshAccountQuota(data.email);
-            break;
-          case 'addOAuth':
-            await vscode.commands.executeCommand('antigravitySwap.addAccount');
-            break;
-          case 'importCurrentAntigravity':
-            await this.accountManager.importCurrentAntigravityAccount();
-            break;
-          case 'addManual':
-            await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
-            break;
-          case 'removeAccount':
+        await vscode.commands.executeCommand('workbench.action.moveEditorToNewWindow');
+      } catch {}
+      return;
+    }
+
+    this._panel = vscode.window.createWebviewPanel(
+      'antigravitySwap.detachedDashboard',
+      'Antigravity Swap Dashboard',
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [this.extensionUri]
+      }
+    );
+
+    this._panel.iconPath = {
+      light: vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.png'),
+      dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.png')
+    };
+
+    this._panel.webview.html = this.getHtmlContent(this._panel.webview);
+
+    this._panel.webview.onDidReceiveMessage((data) => this.handleWebviewMessage(data));
+
+    this._panel.onDidDispose(() => {
+      this._panel = undefined;
+    });
+
+    // Send initial state to newly opened panel
+    this.updateWebview();
+
+    // Automatically detach the editor tab into a separate native floating OS window
+    setTimeout(async () => {
+      try {
+        await vscode.commands.executeCommand('workbench.action.moveEditorToNewWindow');
+      } catch (e) {
+        console.warn('[Antigravity Swap] Could not auto-move to new window:', e);
+      }
+    }, 100);
+  }
+
+  private async handleWebviewMessage(data: any): Promise<void> {
+    console.log('[Antigravity Swap] Webview message:', data);
+    try {
+      switch (data.command) {
+        case 'popOut':
+          this.openDetachedPanel();
+          break;
+        case 'switchAccount':
+          await this.accountManager.switchAccount(data.email, data.isManual === true);
+          break;
+        case 'relogin':
+        case 'reloginAccount':
+          await this.accountManager.reloginAccount(data.email);
+          break;
+        case 'refreshAll':
+          await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
+          break;
+        case 'refreshAccount':
+          await this.accountManager.refreshAccountQuota(data.email);
+          break;
+        case 'addOAuth':
+          await vscode.commands.executeCommand('antigravitySwap.addAccount');
+          break;
+        case 'importCurrentAntigravity':
+          await this.accountManager.importCurrentAntigravityAccount();
+          break;
+        case 'addManual':
+          await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
+          break;
+        case 'refreshMultipleAccounts':
+          if (Array.isArray(data.emails) && data.emails.length > 0) {
+            await this.accountManager.refreshMultipleAccounts(data.emails);
+          }
+          break;
+        case 'removeMultipleAccounts':
+          if (Array.isArray(data.emails) && data.emails.length > 0) {
+            await this.accountManager.removeMultipleAccounts(data.emails);
+          }
+          break;
+        case 'removeAccount':
+          if (data.confirmed) {
+            await this.accountManager.removeAccount(data.email);
+          } else {
             const confirm = await vscode.window.showWarningMessage(
               `Remove account ${data.email} from Antigravity Swap?`,
               { modal: true },
@@ -66,38 +146,42 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             if (confirm === 'Remove') {
               await this.accountManager.removeAccount(data.email);
             }
-            break;
-          case 'setAutoSwitch':
-            await this.accountManager.setAutoSwitchEnabled(data.enabled);
-            break;
-          case 'ready':
-            this.updateWebview();
-            break;
-        }
-      } catch (err: any) {
-        console.error('[Antigravity Swap] Webview command error:', err);
-        vscode.window.showErrorMessage(`Action failed: ${err.message}`);
+          }
+          break;
+        case 'setAutoSwitch':
+          await this.accountManager.setAutoSwitchEnabled(data.enabled);
+          break;
+        case 'ready':
+          this.updateWebview();
+          break;
       }
-    });
-
-    this.updateWebview();
+    } catch (err: any) {
+      console.error('[Antigravity Swap] Webview command error:', err);
+      vscode.window.showErrorMessage(`Action failed: ${err.message}`);
+    }
   }
 
   public updateWebview(): void {
-    if (!this._view) return;
     const accounts = this.accountManager.getAccounts();
     const activeAccount = this.accountManager.getActiveAccount();
     const overall = this.accountManager.getOverallSummary();
     const heartbeat = this.heartbeatService.getHeartbeatInfo();
 
-    this._view.webview.postMessage({
+    const stateMessage = {
       type: 'stateUpdate',
       accounts,
       activeAccount,
       overall,
       heartbeat,
       autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled()
-    });
+    };
+
+    if (this._view) {
+      this._view.webview.postMessage(stateMessage);
+    }
+    if (this._panel) {
+      this._panel.webview.postMessage(stateMessage);
+    }
   }
 
   private getHtmlContent(webview: vscode.Webview): string {
