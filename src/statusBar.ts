@@ -51,32 +51,45 @@ export class StatusBarService implements vscode.Disposable {
     const displayName = active.name ? active.name.split(' ')[0] : active.email.split('@')[0];
     this.statusBarItem.text = `${icon} ${displayName}: ${activePct}% | All: ${overallPct}%`;
 
-    // Detailed multi-line tooltip
-    const lines = [
-      `Antigravity Swap - Account & Quota Status`,
-      `─────────────────────────────────────`,
-      `Active: ${active.name || active.email} (${active.email})`,
-      `Active Account Quota: ${activePct}%`,
-      `Overall Across ${overall.totalAccounts} Account(s): ${overallPct}%`,
-      ``,
-      `--- Model Quotas (${active.email}) ---`
-    ];
+    // Build a clean, readable MarkdownString tooltip
+    const md = new vscode.MarkdownString('', true);
+    md.isTrusted = true;
+    md.supportThemeIcons = true;
 
-    if (active.quotas && active.quotas.length > 0) {
-      for (const q of active.quotas.slice(0, 6)) {
-        const bar = this.getProgressBar(q.percentage);
-        lines.push(`• ${q.displayName}: ${bar} ${q.percentage}% ${q.resetCountdown ? '(' + q.resetCountdown + ')' : ''}`);
+    // Header
+    md.appendMarkdown(`### $(zap) Antigravity Swap\n\n`);
+
+    // Active account summary
+    const accountHealthIcon = active.isBanned ? '$(error)' : activePct < 20 ? '$(warning)' : '$(check)';
+    md.appendMarkdown(`**Active:** ${active.name || active.email}\n\n`);
+    md.appendMarkdown(`${accountHealthIcon} \`${active.email}\` — **${activePct}%** remaining\n\n`);
+
+    // Overall summary line
+    const allAccIcon = overallPct < 20 ? '$(warning)' : '$(account)';
+    md.appendMarkdown(`${allAccIcon} **All ${overall.totalAccounts} account(s):** ${overallPct}% avg\n\n`);
+
+    // Model quotas section
+    const quotas = active.quotas ?? [];
+    if (quotas.length > 0) {
+      md.appendMarkdown(`---\n\n`);
+      md.appendMarkdown(`**$(pulse) Model Quotas**\n\n`);
+      for (const q of quotas) {
+        const isUnlimited = q.percentage === -1;
+        const pct = isUnlimited ? 100 : Math.max(0, Math.min(100, q.percentage || 0));
+        const healthIcon = isUnlimited ? '$(infinity)' : pct > 50 ? '$(check)' : pct > 20 ? '$(warning)' : '$(error)';
+        const pctLabel = isUnlimited ? 'Unlimited' : `${pct}%`;
+        const resetInfo = q.resetCountdown ? ` · resets ${q.resetCountdown}` : '';
+        md.appendMarkdown(`${healthIcon} **${q.displayName}** — ${pctLabel}${resetInfo}\n\n`);
       }
+    } else if (!active.isBanned) {
+      md.appendMarkdown(`---\n\n`);
+      md.appendMarkdown(`$(info) No quota data yet. Open the panel and click **Refresh Quotas**.\n\n`);
     }
 
-    lines.push(``, `Click to switch accounts or open dashboard`);
-    this.statusBarItem.tooltip = new vscode.MarkdownString(lines.join('\n'));
-  }
+    md.appendMarkdown(`---\n\n`);
+    md.appendMarkdown(`*$(list-unordered) Click to open the account switcher*`);
 
-  private getProgressBar(pct: number): string {
-    const filled = Math.round(pct / 20);
-    const empty = 5 - filled;
-    return '█'.repeat(filled) + '░'.repeat(Math.max(0, empty));
+    this.statusBarItem.tooltip = md;
   }
 
   public async showQuickMenu(): Promise<void> {

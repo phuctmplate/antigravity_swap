@@ -45,3 +45,74 @@
 ## 🔒 Security & Privacy
 
 All OAuth tokens and credentials are encrypted and stored inside VS Code's native secure storage (`SecretStorage`), which uses OS-level DPAPI / Keytar encryption.
+
+---
+
+## 🏗️ Development & Build
+
+### Prerequisites
+
+- **Node.js** ≥ 18
+- **npm** ≥ 9
+- **Antigravity IDE** (VS Code-compatible, engine `^1.90.0`)
+
+### Setup
+
+```bash
+git clone https://github.com/antigravity-community/antigravity-swap
+cd antigravity-swap
+npm install
+```
+
+### Build
+
+```bash
+# Build both the webview (React/Vite) and extension host (esbuild)
+npm run build
+```
+
+| Script | What it does |
+| :--- | :--- |
+| `npm run build` | Full build: webview + extension |
+| `npm run build:webview` | Vite build only — outputs `dist/webview/index.html` (single-file bundle) |
+| `npm run build:extension` | esbuild only — outputs `dist/extension.js` |
+
+### Package as `.vsix`
+
+```bash
+# Requires @vscode/vsce (already in devDependencies)
+npx @vscode/vsce package --no-dependencies
+```
+
+This produces `antigravity-swap-1.0.0.vsix` in the project root.
+
+### Install locally
+
+```bash
+code --install-extension antigravity-swap-1.0.0.vsix --force
+```
+
+Then reload the IDE window: `Ctrl+Shift+P` → **Developer: Reload Window**.
+
+### Project Structure
+
+```
+antigravity_swap/
+├─ src/
+│  ├─ extension.ts          # Extension entry point
+│  ├─ webviewProvider.ts    # Sidebar webview host
+│  ├─ accountManager.ts     # Multi-account state & switching
+│  ├─ heartbeatService.ts   # Background quota polling
+│  └─ webview/              # React app (Vite + Tailwind)
+│     └─ src/
+│        ├─ main.tsx
+│        ├─ App.tsx
+│        ├─ index.css
+│        └─ components/
+├─ dist/                    # Build output (gitignored)
+│  ├─ extension.js
+│  └─ webview/index.html    # Single-file inlined bundle
+├─ vite.config.ts
+└─ package.json
+```
+
