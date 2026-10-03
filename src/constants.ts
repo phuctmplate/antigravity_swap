@@ -7,14 +7,8 @@
  * Note: Decoded at runtime to avoid triggering false-positive alerts on GitHub Secret Scanners.
  */
 export const OAUTH_CONFIG = {
-  CLIENT_ID: Buffer.from(
-    'MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==',
-    'base64'
-  ).toString('utf-8'),
-  CLIENT_SECRET: Buffer.from(
-    'R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=',
-    'base64'
-  ).toString('utf-8'),
+  CLIENT_ID: '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com',
+  CLIENT_SECRET: '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',
   PORTS: [8888, 8889, 8890, 8891, 8892, 45213] as const,
   REDIRECT_PATH: '/oauth-callback',
   SCOPES: [
