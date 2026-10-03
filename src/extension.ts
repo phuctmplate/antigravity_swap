@@ -5,22 +5,28 @@ import { QuotaService } from './quotaService';
 import { AccountManager } from './accountManager';
 import { StatusBarService } from './statusBar';
 import { WebviewProvider } from './webviewProvider';
-
-let refreshTimer: NodeJS.Timeout | undefined;
+import { HeartbeatService } from './heartbeatService';
 
 export async function activate(context: vscode.ExtensionContext) {
-  console.log('[Antigravity Swap] Activating extension...');
+  console.log('[Antigravity Swap] Activating extension with Heartbeat & Ban detection...');
 
   const storageService = new StorageService(context, context.secrets);
   const oauthService = new OAuthService();
   const quotaService = new QuotaService(oauthService);
   const accountManager = new AccountManager(storageService, oauthService, quotaService);
+  const heartbeatService = new HeartbeatService(accountManager);
 
   // Initialize accounts and discovery
   await accountManager.initialize();
 
+  // Start Heartbeat service
+  const config = vscode.workspace.getConfiguration('antigravitySwap');
+  const heartbeatSec = config.get<number>('heartbeatIntervalSeconds', 30);
+  heartbeatService.start(heartbeatSec);
+  context.subscriptions.push(heartbeatService);
+
   // Register Webview Sidebar Provider
-  const webviewProvider = new WebviewProvider(context.extensionUri, accountManager);
+  const webviewProvider = new WebviewProvider(context.extensionUri, accountManager, heartbeatService);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(WebviewProvider.viewType, webviewProvider, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -56,11 +62,17 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const items = accounts.map((a) => ({
-        label: `${a.isActive ? '$(check) ' : ''}${a.name || a.email}`,
-        description: `${a.email} (${a.averageQuotaPercentage}% quota left)`,
-        email: a.email
-      }));
+      const items = accounts.map((a) => {
+        let statusBadge = '';
+        if (a.isBanned) statusBadge = ' [⛔ BANNED]';
+        else if (a.status === 'auth_failed') statusBadge = ' [⚠️ AUTH FAILED]';
+
+        return {
+          label: `${a.isActive ? '$(check) ' : ''}${a.name || a.email}${statusBadge}`,
+          description: `${a.email} (${a.averageQuotaPercentage}% quota left)`,
+          email: a.email
+        };
+      });
 
       const pick = await vscode.window.showQuickPick(items, {
         placeHolder: 'Select account to switch without reload'
@@ -69,6 +81,24 @@ export async function activate(context: vscode.ExtensionContext) {
       if (pick) {
         await accountManager.switchAccount(pick.email);
       }
+    }),
+
+    vscode.commands.registerCommand('antigravitySwap.reloginAccount', async (emailArg?: string) => {
+      let email = emailArg;
+      if (!email) {
+        const accounts = accountManager.getAccounts();
+        const pick = await vscode.window.showQuickPick(
+          accounts.map((a) => ({
+            label: `${a.isBanned ? '⛔ ' : ''}${a.email}`,
+            description: a.statusMessage || a.name,
+            email: a.email
+          })),
+          { placeHolder: 'Select account to re-authenticate' }
+        );
+        if (!pick) return;
+        email = pick.email;
+      }
+      await accountManager.reloginAccount(email);
     }),
 
     vscode.commands.registerCommand('antigravitySwap.addAccount', async () => {
@@ -129,12 +159,12 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: 'Refreshing all Antigravity account quotas...',
+          title: 'Heartbeat: Refreshing all Antigravity account quotas...',
           cancellable: false
         },
         async () => {
-          await accountManager.refreshAllQuotas();
-          vscode.window.showInformationMessage('⚡ Quotas updated successfully!');
+          await heartbeatService.tick();
+          vscode.window.showInformationMessage('⚡ Heartbeat quota check completed!');
         }
       );
     }),
@@ -148,35 +178,16 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
 
+    vscode.commands.registerCommand('antigravitySwap.importCurrentAntigravity', async () => {
+      await accountManager.importCurrentAntigravityAccount();
+    }),
+
     vscode.commands.registerCommand('antigravitySwap.openDashboard', async () => {
       await vscode.commands.executeCommand('antigravitySwap.dashboardView.focus');
     })
   );
 
-  // Setup periodic background refresh
-  const config = vscode.workspace.getConfiguration('antigravitySwap');
-  const intervalMinutes = config.get<number>('autoRefreshIntervalMinutes', 3);
-  const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
-
-  refreshTimer = setInterval(() => {
-    accountManager.refreshAllQuotas().catch((err) => {
-      console.warn('[Antigravity Swap] Background quota refresh error:', err);
-    });
-  }, intervalMs);
-
-  context.subscriptions.push({
-    dispose: () => {
-      if (refreshTimer) {
-        clearInterval(refreshTimer);
-      }
-    }
-  });
-
-  console.log('[Antigravity Swap] Extension active!');
+  console.log('[Antigravity Swap] Extension initialized with Heartbeat.');
 }
 
-export function deactivate() {
-  if (refreshTimer) {
-    clearInterval(refreshTimer);
-  }
-}
+export function deactivate() {}

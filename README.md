@@ -7,34 +7,15 @@
 ## ✨ Key Features
 
 - 🔄 **Zero-Reload Fast Account Switching**: Switch between multiple Google / Antigravity accounts instantly without reloading or restarting your IDE window.
+- ⚡ **1-Click Import from Antigravity**: Auto-detects and imports the currently logged-in account and active session tokens directly from Antigravity IDE state database.
 - 📊 **Real-time Per-Model Quota Tracking**: View live remaining balance (%) and countdown reset timers for every model (Gemini 3.7 Flash High/Low, Gemini 3 Flash, Claude 3.7 Sonnet / Opus Thinking, GPT-OSS 120B, etc.).
-- 🌐 **Overall Quota Across All Accounts**: Real-time gauge computing your combined aggregate quota capacity across every registered account.
-- ⚡ **Automated Background Token Refresh**: Handles OAuth access token expiration in the background without interrupting your workflow.
+- ⏱ **5-Hour Rolling & Weekly Quota Support**: Displays distinct 5-Hour rolling window and Weekly plan balance breakdowns for Pro / Enterprise accounts.
+- 🛡️ **Account Health & Ban Detection**: Monitors Google TOS ban/suspension status, credential expiry, and provides 1-click **Re-login / Reconnect**.
+- 🌐 **Overall Aggregate Quota**: Real-time radial SVG gauge computing your combined capacity across every registered account.
 - 🤖 **Auto-Switch on Low Quota**: Automatically switches to another healthy account when your active account reaches a low balance threshold.
+- 💓 **Silent Background Heartbeat**: Automatic polling runs quietly under the hood to ensure background account health and prompt auto-switching.
 - 🎨 **Ultra-Modern Cyberpunk / Glassmorphic UI**: Beautiful sidebar dashboard with radial SVG gauges, animated gradient progress bars, active account cards, and quick action bars.
-- 💡 **Status Bar Widget & Quick Menu**: Monitor active account quota and overall quota at a glance right in the status bar with 1-click QuickPick switching.
-- 🔍 **Auto-Discovery**: Detects and imports previously logged in accounts from your local Antigravity IDE configuration automatically.
-
----
-
-## 🚀 Installation & Building
-
-```bash
-cd "antigravity_swap"
-
-# 1. Install dependencies
-npm install
-
-# 2. Build the extension bundle
-npm run build
-
-# 3. (Optional) Package to .vsix
-npx @vscode/vsce package
-```
-
-To install directly in Antigravity IDE for development:
-- Press `F5` inside Antigravity IDE to launch the Extension Development Host, or
-- Copy the folder into `~/.antigravity-ide/extensions/antigravity-swap-1.0.0` or install the generated `.vsix` file via `Extensions: Install from VSIX...`.
+- 💡 **Status Bar Widget & Quick Menu**: Accurate active account status and quota in the status bar with 1-click QuickPick menu.
 
 ---
 
@@ -43,11 +24,13 @@ To install directly in Antigravity IDE for development:
 | Command | Title | Description |
 | :--- | :--- | :--- |
 | `antigravitySwap.switchAccount` | **Switch Active Account** | Switch between accounts instantly without reloading |
+| `antigravitySwap.importCurrentAntigravity` | **Import Active Antigravity Account** | 1-click import of the active session from Antigravity IDE |
+| `antigravitySwap.reloginAccount` | **Re-login / Reconnect Account** | Re-authenticate or update credentials for an account |
 | `antigravitySwap.addAccount` | **Add Account (Google OAuth)** | Connect a new account via Google OAuth web flow |
 | `antigravitySwap.addAccountManual` | **Add Account Manually** | Paste Access Token / Refresh Token manually |
 | `antigravitySwap.refreshQuotas` | **Refresh All Account Quotas** | Fetch fresh quota balances from cloud server |
 | `antigravitySwap.openDashboard` | **Open Quota Dashboard** | Open the rich sidebar dashboard |
-| `antigravitySwap.importExistingAccounts` | **Import Detected Accounts** | Auto-detect existing accounts from local IDE database |
+| `antigravitySwap.importExistingAccounts` | **Import Detected Accounts** | Auto-detect accounts from local IDE database |
 
 ---
 

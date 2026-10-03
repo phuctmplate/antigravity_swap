@@ -1,9 +1,13 @@
 {
-  "name": "antigravity_swap",
+  "name": "antigravity-swap",
   "displayName": "Antigravity Swap",
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
   "version": "1.0.0",
   "publisher": "antigravity-community",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antigravity-community/antigravity-swap"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -13,6 +17,9 @@
   "icon": "media/icon.png",
   "activationEvents": [
     "onStartupFinished"
+  ],
+  "enabledApiProposals": [
+    "antigravityUnifiedStateSync"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -71,6 +78,18 @@
         "title": "Import Detected Accounts",
         "category": "Antigravity Swap",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "antigravitySwap.reloginAccount",
+        "title": "Re-login / Reconnect Account",
+        "category": "Antigravity Swap",
+        "icon": "$(key)"
+      },
+      {
+        "command": "antigravitySwap.importCurrentAntigravity",
+        "title": "Import Active Antigravity Account",
+        "category": "Antigravity Swap",
+        "icon": "$(zap)"
       }
     ],
     "menus": {
@@ -95,6 +114,11 @@
     "configuration": {
       "title": "Antigravity Swap",
       "properties": {
+        "antigravitySwap.heartbeatIntervalSeconds": {
+          "type": "number",
+          "default": 30,
+          "description": "Heartbeat interval in seconds to poll quota health and detect expired/banned accounts."
+        },
         "antigravitySwap.autoRefreshIntervalMinutes": {
           "type": "number",
           "default": 3,

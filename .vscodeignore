@@ -1,0 +1,9 @@
+﻿.vscode/**
+src/**
+out/**
+node_modules/**
+.gitignore
+tsconfig.json
+package-lock.json
+*.vsix
+AGENTS.md

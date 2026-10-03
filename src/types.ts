@@ -1,3 +1,5 @@
+export type QuotaWindowType = '5h' | 'weekly' | 'tab' | 'general';
+
 export interface ModelQuota {
   id: string;
   displayName: string;
@@ -6,9 +8,14 @@ export interface ModelQuota {
   percentage: number; // 0 to 100
   resetTime?: string; // ISO string
   resetCountdown?: string; // Formatted "in 2h 15m"
+  windowType: QuotaWindowType; // 5h, weekly, tab, general
+  windowLabel: string; // '5-Hour Window', 'Weekly Quota', etc.
   disabled?: boolean;
   refreshText?: string;
 }
+
+export type AccountStatus = 'active' | 'low_balance' | 'auth_failed' | 'banned' | 'expired' | 'error';
+export type AccountTierType = 'PRO' | 'ENTERPRISE' | 'AI PREMIUM' | 'STANDARD FREE' | 'CUSTOM';
 
 export interface AccountInfo {
   id: string;
@@ -16,25 +23,37 @@ export interface AccountInfo {
   name: string;
   avatarUrl?: string;
   plan?: string;
-  tier?: string;
+  accountType: string; // e.g. "Google One AI Premium", "Antigravity Pro", "Free Tier"
+  tierBadge: AccountTierType;
   isActive: boolean;
   addedAt: string;
   lastUsedAt?: string;
-  status: 'active' | 'low_balance' | 'expired' | 'error';
+  status: AccountStatus;
   statusMessage?: string;
+  isBanned?: boolean;
+  banReason?: string;
   quotas: ModelQuota[];
   averageQuotaPercentage: number;
+  fiveHourQuotaPercentage?: number;
+  weeklyQuotaPercentage?: number;
+  hasWeeklyQuota: boolean;
+  has5HourQuota: boolean;
   lastRefreshedAt?: string;
+  lastHeartbeatAt?: string;
 }
 
 export interface OverallQuotaSummary {
   totalAccounts: number;
   activeAccountEmail?: string;
   overallPercentage: number; // Combined % across all accounts
+  overall5HourPercentage: number;
+  overallWeeklyPercentage: number;
   averageActiveAccountPercentage: number;
   highestAccountQuotaPercentage: number;
   accountsWithHealthyQuota: number;
   accountsLowOrDepleted: number;
+  accountsWithErrors: number;
+  proAccountsCount: number;
   lastUpdated: string;
 }
 
@@ -45,6 +64,13 @@ export interface OAuthTokens {
   tokenType?: string;
 }
 
+export interface HeartbeatInfo {
+  lastTick: string;
+  intervalSeconds: number;
+  isRunning: boolean;
+  activeAccountHealth: 'healthy' | 'warning' | 'error';
+}
+
 export interface WebviewStateMessage {
   type: 'stateUpdate';
   accounts: AccountInfo[];
@@ -52,4 +78,5 @@ export interface WebviewStateMessage {
   activeAccount?: AccountInfo;
   isLoading: boolean;
   autoSwitchEnabled: boolean;
+  heartbeat?: HeartbeatInfo;
 }

@@ -22,12 +22,13 @@ export class StatusBarService implements vscode.Disposable {
   }
 
   public update(): void {
+    const accounts = this.accountManager.getAccounts();
     const active = this.accountManager.getActiveAccount();
     const overall = this.accountManager.getOverallSummary();
 
-    if (!active) {
-      this.statusBarItem.text = '$(account) Antigravity Swap: No Account';
-      this.statusBarItem.tooltip = 'Click to connect Google/Antigravity account';
+    if (accounts.length === 0 || !active || active.status === 'auth_failed') {
+      this.statusBarItem.text = '$(account) AGY Swap';
+      this.statusBarItem.tooltip = 'Antigravity Swap: No active account. Click to connect or switch.';
       this.statusBarItem.backgroundColor = undefined;
       return;
     }
@@ -37,7 +38,10 @@ export class StatusBarService implements vscode.Disposable {
 
     // Color indicator based on quota health
     let icon = '$(zap)';
-    if (activePct < 20) {
+    if (active.isBanned) {
+      icon = '$(error)';
+      this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    } else if (activePct < 20) {
       icon = '$(warning)';
       this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
@@ -49,11 +53,11 @@ export class StatusBarService implements vscode.Disposable {
 
     // Detailed multi-line tooltip
     const lines = [
-      `⚡ Antigravity Swap - Account & Quota Status`,
-      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-      `👤 Active: ${active.name || active.email} (${active.email})`,
-      `📊 Active Account Quota: ${activePct}%`,
-      `🌐 Overall Across ${overall.totalAccounts} Account(s): ${overallPct}%`,
+      `Antigravity Swap - Account & Quota Status`,
+      `─────────────────────────────────────`,
+      `Active: ${active.name || active.email} (${active.email})`,
+      `Active Account Quota: ${activePct}%`,
+      `Overall Across ${overall.totalAccounts} Account(s): ${overallPct}%`,
       ``,
       `--- Model Quotas (${active.email}) ---`
     ];
@@ -65,7 +69,7 @@ export class StatusBarService implements vscode.Disposable {
       }
     }
 
-    lines.push(``, `👉 Click to switch accounts or view detailed dashboard`);
+    lines.push(``, `Click to switch accounts or open dashboard`);
     this.statusBarItem.tooltip = new vscode.MarkdownString(lines.join('\n'));
   }
 
@@ -83,20 +87,50 @@ export class StatusBarService implements vscode.Disposable {
     const items: vscode.QuickPickItem[] = [];
 
     items.push({
-      label: `🌐 Overall Quota: ${overall.overallPercentage}% across ${overall.totalAccounts} account(s)`,
+      label: `Overall Quota: ${overall.overallPercentage}% across ${overall.totalAccounts} account(s)`,
       description: `Active: ${active ? active.email : 'None'} (${active ? active.averageQuotaPercentage : 0}%)`,
       kind: vscode.QuickPickItemKind.Separator
     });
 
     for (const acc of accounts) {
-      const isAct = acc.email === active?.email;
-      const statusIcon = isAct ? '$(check)' : '$(account)';
+      const isAct = acc.email === active?.email && acc.isActive;
+      let statusIcon = isAct ? '$(check)' : '$(account)';
+      let statusExtra = '';
+      if (acc.isBanned) {
+        statusIcon = '$(error)';
+        statusExtra = ' [BANNED]';
+      } else if (acc.status === 'auth_failed') {
+        statusIcon = '$(warning)';
+        statusExtra = ' [AUTH FAILED]';
+      }
+
       const quotaPct = acc.averageQuotaPercentage ?? 0;
+      const detailText = acc.isBanned
+        ? 'Account banned/disabled by Google TOS'
+        : acc.status === 'auth_failed'
+        ? 'Credentials expired. Click to re-login.'
+        : isAct
+        ? 'CURRENTLY ACTIVE'
+        : 'Click to switch without reloading';
+
       items.push({
-        label: `${statusIcon} ${acc.name || acc.email}`,
-        description: `${acc.email} — ${quotaPct}% quota left`,
-        detail: isAct ? '★ CURRENTLY ACTIVE' : 'Click to switch without reloading',
+        label: `${statusIcon} ${acc.name || acc.email}${statusExtra}`,
+        description: `${acc.email} — ${acc.isBanned ? '0%' : quotaPct + '%'} quota left`,
+        detail: detailText,
         buttons: [
+          ...(acc.isBanned || acc.status === 'auth_failed'
+            ? [
+                {
+                  iconPath: new vscode.ThemeIcon('key'),
+                  tooltip: 'Re-login / Reconnect Account'
+                }
+              ]
+            : [
+                {
+                  iconPath: new vscode.ThemeIcon('refresh'),
+                  tooltip: 'Refresh quota'
+                }
+              ]),
           {
             iconPath: new vscode.ThemeIcon('trash'),
             tooltip: 'Remove account'
@@ -111,49 +145,80 @@ export class StatusBarService implements vscode.Disposable {
     });
 
     items.push({
+      label: '$(cloud-download) Import Current Antigravity Session',
+      description: 'Import the active logged-in account from Antigravity IDE'
+    });
+
+    items.push({
       label: '$(add) Add Account (Google OAuth)',
-      description: 'Sign in with Google via Browser'
+      description: 'Sign in with a new Google Account via browser'
     });
 
     items.push({
-      label: '$(key) Add Account Manually',
-      description: 'Paste Access Token / Refresh Token'
+      label: '$(key) Add Account (Manual Token)',
+      description: 'Paste Access / Refresh Token directly'
     });
 
     items.push({
-      label: '$(refresh) Refresh All Quotas',
-      description: 'Fetch real-time quota balances now'
+      label: '$(refresh) Refresh All Quotas Now',
+      description: 'Force immediate background quota check'
     });
 
-    items.push({
-      label: '$(dashboard) Open Quota Dashboard Panel',
-      description: 'View full charts and model breakdown'
-    });
+    const quickPick = vscode.window.createQuickPick();
+    quickPick.title = 'Antigravity Swap: Fast Account Switcher';
+    quickPick.placeholder = 'Select account to switch or choose an action';
+    quickPick.items = items;
 
-    const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select an account to switch or an action'
-    });
+    quickPick.onDidTriggerItemButton(async (e) => {
+      const targetEmail = e.item.description?.split(' — ')[0]?.trim();
+      if (!targetEmail) return;
 
-    if (!selected) return;
-
-    if (selected.label.includes('Add Account (Google OAuth)')) {
-      await vscode.commands.executeCommand('antigravitySwap.addAccount');
-    } else if (selected.label.includes('Add Account Manually')) {
-      await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
-    } else if (selected.label.includes('Refresh All Quotas')) {
-      await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
-    } else if (selected.label.includes('Open Quota Dashboard Panel')) {
-      await vscode.commands.executeCommand('antigravitySwap.openDashboard');
-    } else {
-      // Find matching account by email in description
-      const matched = accounts.find((a) => selected.description?.includes(a.email) || selected.label.includes(a.email));
-      if (matched) {
-        await this.accountManager.switchAccount(matched.email);
+      const tooltip = (e.button as any).tooltip;
+      if (tooltip === 'Re-login / Reconnect Account') {
+        quickPick.hide();
+        await this.accountManager.reloginAccount(targetEmail);
+      } else if (tooltip === 'Refresh quota') {
+        await this.accountManager.refreshAccountQuota(targetEmail);
+      } else if (tooltip === 'Remove account') {
+        const confirm = await vscode.window.showWarningMessage(
+          `Remove account ${targetEmail} from Antigravity Swap?`,
+          { modal: true },
+          'Remove'
+        );
+        if (confirm === 'Remove') {
+          await this.accountManager.removeAccount(targetEmail);
+          quickPick.items = quickPick.items.filter((i) => !i.description?.startsWith(targetEmail));
+        }
       }
-    }
+    });
+
+    quickPick.onDidChangeSelection(async (selection) => {
+      if (selection.length === 0) return;
+      quickPick.hide();
+      const chosen = selection[0];
+
+      if (chosen.label.includes('Import Current Antigravity Session')) {
+        await this.accountManager.importCurrentAntigravityAccount();
+      } else if (chosen.label.includes('Add Account (Google OAuth)')) {
+        await this.accountManager.addAccountViaOAuth();
+      } else if (chosen.label.includes('Add Account (Manual Token)')) {
+        await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
+      } else if (chosen.label.includes('Refresh All Quotas Now')) {
+        await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
+      } else {
+        const email = chosen.description?.split(' — ')[0]?.trim();
+        if (email) {
+          await this.accountManager.switchAccount(email);
+        }
+      }
+    });
+
+    quickPick.show();
   }
 
   public dispose(): void {
-    this.disposables.forEach((d) => d.dispose());
+    for (const d of this.disposables) {
+      d.dispose();
+    }
   }
 }

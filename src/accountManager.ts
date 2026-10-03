@@ -25,8 +25,22 @@ export class AccountManager {
       await this.importDetectedAccounts();
     }
 
-    // Refresh quotas on init
-    this.refreshAllQuotas().catch((err) => console.warn('[Antigravity Swap] Initial quota refresh failed:', err));
+    // Initial quota check only for accounts with valid tokens
+    await this.refreshAllQuotas().catch((err) => console.warn('[Antigravity Swap] Initial quota refresh failed:', err));
+
+    // If active account is unauthenticated/banned, auto-switch to first healthy live account
+    const active = this.getActiveAccount();
+    if (!active || active.status === 'auth_failed' || active.isBanned) {
+      const liveAccounts = this.accounts.filter((a) => a.status === 'active' && !a.isBanned);
+      if (liveAccounts.length > 0) {
+        const liveCandidate = liveAccounts.find((a) => (a.averageQuotaPercentage ?? 0) > 0) || liveAccounts[0];
+        console.log(`[Antigravity Swap] Auto-switching from unavailable account (${active?.email || 'none'}) to live account: ${liveCandidate.email}`);
+        await this.switchAccount(liveCandidate.email);
+        vscode.window.showInformationMessage(`Auto-switched to active live account: ${liveCandidate.name || liveCandidate.email}`);
+      } else {
+        console.log('[Antigravity Swap] No live accounts available to auto-switch.');
+      }
+    }
   }
 
   public getAccounts(): AccountInfo[] {
@@ -34,7 +48,9 @@ export class AccountManager {
   }
 
   public getActiveAccount(): AccountInfo | undefined {
-    return this.accounts.find((a) => a.email === this.activeEmail) || this.accounts.find((a) => a.isActive);
+    if (!this.activeEmail) return undefined;
+    const match = this.accounts.find((a) => a.email === this.activeEmail && a.isActive);
+    return match;
   }
 
   public getOverallSummary(): OverallQuotaSummary {
@@ -42,18 +58,63 @@ export class AccountManager {
   }
 
   /**
-   * Switches to the given account WITHOUT reloading the Antigravity IDE window.
+   * Switches to the given account and relaunches Antigravity IDE with the new account loaded into memory.
    */
-  public async switchAccount(email: string): Promise<boolean> {
+  public isAutoSwitchEnabled(): boolean {
+    return this.storage.getAutoSwitchEnabled();
+  }
+
+  public async setAutoSwitchEnabled(enabled: boolean): Promise<void> {
+    await this.storage.setAutoSwitchEnabled(enabled);
+    this._onDidChangeState.fire();
+  }
+
+  /**
+   * Switches to the given account and relaunches Antigravity IDE with the new account loaded into memory.
+   * @param email Target account email.
+   * @param isManual Set to true when the user explicitly pressed "Switch" — this disables auto-switch.
+   */
+  public async switchAccount(email: string, isManual = false): Promise<boolean> {
     const target = this.accounts.find((a) => a.email === email);
     if (!target) {
       vscode.window.showErrorMessage(`Account ${email} not found in Antigravity Swap.`);
       return false;
     }
 
+    if (target.isBanned || target.status === 'banned') {
+      vscode.window.showErrorMessage(`Cannot switch: Account ${email} is banned or suspended by Google Terms of Service.`);
+      return false;
+    }
+
+    if (target.status === 'auth_failed') {
+      const choice = await vscode.window.showErrorMessage(
+        `Cannot switch: Account ${email} authentication failed / credentials expired. Re-login now?`,
+        'Re-login Account',
+        'Cancel'
+      );
+      if (choice === 'Re-login Account') {
+        await this.reloginAccount(email);
+      }
+      return false;
+    }
+
     let tokens = await this.storage.getAccountTokens(email);
     if (!tokens || !tokens.accessToken) {
-      vscode.window.showWarningMessage(`Credentials missing for ${email}. Please sign in again.`);
+      target.status = 'auth_failed';
+      target.statusMessage = 'Credentials missing. Re-login required.';
+      target.quotas = [];
+      target.averageQuotaPercentage = 0;
+      await this.storage.saveAccounts(this.accounts);
+      this._onDidChangeState.fire();
+
+      const reloginChoice = await vscode.window.showWarningMessage(
+        `Cannot switch: Credentials missing or expired for ${email}. Re-login now?`,
+        'Re-login Account',
+        'Cancel'
+      );
+      if (reloginChoice === 'Re-login Account') {
+        await this.reloginAccount(email);
+      }
       return false;
     }
 
@@ -64,6 +125,22 @@ export class AccountManager {
         await this.storage.saveAccountTokens(email, tokens);
       } catch (err: any) {
         console.warn(`[Antigravity Swap] Token refresh failed before switch: ${err.message}`);
+        target.status = 'auth_failed';
+        target.statusMessage = 'Credentials expired. Re-login required.';
+        target.quotas = [];
+        target.averageQuotaPercentage = 0;
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
+
+        const rechoice = await vscode.window.showErrorMessage(
+          `Cannot switch: Credentials for ${email} expired. Please re-login.`,
+          'Re-login Now',
+          'Cancel'
+        );
+        if (rechoice === 'Re-login Now') {
+          await this.reloginAccount(email);
+        }
+        return false;
       }
     }
 
@@ -77,34 +154,166 @@ export class AccountManager {
     await this.storage.saveAccounts(this.accounts);
     await this.storage.setActiveAccountEmail(email);
 
-    // 2. Direct-update IDE state DB (state.vscdb)
-    await this.storage.syncToIdeStateDb(target, tokens);
+    // 2. If the user manually chose this account, disable auto-switch so it won't override their choice
+    if (isManual) {
+      await this.storage.setAutoSwitchEnabled(false);
+    }
 
-    // 3. Direct-update .antigravity-agent/cloud_accounts.db
+    // 3. Perform live in-memory switch via Antigravity Unified State Sync (USS)
+    await this.storage.liveSwitchOAuthToken(target, tokens);
+
+    // 4. Direct-update IDE state DB (state.vscdb) and cloud_accounts.db so disk persistence is preserved
+    await this.storage.syncToIdeStateDb(target, tokens);
     await this.storage.syncToCloudAccountsDb(email);
 
-    // 4. Trigger seamless auth refresh inside Antigravity IDE (NO WINDOW RELOAD NEEDED!)
-    try {
-      await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
-    } catch (err) {
-      console.warn('[Antigravity Swap] antigravity.handleAuthRefresh command not available, trying language server restart');
-    }
-
-    try {
-      await vscode.commands.executeCommand('antigravity.restartLanguageServer');
-    } catch (err) {
-      // Ignore if command not supported in current environment
-    }
-
-    // 5. Notify user with a sleek toast
-    vscode.window.showInformationMessage(`⚡ Switched to ${target.name || email} seamlessly without reload!`);
+    // NOTE: We intentionally do NOT call antigravity.restartLanguageServer here.
+    // Restarting the language server causes the "connection to server is erroring" toast
+    // that confuses users. The live token sync above is sufficient.
 
     this._onDidChangeState.fire();
-
-    // Refresh quota for newly active account
     this.refreshAccountQuota(email).catch(() => {});
 
+    vscode.window.showInformationMessage(`Switched to: ${target.name || email}! (Live switch complete)`);
     return true;
+  }
+
+  /**
+   * Re-authenticates / reconnects a specific account by launching Google browser login.
+   */
+  public async reloginAccount(email: string): Promise<boolean> {
+    try {
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Antigravity Swap: Opening browser to authenticate ${email}...`,
+          cancellable: true
+        },
+        async () => {
+          return await this.oauthService.loginWithGoogle(email);
+        }
+      );
+
+      const { tokens, userInfo } = result;
+      await this.storage.saveAccountTokens(userInfo.email, tokens);
+
+      const existingIdx = this.accounts.findIndex((a) => a.email === userInfo.email || a.email === email);
+      if (existingIdx >= 0) {
+        this.accounts[existingIdx] = {
+          ...this.accounts[existingIdx],
+          email: userInfo.email,
+          name: userInfo.name || this.accounts[existingIdx].name,
+          avatarUrl: userInfo.avatarUrl || this.accounts[existingIdx].avatarUrl,
+          status: 'active',
+          isBanned: false,
+          banReason: undefined,
+          statusMessage: undefined,
+          lastUsedAt: new Date().toISOString()
+        };
+      } else {
+        this.accounts.push({
+          id: Buffer.from(userInfo.email).toString('base64').substring(0, 16),
+          email: userInfo.email,
+          name: userInfo.name,
+          avatarUrl: userInfo.avatarUrl,
+          isActive: false,
+          addedAt: new Date().toISOString(),
+          status: 'active',
+          isBanned: false,
+          quotas: [],
+          averageQuotaPercentage: 0,
+          hasWeeklyQuota: false,
+          has5HourQuota: false,
+          accountType: 'Standard Free',
+          tierBadge: 'STANDARD FREE'
+        });
+      }
+
+      await this.storage.saveAccounts(this.accounts);
+      vscode.window.showInformationMessage(`Re-authenticated ${userInfo.email} successfully!`);
+      this._onDidChangeState.fire();
+
+      await this.refreshAccountQuota(userInfo.email).catch(() => {});
+
+      if (this.activeEmail === userInfo.email || this.activeEmail === email) {
+        await this.switchAccount(userInfo.email);
+      }
+
+      return true;
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Re-login error: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Imports or updates the account currently logged into Antigravity IDE.
+   */
+  public async importCurrentAntigravityAccount(): Promise<AccountInfo | null> {
+    const current = await this.storage.getCurrentAntigravityAccount();
+    if (!current || !current.email || !current.accessToken) {
+      vscode.window.showWarningMessage('No active Antigravity session with valid access token found in state database.');
+      return null;
+    }
+
+    const tokens: OAuthTokens = {
+      accessToken: current.accessToken,
+      refreshToken: current.refreshToken,
+      expiresAt: Date.now() + 3600 * 1000
+    };
+
+    await this.storage.saveAccountTokens(current.email, tokens);
+
+    const existingIdx = this.accounts.findIndex((a) => a.email === current.email);
+    let account: AccountInfo;
+
+    if (existingIdx >= 0) {
+      account = {
+        ...this.accounts[existingIdx],
+        name: current.name || this.accounts[existingIdx].name,
+        avatarUrl: current.avatarUrl || this.accounts[existingIdx].avatarUrl,
+        status: 'active',
+        isBanned: false,
+        statusMessage: undefined,
+        isActive: true,
+        lastUsedAt: new Date().toISOString()
+      };
+      this.accounts[existingIdx] = account;
+    } else {
+      account = {
+        id: Buffer.from(current.email).toString('base64').substring(0, 16),
+        email: current.email,
+        name: current.name,
+        avatarUrl: current.avatarUrl,
+        isActive: true,
+        addedAt: new Date().toISOString(),
+        status: 'active',
+        isBanned: false,
+        statusMessage: undefined,
+        quotas: [],
+        averageQuotaPercentage: 0,
+        hasWeeklyQuota: false,
+        has5HourQuota: false,
+        accountType: 'Standard Free',
+        tierBadge: 'STANDARD FREE'
+      };
+      this.accounts.push(account);
+    }
+
+    // Set other accounts isActive = false
+    this.accounts = this.accounts.map((a) => ({
+      ...a,
+      isActive: a.email === current.email
+    }));
+    this.activeEmail = current.email;
+
+    await this.storage.saveAccounts(this.accounts);
+    await this.storage.setActiveAccountEmail(this.activeEmail);
+
+    vscode.window.showInformationMessage(`Successfully imported active account ${current.email} from Antigravity IDE!`);
+    this._onDidChangeState.fire();
+
+    this.refreshAccountQuota(current.email).catch(() => {});
+    return account;
   }
 
   /**
@@ -115,7 +324,7 @@ export class AccountManager {
       const result = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: 'Antigravity Swap: Authenticating with Google...',
+          title: 'Antigravity Swap: Opening browser to authenticate with Google...',
           cancellable: true
         },
         async () => {
@@ -124,11 +333,8 @@ export class AccountManager {
       );
 
       const { tokens, userInfo } = result;
-
-      // Save tokens securely in VS Code SecretStorage
       await this.storage.saveAccountTokens(userInfo.email, tokens);
 
-      // Check if account already exists in list
       const existingIdx = this.accounts.findIndex((a) => a.email === userInfo.email);
       let account: AccountInfo;
 
@@ -137,6 +343,8 @@ export class AccountManager {
           ...this.accounts[existingIdx],
           name: userInfo.name || this.accounts[existingIdx].name,
           avatarUrl: userInfo.avatarUrl || this.accounts[existingIdx].avatarUrl,
+          status: 'active',
+          isBanned: false,
           lastUsedAt: new Date().toISOString()
         };
         this.accounts[existingIdx] = account;
@@ -146,11 +354,16 @@ export class AccountManager {
           email: userInfo.email,
           name: userInfo.name,
           avatarUrl: userInfo.avatarUrl,
-          isActive: this.accounts.length === 0, // make active if first account
+          isActive: this.accounts.length === 0,
           addedAt: new Date().toISOString(),
           status: 'active',
-          quotas: this.quotaService.getDefaultModelQuotas(),
-          averageQuotaPercentage: 100
+          isBanned: false,
+          quotas: [],
+          averageQuotaPercentage: 0,
+          hasWeeklyQuota: false,
+          has5HourQuota: false,
+          accountType: 'Standard Free',
+          tierBadge: 'STANDARD FREE'
         };
         this.accounts.push(account);
       }
@@ -163,9 +376,7 @@ export class AccountManager {
       vscode.window.showInformationMessage(`Added account ${userInfo.email} to Antigravity Swap!`);
       this._onDidChangeState.fire();
 
-      // Fetch fresh quota in background
       this.refreshAccountQuota(account.email).catch(() => {});
-
       return account;
     } catch (err: any) {
       vscode.window.showErrorMessage(`Login failed: ${err.message}`);
@@ -193,6 +404,9 @@ export class AccountManager {
     const existingIdx = this.accounts.findIndex((a) => a.email === email);
     if (existingIdx >= 0) {
       this.accounts[existingIdx].name = name || this.accounts[existingIdx].name;
+      this.accounts[existingIdx].status = 'active';
+      this.accounts[existingIdx].isBanned = false;
+      this.accounts[existingIdx].statusMessage = undefined;
     } else {
       this.accounts.push({
         id: Buffer.from(email).toString('base64').substring(0, 16),
@@ -201,8 +415,13 @@ export class AccountManager {
         isActive: this.accounts.length === 0,
         addedAt: new Date().toISOString(),
         status: 'active',
-        quotas: this.quotaService.getDefaultModelQuotas(),
-        averageQuotaPercentage: 100
+        isBanned: false,
+        quotas: [],
+        averageQuotaPercentage: 0,
+        hasWeeklyQuota: false,
+        has5HourQuota: false,
+        accountType: 'Standard Free',
+        tierBadge: 'STANDARD FREE'
       });
     }
 
@@ -223,7 +442,13 @@ export class AccountManager {
     await this.storage.removeAccountTokens(email);
 
     if (isCurrentActive && this.accounts.length > 0) {
-      await this.switchAccount(this.accounts[0].email);
+      const nextHealthy = this.accounts.find((a) => !a.isBanned && a.status === 'active') || this.accounts[0];
+      if (nextHealthy && nextHealthy.status === 'active') {
+        await this.switchAccount(nextHealthy.email);
+      } else {
+        this.activeEmail = undefined;
+        await this.storage.setActiveAccountEmail(undefined);
+      }
     } else if (this.accounts.length === 0) {
       this.activeEmail = undefined;
       await this.storage.setActiveAccountEmail(undefined);
@@ -234,13 +459,13 @@ export class AccountManager {
   }
 
   /**
-   * Refreshes quota balances for all accounts.
+   * Refreshes quota balances for all accounts with credentials.
    */
   public async refreshAllQuotas(): Promise<void> {
     for (const acc of this.accounts) {
       await this.refreshAccountQuota(acc.email);
     }
-    this.checkAutoSwitch();
+    await this.checkAutoSwitch();
     this._onDidChangeState.fire();
   }
 
@@ -249,7 +474,17 @@ export class AccountManager {
     if (!acc) return;
 
     const tokens = await this.storage.getAccountTokens(email);
-    if (!tokens) return;
+    if (!tokens || !tokens.accessToken) {
+      acc.status = 'auth_failed';
+      acc.statusMessage = 'Credentials missing. Re-login required.';
+      acc.quotas = [];
+      acc.averageQuotaPercentage = 0;
+      acc.fiveHourQuotaPercentage = undefined;
+      acc.weeklyQuotaPercentage = undefined;
+      await this.storage.saveAccounts(this.accounts);
+      this._onDidChangeState.fire();
+      return;
+    }
 
     const res = await this.quotaService.fetchAccountQuotas(acc, tokens, async (newTokens) => {
       await this.storage.saveAccountTokens(email, newTokens);
@@ -257,15 +492,50 @@ export class AccountManager {
 
     acc.quotas = res.quotas;
     acc.averageQuotaPercentage = res.averagePercentage;
+    acc.fiveHourQuotaPercentage = res.fiveHourPercentage;
+    acc.weeklyQuotaPercentage = res.weeklyPercentage;
+    acc.has5HourQuota = res.has5HourQuota;
+    acc.hasWeeklyQuota = res.hasWeeklyQuota;
+    acc.accountType = res.accountType;
+    acc.tierBadge = res.tierBadge;
+    acc.status = res.status;
+    acc.isBanned = res.isBanned;
+    acc.banReason = res.isBanned ? res.statusMessage : undefined;
+    acc.statusMessage = res.statusMessage;
     acc.lastRefreshedAt = new Date().toISOString();
-    acc.status = res.averagePercentage < 15 ? 'low_balance' : 'active';
+    acc.lastHeartbeatAt = new Date().toISOString();
 
     await this.storage.saveAccounts(this.accounts);
     this._onDidChangeState.fire();
   }
 
   /**
-   * Auto-switches to next account with healthy quota if current account is exhausted.
+   * Heartbeat execution: polls active account quota and checks background account status.
+   */
+  public async runHeartbeatTick(): Promise<void> {
+    const active = this.getActiveAccount();
+    if (active) {
+      await this.refreshAccountQuota(active.email);
+    }
+
+    // Also check one background account per tick in round-robin fashion
+    const bgAccounts = this.accounts.filter((a) => a.email !== active?.email && a.status === 'active');
+    if (bgAccounts.length > 0) {
+      const oldestSynced = bgAccounts.sort((a, b) => {
+        const tA = a.lastHeartbeatAt ? new Date(a.lastHeartbeatAt).getTime() : 0;
+        const tB = b.lastHeartbeatAt ? new Date(b.lastHeartbeatAt).getTime() : 0;
+        return tA - tB;
+      })[0];
+      if (oldestSynced) {
+        await this.refreshAccountQuota(oldestSynced.email);
+      }
+    }
+
+    await this.checkAutoSwitch();
+  }
+
+  /**
+   * Auto-switches to next account with healthy quota if current account is exhausted or banned.
    */
   public async checkAutoSwitch(): Promise<void> {
     const autoSwitch = this.storage.getAutoSwitchEnabled();
@@ -277,11 +547,18 @@ export class AccountManager {
     const config = vscode.workspace.getConfiguration('antigravitySwap');
     const threshold = config.get<number>('lowQuotaThresholdPercent', 10);
 
-    if (active.averageQuotaPercentage <= threshold) {
-      const candidate = this.accounts.find((a) => a.email !== active.email && a.averageQuotaPercentage > threshold);
+    const isDepleted = active.averageQuotaPercentage <= threshold;
+    const isUnusable = active.isBanned || active.status === 'auth_failed' || active.status === 'banned';
+
+    if (isDepleted || isUnusable) {
+      const candidate = this.accounts.find(
+        (a) => a.email !== active.email && !a.isBanned && a.status === 'active' && a.averageQuotaPercentage > threshold
+      );
+
       if (candidate) {
+        const reason = isUnusable ? 'account credentials/ban status' : `low quota (${active.averageQuotaPercentage}%)`;
         vscode.window.showWarningMessage(
-          `⚠️ Account ${active.email} quota is low (${active.averageQuotaPercentage}%). Auto-switching to ${candidate.email} (${candidate.averageQuotaPercentage}% left)...`
+          `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidate.averageQuotaPercentage}% left)...`
         );
         await this.switchAccount(candidate.email);
       }
@@ -295,19 +572,30 @@ export class AccountManager {
     const discovered = await this.storage.discoverExistingAccounts();
     let addedCount = 0;
 
+    const currentSession = await this.storage.getCurrentAntigravityAccount();
+
     for (const disc of discovered) {
       const exists = this.accounts.find((a) => a.email === disc.email);
+      const isCurrentSession = currentSession?.email === disc.email;
+      const hasToken = !!disc.accessToken;
+
       if (!exists) {
         this.accounts.push({
           id: Buffer.from(disc.email).toString('base64').substring(0, 16),
           email: disc.email,
           name: disc.name,
           avatarUrl: disc.avatarUrl,
-          isActive: this.accounts.length === 0,
+          isActive: isCurrentSession,
           addedAt: new Date().toISOString(),
-          status: 'active',
-          quotas: this.quotaService.getDefaultModelQuotas(),
-          averageQuotaPercentage: 100
+          status: hasToken ? 'active' : 'auth_failed',
+          statusMessage: hasToken ? 'Discovered' : 'Click Re-login to authenticate',
+          isBanned: false,
+          quotas: [],
+          averageQuotaPercentage: 0,
+          hasWeeklyQuota: false,
+          has5HourQuota: false,
+          accountType: 'Standard Free',
+          tierBadge: 'STANDARD FREE'
         });
         addedCount++;
 
@@ -321,11 +609,11 @@ export class AccountManager {
     }
 
     if (addedCount > 0) {
-      await this.storage.saveAccounts(this.accounts);
-      if (!this.activeEmail && this.accounts.length > 0) {
-        this.activeEmail = this.accounts[0].email;
+      if (currentSession?.email) {
+        this.activeEmail = currentSession.email;
         await this.storage.setActiveAccountEmail(this.activeEmail);
       }
+      await this.storage.saveAccounts(this.accounts);
       this._onDidChangeState.fire();
     }
 
