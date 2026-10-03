@@ -30,7 +30,8 @@
         {
           "type": "webview",
           "id": "antigravitySwap.dashboardView",
-          "name": "Account & Quota Dashboard"
+          "name": "Account & Quota Dashboard",
+          "icon": "media/sidebar-icon.svg"
         }
       ]
     },
