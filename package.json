@@ -2,11 +2,11 @@
   "name": "antigravity-swap",
   "displayName": "Antigravity Swap",
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
-  "version": "1.0.1",
-  "publisher": "antigravity-community",
+  "version": "1.0.0",
+  "publisher": "phuctmplate",
   "repository": {
     "type": "git",
-    "url": "https://github.com/antigravity-community/antigravity-swap"
+    "url": "https://github.com/phuctmplate/antigravity_swap"
   },
   "engines": {
     "vscode": "^1.90.0"
