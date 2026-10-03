@@ -1,0 +1,131 @@
+{
+  "name": "antigravity_swap",
+  "displayName": "Antigravity Swap",
+  "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
+  "version": "1.0.0",
+  "publisher": "antigravity-community",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Productivity",
+    "Other"
+  ],
+  "icon": "media/icon.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "antigravity-swap-sidebar",
+          "title": "Antigravity Swap",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "antigravity-swap-sidebar": [
+        {
+          "type": "webview",
+          "id": "antigravitySwap.dashboardView",
+          "name": "Account & Quota Dashboard"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "antigravitySwap.switchAccount",
+        "title": "Switch Active Account",
+        "category": "Antigravity Swap",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "antigravitySwap.addAccount",
+        "title": "Add Account (Google OAuth)",
+        "category": "Antigravity Swap",
+        "icon": "$(account)"
+      },
+      {
+        "command": "antigravitySwap.addAccountManual",
+        "title": "Add Account (Paste Refresh/Access Token)",
+        "category": "Antigravity Swap",
+        "icon": "$(key)"
+      },
+      {
+        "command": "antigravitySwap.refreshQuotas",
+        "title": "Refresh All Account Quotas",
+        "category": "Antigravity Swap",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "antigravitySwap.openDashboard",
+        "title": "Open Quota & Account Dashboard",
+        "category": "Antigravity Swap",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "antigravitySwap.importExistingAccounts",
+        "title": "Import Detected Accounts",
+        "category": "Antigravity Swap",
+        "icon": "$(cloud-download)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "antigravitySwap.refreshQuotas",
+          "when": "view == antigravitySwap.dashboardView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "antigravitySwap.addAccount",
+          "when": "view == antigravitySwap.dashboardView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "antigravitySwap.switchAccount",
+          "when": "view == antigravitySwap.dashboardView",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Antigravity Swap",
+      "properties": {
+        "antigravitySwap.autoRefreshIntervalMinutes": {
+          "type": "number",
+          "default": 3,
+          "description": "Interval in minutes to automatically refresh quota balances for all accounts."
+        },
+        "antigravitySwap.autoSwitchWhenQuotaLow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically switch to another account with healthy quota when current active account reaches low quota."
+        },
+        "antigravitySwap.lowQuotaThresholdPercent": {
+          "type": "number",
+          "default": 10,
+          "description": "Threshold percentage below which an account is considered low quota."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.2",
+    "@vscode/vsce": "^2.30.0"
+  }
+}
