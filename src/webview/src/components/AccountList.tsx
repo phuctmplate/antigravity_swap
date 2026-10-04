@@ -9,7 +9,6 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { toast } from 'sonner';
 import {
   Zap,
-  LogIn,
   Plus,
   Filter,
   CheckSquare,
@@ -24,6 +23,7 @@ import {
   ArrowUpDown
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { ACCOUNT_REFRESH_COOLDOWN_MS } from '../constants';
 
 interface AccountListProps {
   accounts: Account[];
@@ -31,8 +31,6 @@ interface AccountListProps {
   selectedEmail: string | null;
   onSelectAccount: (email: string) => void;
 }
-
-const REFRESH_COOLDOWN_MS = 10000;
 
 export const AccountList: React.FC<AccountListProps> = ({
   accounts,
@@ -212,8 +210,8 @@ export const AccountList: React.FC<AccountListProps> = ({
     const last = lastRefreshMap.current.get(email) || 0;
     const elapsed = now - last;
 
-    if (elapsed < REFRESH_COOLDOWN_MS) {
-      const remainingSec = Math.ceil((REFRESH_COOLDOWN_MS - elapsed) / 1000);
+    if (elapsed < ACCOUNT_REFRESH_COOLDOWN_MS) {
+      const remainingSec = Math.ceil((ACCOUNT_REFRESH_COOLDOWN_MS - elapsed) / 1000);
       toast.warning(
         `Please wait ${remainingSec}s before refreshing ${email} again to avoid rate limits.`
       );
@@ -242,16 +240,16 @@ export const AccountList: React.FC<AccountListProps> = ({
     const emailsToRefresh = Array.from(checkedEmails);
     const now = Date.now();
     const emailsReady: string[] = [];
-    let minRemaining = REFRESH_COOLDOWN_MS;
+    let minRemaining: number = ACCOUNT_REFRESH_COOLDOWN_MS;
 
     for (const email of emailsToRefresh) {
       const last = lastRefreshMap.current.get(email) || 0;
       const elapsed = now - last;
-      if (elapsed >= REFRESH_COOLDOWN_MS) {
+      if (elapsed >= ACCOUNT_REFRESH_COOLDOWN_MS) {
         emailsReady.push(email);
         lastRefreshMap.current.set(email, now);
       } else {
-        const rem = REFRESH_COOLDOWN_MS - elapsed;
+        const rem = ACCOUNT_REFRESH_COOLDOWN_MS - elapsed;
         if (rem < minRemaining) minRemaining = rem;
       }
     }

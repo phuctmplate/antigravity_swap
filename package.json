@@ -4,6 +4,7 @@
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
   "version": "1.0.0",
   "publisher": "phuctmplate",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/phuctmplate/antigravity_swap"
@@ -155,7 +156,9 @@
         "antigravitySwap.lowQuotaThresholdPercent": {
           "type": "number",
           "default": 3,
-          "description": "Percentage threshold (default 3%) below which the active account triggers auto-switching to another healthy account."
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage threshold (0-100%, default 3%) at or below which the active account triggers auto-switching to another healthy account."
         },
         "antigravitySwap.autoSwitchTarget": {
           "type": "string",

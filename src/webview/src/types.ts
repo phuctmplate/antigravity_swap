@@ -101,4 +101,5 @@ export interface WebviewState {
   };
   autoSwitchEnabled?: boolean;
   autoSwitchTarget?: AutoSwitchTarget;
+  autoSwitchThreshold?: number;
 }

@@ -6,25 +6,90 @@ import { toast } from 'sonner';
 import { Zap, RotateCw, Plus } from 'lucide-react';
 import { AutoSwitchTarget } from '../types';
 import { cn } from '../lib/utils';
+import {
+  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
+  DEFAULT_AUTO_SWITCH_TARGET,
+  GLOBAL_REFRESH_COOLDOWN_MS
+} from '../constants';
 
 interface ControllerBarProps {
   autoSwitchEnabled: boolean;
   onToggleAutoSwitch: (enabled: boolean) => void;
   autoSwitchTarget?: AutoSwitchTarget;
   onSelectAutoSwitchTarget?: (target: AutoSwitchTarget) => void;
+  autoSwitchThreshold?: number;
+  onChangeAutoSwitchThreshold?: (threshold: number) => void;
 }
-
-const GLOBAL_REFRESH_COOLDOWN_MS = 6000;
 
 export const ControllerBar: React.FC<ControllerBarProps> = ({
   autoSwitchEnabled,
   onToggleAutoSwitch,
-  autoSwitchTarget = 'total',
-  onSelectAutoSwitchTarget
+  autoSwitchTarget = DEFAULT_AUTO_SWITCH_TARGET,
+  onSelectAutoSwitchTarget,
+  autoSwitchThreshold = DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
+  onChangeAutoSwitchThreshold
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [thresholdInput, setThresholdInput] = useState<string>(() => String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastRefreshRef = useRef<number>(0);
   const vscode = getVsCodeApi();
+
+  React.useEffect(() => {
+    setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+  }, [autoSwitchThreshold]);
+
+  React.useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const commitThreshold = (val: string) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    const trimmed = val.trim();
+    if (trimmed === '') {
+      setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+      return;
+    }
+    const num = parseInt(trimmed, 10);
+    if (!isNaN(num) && num >= 0) {
+      const clamped = Math.max(0, Math.min(100, num));
+      setThresholdInput(String(clamped));
+      if (clamped !== autoSwitchThreshold) {
+        onChangeAutoSwitchThreshold?.(clamped);
+      }
+    } else {
+      setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+    }
+  };
+
+  const handleInputChange = (val: string) => {
+    const clean = val.replace(/\D/g, '').slice(0, 3);
+    setThresholdInput(clean);
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    if (clean === '') return;
+
+    const num = parseInt(clean, 10);
+    if (!isNaN(num) && num >= 0) {
+      const clamped = Math.max(0, Math.min(100, num));
+      debounceTimerRef.current = setTimeout(() => {
+        if (clamped !== autoSwitchThreshold) {
+          onChangeAutoSwitchThreshold?.(clamped);
+        }
+      }, 500);
+    }
+  };
 
   const handleImport = () => {
     vscode.postMessage({ command: 'importCurrentAntigravity' });
@@ -123,7 +188,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                   ? "bg-primary text-primary-foreground font-bold shadow-2xs"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
               )}
-              title="Auto-switch when Total Quota <= 3%"
+              title={`Auto-switch when Total Quota <= ${autoSwitchThreshold}%`}
             >
               Total
             </button>
@@ -136,7 +201,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                   ? "bg-sky-500 text-white font-bold shadow-2xs dark:bg-sky-600"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
               )}
-              title="Auto-switch when Gemini Quota <= 3% (5h Window for Pro/Ultra, Weekly for Free)"
+              title={`Auto-switch when Gemini Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
             >
               Gemini
             </button>
@@ -149,10 +214,42 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                   ? "bg-amber-500 text-white font-bold shadow-2xs dark:bg-amber-600"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
               )}
-              title="Auto-switch when Claude & GPT Quota <= 3% (5h Window for Pro/Ultra, Weekly for Free)"
+              title={`Auto-switch when Claude & GPT Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
             >
               Claude
             </button>
+
+            {/* Threshold Percentage Input */}
+            <div
+              className="flex items-center gap-0.5 border-l border-border/80 pl-1.5 ml-0.5"
+              title="Auto-switch when quota drops to or below this percentage"
+            >
+              <span className="text-[10px] text-muted-foreground select-none font-semibold">≤</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={3}
+                value={thresholdInput}
+                onChange={(e) => handleInputChange(e.target.value)}
+                onBlur={() => commitThreshold(thresholdInput)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    commitThreshold(thresholdInput);
+                    (e.target as HTMLInputElement).blur();
+                  } else if (e.key === 'Escape') {
+                    if (debounceTimerRef.current) {
+                      clearTimeout(debounceTimerRef.current);
+                      debounceTimerRef.current = null;
+                    }
+                    setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                className="w-8 h-5 px-1 text-center font-mono text-[10px] font-bold bg-background border border-border/70 rounded focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <span className="text-[10px] text-muted-foreground select-none font-mono font-semibold">%</span>
+            </div>
           </div>
         )}
       </div>

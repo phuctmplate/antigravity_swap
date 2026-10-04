@@ -51,7 +51,8 @@ export const STORAGE_KEYS = {
   ACCOUNTS: 'antigravitySwap.accounts',
   ACTIVE_ACCOUNT: 'antigravitySwap.activeEmail',
   AUTO_SWITCH: 'antigravitySwap.autoSwitch',
-  AUTO_SWITCH_TARGET: 'antigravitySwap.autoSwitchTarget'
+  AUTO_SWITCH_TARGET: 'antigravitySwap.autoSwitchTarget',
+  LOW_QUOTA_THRESHOLD: 'antigravitySwap.lowQuotaThreshold'
 } as const;
 
 /**

@@ -63,6 +63,42 @@ export class StorageService {
     }
   }
 
+  private thresholdConfigDebounceTimer?: NodeJS.Timeout;
+
+  public getAutoSwitchThreshold(): number {
+    const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+    const configVal = config.get<number>(CONFIG_KEYS.LOW_QUOTA_THRESHOLD);
+    if (typeof configVal === 'number' && !isNaN(configVal) && configVal >= 0 && configVal <= 100) {
+      return Math.round(configVal);
+    }
+    const stateVal = this.context.globalState.get<number>(STORAGE_KEYS.LOW_QUOTA_THRESHOLD);
+    if (typeof stateVal === 'number' && !isNaN(stateVal) && stateVal >= 0 && stateVal <= 100) {
+      return Math.round(stateVal);
+    }
+    return EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT;
+  }
+
+  public async setAutoSwitchThreshold(threshold: number): Promise<void> {
+    const num = typeof threshold === 'number' && !isNaN(threshold) && isFinite(threshold)
+      ? threshold
+      : EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT;
+    const clamped = Math.max(0, Math.min(100, Math.round(num)));
+    await this.context.globalState.update(STORAGE_KEYS.LOW_QUOTA_THRESHOLD, clamped);
+
+    // Debounce persisting to VS Code settings.json to avoid excessive file writes
+    if (this.thresholdConfigDebounceTimer) {
+      clearTimeout(this.thresholdConfigDebounceTimer);
+    }
+    this.thresholdConfigDebounceTimer = setTimeout(async () => {
+      try {
+        const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+        await config.update(CONFIG_KEYS.LOW_QUOTA_THRESHOLD, clamped, vscode.ConfigurationTarget.Global);
+      } catch {
+        // Ignore if config update fails
+      }
+    }, 600);
+  }
+
   public async getAccountTokens(email: string): Promise<OAuthTokens | null> {
     const raw = await this.secrets.get(`antigravitySwap.tokens.${email}`);
     if (!raw) return null;

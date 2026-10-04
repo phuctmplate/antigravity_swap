@@ -154,6 +154,11 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'setAutoSwitchTarget':
           await this.accountManager.setAutoSwitchTarget(data.target);
           break;
+        case 'setAutoSwitchThreshold':
+          if (typeof data.threshold === 'number' && !isNaN(data.threshold)) {
+            await this.accountManager.setAutoSwitchThreshold(data.threshold);
+          }
+          break;
         case 'ready':
           this.updateWebview();
           break;
@@ -182,6 +187,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       heartbeat,
       autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
       autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
+      autoSwitchThreshold: this.accountManager.getAutoSwitchThreshold(),
       isLight
     };
 
@@ -239,6 +245,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         heartbeat,
         autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
         autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
+        autoSwitchThreshold: this.accountManager.getAutoSwitchThreshold(),
         isLight
       };
       const b64State = Buffer.from(JSON.stringify(initialState)).toString('base64');

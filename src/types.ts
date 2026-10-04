@@ -122,5 +122,6 @@ export interface WebviewStateMessage {
   isLoading: boolean;
   autoSwitchEnabled: boolean;
   autoSwitchTarget?: AutoSwitchTarget;
+  autoSwitchThreshold?: number;
   heartbeat?: HeartbeatInfo;
 }

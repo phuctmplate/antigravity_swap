@@ -6,6 +6,7 @@ import { AccountList } from './components/AccountList';
 import { ModelQuotas } from './components/ModelQuotas';
 import { Toaster } from './components/ui/sonner';
 import { getVsCodeApi } from './vscode';
+import { DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT, DEFAULT_AUTO_SWITCH_TARGET } from './constants';
 
 const defaultState: WebviewState = {
   accounts: [],
@@ -22,7 +23,8 @@ const defaultState: WebviewState = {
     lastUpdated: new Date().toISOString()
   },
   autoSwitchEnabled: false,
-  autoSwitchTarget: 'total'
+  autoSwitchTarget: DEFAULT_AUTO_SWITCH_TARGET,
+  autoSwitchThreshold: DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
 };
 
 function getInitialState(): WebviewState {
@@ -83,7 +85,8 @@ export const AppContent: React.FC = () => {
             overall: data.overall,
             heartbeat: data.heartbeat,
             autoSwitchEnabled: data.autoSwitchEnabled !== false,
-            autoSwitchTarget: data.autoSwitchTarget || 'total'
+            autoSwitchTarget: data.autoSwitchTarget || DEFAULT_AUTO_SWITCH_TARGET,
+            autoSwitchThreshold: typeof data.autoSwitchThreshold === 'number' ? data.autoSwitchThreshold : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
           };
           setState(nextState);
           getVsCodeApi().setState(nextState);
@@ -106,6 +109,11 @@ export const AppContent: React.FC = () => {
     getVsCodeApi().postMessage({ command: 'setAutoSwitchTarget', target });
   };
 
+  const handleChangeAutoSwitchThreshold = (threshold: number) => {
+    setState((prev) => ({ ...prev, autoSwitchThreshold: threshold }));
+    getVsCodeApi().postMessage({ command: 'setAutoSwitchThreshold', threshold });
+  };
+
   const selectedAcc =
     state.accounts.find((a) => a.email === selectedEmail) || state.activeAccount || state.accounts[0] || null;
 
@@ -118,8 +126,10 @@ export const AppContent: React.FC = () => {
       <ControllerBar
         autoSwitchEnabled={state.autoSwitchEnabled ?? false}
         onToggleAutoSwitch={handleToggleAutoSwitch}
-        autoSwitchTarget={state.autoSwitchTarget ?? 'total'}
+        autoSwitchTarget={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
         onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
+        autoSwitchThreshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
+        onChangeAutoSwitchThreshold={handleChangeAutoSwitchThreshold}
       />
 
       {/* Main Content Area: Responsive side-by-side on wide screens */}

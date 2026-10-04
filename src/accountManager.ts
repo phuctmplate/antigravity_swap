@@ -193,6 +193,15 @@ export class AccountManager {
     this._onDidChangeState.fire();
   }
 
+  public getAutoSwitchThreshold(): number {
+    return this.storage.getAutoSwitchThreshold();
+  }
+
+  public async setAutoSwitchThreshold(threshold: number): Promise<void> {
+    await this.storage.setAutoSwitchThreshold(threshold);
+    this._onDidChangeState.fire();
+  }
+
   /**
    * Switches to the given account and relaunches Antigravity IDE with the new account loaded into memory.
    * @param email Target account email.
@@ -824,8 +833,7 @@ export class AccountManager {
       }
     }
 
-    const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
-    const threshold = config.get<number>(CONFIG_KEYS.LOW_QUOTA_THRESHOLD, EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT);
+    const threshold = this.getAutoSwitchThreshold();
     const target = this.getAutoSwitchTarget();
 
     const activeQuota = this.getAccountTargetQuota(active, target);
