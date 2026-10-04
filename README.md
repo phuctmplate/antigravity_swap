@@ -32,17 +32,50 @@
 | `antigravitySwap.importCurrentAntigravity` | **Import Active Antigravity Account** | 1-click import of the active session from Antigravity IDE |
 | `antigravitySwap.reloginAccount` | **Re-login / Reconnect Account** | Re-authenticate or reconnect an expired account |
 | `antigravitySwap.addAccount` | **Add Account (Google OAuth)** | Connect a new account via Google OAuth web flow |
-| `antigravitySwap.addAccountManual` | **Add Account Manually** | Paste Access Token / Refresh Token manually |
 | `antigravitySwap.refreshQuotas` | **Refresh All Account Quotas** | Fetch fresh quota balances from cloud server |
 | `antigravitySwap.importExistingAccounts` | **Import Detected Accounts** | Auto-detect accounts from local IDE database |
+| `antigravitySwap.restoreOriginalIdeExtension` | **Restore Original IDE Extension** | Revert IDE session bridge back to original pristine backup |
+| `antigravitySwap.enableIdeExtensionPatch` | **Enable IDE Extension Optimization** | Re-enable zero-reload session synchronization |
 
 ---
 
 ## ⚙️ Configuration Settings
 
+- `antigravitySwap.enableIdePatch`: (Default: `true`) Enables automated session synchronization for seamless zero-reload switching.
 - `antigravitySwap.heartbeatIntervalSeconds`: (Default: `30`) Heartbeat interval in seconds to poll quota health and detect expired/banned accounts.
 - `antigravitySwap.autoSwitchWhenQuotaLow`: (Default: `false`) Automatically switch to another account when current active quota is exhausted.
-- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `5`) Percentage threshold below which the active account triggers auto-switching to another healthy account.
+- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `3`) Percentage threshold below which the active account triggers auto-switching to another healthy account.
+
+---
+
+## 🔄 IDE Session Integration & Manual Restoration
+
+### ❓ Why is IDE Session Optimization Needed?
+By default, **Antigravity IDE** is designed around a single static account login. When switching accounts dynamically, the default session listener in the IDE would normally require a full window reload, or cause multiple inactive sessions to accumulate and conflict in the IDE's account menu.
+
+The built-in session bridge seamlessly handles session transitions:
+- **Instant Live Switching**: Updates authentication state in real time so the Language Server and AI Agent immediately accept the new account with **zero window reload**.
+- **Clean Session Management**: Evicts previous inactive sessions to prevent account stacking and ensure only your currently active account is bound to IDE services.
+
+> [!NOTE]
+> **Top-Right Avatar & Display Name Behavior upon Switching**
+> When switching accounts without reloading the window, the active account's **display name, email, credentials, and model quotas switch immediately**.
+> The avatar icon in the top-right corner of the IDE header may retain the cached profile image of the previous session until the IDE is completely restarted / re-launched — this is purely cosmetic. As long as the account display name and email reflect the switched account, your AI prompts, quota tracking, and Language Server services are 100% operating under the new account.
+
+> [!IMPORTANT]
+> **Pristine Backup Location & Manual Restoration Guide**
+> 
+> Before applying session optimization, an untouched pristine backup (`extension.js.bak`) is **always created automatically**.
+> 
+> - **Original Backup File Location**:
+>   - **Windows**: `%LOCALAPPDATA%\Programs\Antigravity IDE\resources\app\extensions\antigravity\dist\extension.js.bak`
+>   - **macOS / Linux**: `~/.local/share/antigravity/resources/app/extensions/antigravity/dist/extension.js.bak` (or `/usr/share/antigravity/resources/app/extensions/antigravity/dist/extension.js.bak`)
+> 
+> **How to restore original files**:
+> 1. **1-Click (Recommended)**: Open Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`), run **`Antigravity Swap: Restore Original IDE Extension`**, then reload window.
+> 2. **Manual Restoration**: Navigate to the directory path above, delete `extension.js`, and rename `extension.js.bak` back to `extension.js`.
+> 
+> *Note: The session bridge is completely self-contained and safe for normal IDE usage even if Antigravity Swap is uninstalled. Official Antigravity IDE software updates will also automatically refresh all files.*
 
 ---
 
@@ -52,73 +85,14 @@ All OAuth tokens and credentials are encrypted and stored inside VS Code's nativ
 
 ---
 
-## 🏗️ Development & Build
+## ⚠️ Disclaimer & Limitation of Liability
 
-### Prerequisites
-
-- **Node.js** &ge; 18
-- **npm** &ge; 9
-- **Antigravity IDE** (VS Code-compatible, engine `^1.90.0`)
-
-### Setup
-
-```bash
-git clone https://github.com/phuctmplate/antigravity_swap
-cd antigravity_swap
-npm install
-```
-
-### Build
-
-```bash
-# Build both the webview (React/Vite) and extension host (esbuild)
-npm run build
-```
-
-| Script | What it does |
-| :--- | :--- |
-| `npm run build` | Full build: webview + extension |
-| `npm run build:webview` | Vite build only &mdash; outputs single-file `dist/webview/index.html` |
-| `npm run build:extension` | esbuild only &mdash; outputs `dist/extension.js` |
-
-### Package as `.vsix`
-
-```bash
-npx @vscode/vsce package --no-dependencies
-```
-
-This generates `antigravity-swap-1.0.0.vsix` in the project root.
-
-### Install locally
-
-```bash
-code --install-extension antigravity-swap-1.0.0.vsix --force
-```
-
-Then reload the IDE window: `Ctrl+Shift+P` &rarr; **Developer: Reload Window**.
-
----
-
-## 📁 Project Structure
-
-```
-antigravity_swap/
-├── src/
-│   ├── extension.ts            # Extension entry point & command registration
-│   ├── webviewProvider.ts      # Webview panel & sidebar provider
-│   ├── accountManager.ts       # Multi-account state & token switching
-│   ├── quotaService.ts         # Google Cloud Code quota API parser & polling
-│   ├── storage.ts              # SecretStorage & local state persistence
-│   ├── constants.ts            # Client credentials & application constants
-│   ├── heartbeatService.ts     # Background quota health checker
-│   ├── statusBar.ts            # Status bar item & quick menu
-│   └── webview/                # Modern React webview app (Vite + Tailwind)
-│       └── src/
-│           ├── App.tsx
-│           ├── components/     # UI components (AccountList, ModelQuotas, Card, etc.)
-│           └── lib/            # Quota color helpers & formatters
-├── dist/                       # Compiled production bundles
-├── package.json
-└── vite.config.ts
-```
-
+> [!CAUTION]
+> **Use at Your Own Discretion**
+> 
+> - **Antigravity Swap** is an independent, community-developed third-party extension and is **not affiliated with, endorsed by, sponsored by, or officially supported by Google, DeepMind, or Codeium**.
+> - This software is provided **"as is"**, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, or non-infringement.
+> - The developers and contributors of this extension **assume NO responsibility or liability** for:
+>   1. Any account restrictions, suspensions, rate limits, or bans imposed by service providers.
+>   2. Any unintended behavior, data loss, IDE crashes, or system instability resulting from modifying local preferences or multi-account usage.
+> - You are solely responsible for complying with the respective Terms of Service, Acceptable Use Policies, and rate limits of Google and Antigravity.
