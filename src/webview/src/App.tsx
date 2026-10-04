@@ -21,7 +21,8 @@ const defaultState: WebviewState = {
     proAccountsCount: 0,
     lastUpdated: new Date().toISOString()
   },
-  autoSwitchEnabled: false
+  autoSwitchEnabled: false,
+  autoSwitchTarget: 'total'
 };
 
 function getInitialState(): WebviewState {
@@ -81,7 +82,8 @@ export const AppContent: React.FC = () => {
             activeAccount,
             overall: data.overall,
             heartbeat: data.heartbeat,
-            autoSwitchEnabled: data.autoSwitchEnabled !== false
+            autoSwitchEnabled: data.autoSwitchEnabled !== false,
+            autoSwitchTarget: data.autoSwitchTarget || 'total'
           };
           setState(nextState);
           getVsCodeApi().setState(nextState);
@@ -99,6 +101,11 @@ export const AppContent: React.FC = () => {
     setState((prev) => ({ ...prev, autoSwitchEnabled: enabled }));
   };
 
+  const handleSelectAutoSwitchTarget = (target: any) => {
+    setState((prev) => ({ ...prev, autoSwitchTarget: target }));
+    getVsCodeApi().postMessage({ command: 'setAutoSwitchTarget', target });
+  };
+
   const selectedAcc =
     state.accounts.find((a) => a.email === selectedEmail) || state.activeAccount || state.accounts[0] || null;
 
@@ -111,6 +118,8 @@ export const AppContent: React.FC = () => {
       <ControllerBar
         autoSwitchEnabled={state.autoSwitchEnabled ?? false}
         onToggleAutoSwitch={handleToggleAutoSwitch}
+        autoSwitchTarget={state.autoSwitchTarget ?? 'total'}
+        onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
       />
 
       {/* Main Content Area: Responsive side-by-side on wide screens */}

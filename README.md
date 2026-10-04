@@ -59,6 +59,7 @@ Full dashboard view with responsive side-by-side account management and real-tim
 - `antigravitySwap.heartbeatIntervalSeconds`: (Default: `30`) Heartbeat interval in seconds to poll quota health and detect expired/banned accounts.
 - `antigravitySwap.autoSwitchWhenQuotaLow`: (Default: `false`) Automatically switch to another account when current active quota is exhausted.
 - `antigravitySwap.lowQuotaThresholdPercent`: (Default: `3`) Percentage threshold below which the active account triggers auto-switching to another healthy account.
+- `antigravitySwap.autoSwitchTarget`: (Default: `"total"`) Quota target to monitor for auto-switch (`"total"`, `"gemini"`, or `"claude"`). When a model family is selected, it monitors the 5-Hour window for Pro/Ultra accounts or Weekly balance for Free accounts.
 
 ---
 

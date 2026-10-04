@@ -3,18 +3,24 @@ import { getVsCodeApi } from '../vscode';
 import { Button } from './ui/button';
 import { Switch } from './ui/switch';
 import { toast } from 'sonner';
-import { Zap, RotateCw, Plus, ExternalLink } from 'lucide-react';
+import { Zap, RotateCw, Plus } from 'lucide-react';
+import { AutoSwitchTarget } from '../types';
+import { cn } from '../lib/utils';
 
 interface ControllerBarProps {
   autoSwitchEnabled: boolean;
   onToggleAutoSwitch: (enabled: boolean) => void;
+  autoSwitchTarget?: AutoSwitchTarget;
+  onSelectAutoSwitchTarget?: (target: AutoSwitchTarget) => void;
 }
 
 const GLOBAL_REFRESH_COOLDOWN_MS = 6000;
 
 export const ControllerBar: React.FC<ControllerBarProps> = ({
   autoSwitchEnabled,
-  onToggleAutoSwitch
+  onToggleAutoSwitch,
+  autoSwitchTarget = 'total',
+  onSelectAutoSwitchTarget
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const lastRefreshRef = useRef<number>(0);
@@ -89,20 +95,66 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
         <span>{isRefreshing ? 'Refreshing...' : 'Refresh Quotas'}</span>
       </Button>
 
-      {/* Auto-Switch shadcn Switch */}
-      <div
-        className="inline-flex items-center gap-2 rounded-md border border-border bg-card/60 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-xs cursor-pointer select-none hover:bg-accent/40 transition-colors"
-        onClick={() => handleToggle(!autoSwitchEnabled)}
-        title="Toggle auto-switch when active account quota is depleted"
-      >
-        <Switch
-          checked={autoSwitchEnabled}
-          onCheckedChange={handleToggle}
-          aria-label="Toggle Auto-Switch"
-        />
-        <span className={autoSwitchEnabled ? 'text-foreground font-semibold' : 'text-muted-foreground'}>
-          Auto-Switch
-        </span>
+      {/* Auto-Switch & Target Selector */}
+      <div className="inline-flex items-center rounded-md border border-border bg-card/60 p-0.5 text-[11px] font-medium shadow-xs">
+        <div
+          className="flex items-center gap-1.5 px-2 py-1 cursor-pointer select-none hover:bg-accent/40 rounded transition-colors"
+          onClick={() => handleToggle(!autoSwitchEnabled)}
+          title="Toggle auto-switch when active account quota is depleted"
+        >
+          <Switch
+            checked={autoSwitchEnabled}
+            onCheckedChange={handleToggle}
+            aria-label="Toggle Auto-Switch"
+          />
+          <span className={autoSwitchEnabled ? 'text-foreground font-semibold' : 'text-muted-foreground'}>
+            Auto-Switch
+          </span>
+        </div>
+
+        {autoSwitchEnabled && (
+          <div className="flex items-center border-l border-border/80 pl-1.5 ml-0.5 pr-1 gap-1">
+            <button
+              type="button"
+              onClick={() => onSelectAutoSwitchTarget?.('total')}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
+                (autoSwitchTarget || 'total') === 'total'
+                  ? "bg-primary text-primary-foreground font-bold shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              )}
+              title="Auto-switch when Total Quota <= 3%"
+            >
+              Total
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectAutoSwitchTarget?.('gemini')}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
+                autoSwitchTarget === 'gemini'
+                  ? "bg-sky-500 text-white font-bold shadow-2xs dark:bg-sky-600"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              )}
+              title="Auto-switch when Gemini Quota <= 3% (5h Window for Pro/Ultra, Weekly for Free)"
+            >
+              Gemini
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectAutoSwitchTarget?.('claude')}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
+                autoSwitchTarget === 'claude'
+                  ? "bg-amber-500 text-white font-bold shadow-2xs dark:bg-amber-600"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              )}
+              title="Auto-switch when Claude & GPT Quota <= 3% (5h Window for Pro/Ultra, Weekly for Free)"
+            >
+              Claude
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -50,7 +50,8 @@ export const TIER_WEIGHTS = {
 export const STORAGE_KEYS = {
   ACCOUNTS: 'antigravitySwap.accounts',
   ACTIVE_ACCOUNT: 'antigravitySwap.activeEmail',
-  AUTO_SWITCH: 'antigravitySwap.autoSwitch'
+  AUTO_SWITCH: 'antigravitySwap.autoSwitch',
+  AUTO_SWITCH_TARGET: 'antigravitySwap.autoSwitchTarget'
 } as const;
 
 /**
@@ -61,7 +62,8 @@ export const CONFIG_KEYS = {
   HEARTBEAT_INTERVAL: 'heartbeatIntervalSeconds',
   AUTO_SWITCH_WHEN_LOW: 'autoSwitchWhenQuotaLow',
   LOW_QUOTA_THRESHOLD: 'lowQuotaThresholdPercent',
-  ENABLE_IDE_PATCH: 'enableIdeExtensionPatch'
+  ENABLE_IDE_PATCH: 'enableIdeExtensionPatch',
+  AUTO_SWITCH_TARGET: 'autoSwitchTarget'
 } as const;
 
 /**
@@ -70,6 +72,7 @@ export const CONFIG_KEYS = {
 export const EXTENSION_DEFAULTS = {
   DEFAULT_HEARTBEAT_SECONDS: 30,
   DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 3,
+  DEFAULT_AUTO_SWITCH_TARGET: 'total',
   ACCOUNT_REFRESH_COOLDOWN_MS: 10000,
   GLOBAL_REFRESH_COOLDOWN_MS: 10000
 } as const;

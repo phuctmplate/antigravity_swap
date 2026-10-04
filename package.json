@@ -16,8 +16,7 @@
   ],
   "icon": "media/icon.png",
   "activationEvents": [
-    "onStartupFinished",
-    "onView:antigravitySwap.dashboardView"
+    "onStartupFinished"
   ],
   "enabledApiProposals": [
     "antigravityUnifiedStateSync"
@@ -157,6 +156,21 @@
           "type": "number",
           "default": 3,
           "description": "Percentage threshold (default 3%) below which the active account triggers auto-switching to another healthy account."
+        },
+        "antigravitySwap.autoSwitchTarget": {
+          "type": "string",
+          "enum": [
+            "total",
+            "gemini",
+            "claude"
+          ],
+          "enumDescriptions": [
+            "Total Quota (average across all models)",
+            "Gemini Models (5-hour window for Pro/Ultra, Weekly for Free)",
+            "Claude & GPT Models (5-hour window for Pro/Ultra, Weekly for Free)"
+          ],
+          "default": "total",
+          "description": "Specifies which quota model family triggers automatic account switching when depleted."
         }
       }
     }

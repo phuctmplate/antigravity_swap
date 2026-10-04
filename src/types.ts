@@ -112,6 +112,8 @@ export interface HeartbeatInfo {
   activeAccountHealth: 'healthy' | 'warning' | 'error';
 }
 
+export type AutoSwitchTarget = 'total' | 'gemini' | 'claude';
+
 export interface WebviewStateMessage {
   type: 'stateUpdate';
   accounts: AccountInfo[];
@@ -119,5 +121,6 @@ export interface WebviewStateMessage {
   activeAccount?: AccountInfo;
   isLoading: boolean;
   autoSwitchEnabled: boolean;
+  autoSwitchTarget?: AutoSwitchTarget;
   heartbeat?: HeartbeatInfo;
 }

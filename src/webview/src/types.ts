@@ -89,6 +89,8 @@ export interface OverallQuotaSummary {
   lastUpdated: string;
 }
 
+export type AutoSwitchTarget = 'total' | 'gemini' | 'claude';
+
 export interface WebviewState {
   accounts: Account[];
   activeAccount: Account | null;
@@ -98,4 +100,5 @@ export interface WebviewState {
     intervalSeconds: number;
   };
   autoSwitchEnabled?: boolean;
+  autoSwitchTarget?: AutoSwitchTarget;
 }

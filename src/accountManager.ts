@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { AccountInfo, OAuthTokens, OverallQuotaSummary } from './types';
+import { AccountInfo, OAuthTokens, OverallQuotaSummary, AutoSwitchTarget } from './types';
 import { StorageService } from './storage';
 import { OAuthService } from './oauthService';
 import { QuotaService } from './quotaService';
@@ -181,6 +181,15 @@ export class AccountManager {
 
   public async setAutoSwitchEnabled(enabled: boolean): Promise<void> {
     await this.storage.setAutoSwitchEnabled(enabled);
+    this._onDidChangeState.fire();
+  }
+
+  public getAutoSwitchTarget(): AutoSwitchTarget {
+    return this.storage.getAutoSwitchTarget();
+  }
+
+  public async setAutoSwitchTarget(target: AutoSwitchTarget): Promise<void> {
+    await this.storage.setAutoSwitchTarget(target);
     this._onDidChangeState.fire();
   }
 
@@ -728,7 +737,75 @@ export class AccountManager {
   }
 
   /**
-   * Auto-switches to next account with healthy quota if current account is exhausted or banned.
+   * Resolves the quota percentage for an account based on selected target:
+   * - 'total': uses averageQuotaPercentage.
+   * - 'gemini': uses Weekly quota for Free accounts, or 5-Hour window for Pro/Ultra accounts.
+   * - 'claude': uses Weekly quota for Free accounts, or 5-Hour window for Pro/Ultra accounts.
+   */
+  public getAccountTargetQuota(account: AccountInfo, target: AutoSwitchTarget = 'total'): number {
+    if (target === 'total') {
+      return account.averageQuotaPercentage ?? 0;
+    }
+
+    const isFree = !account.tierBadge || account.tierBadge === 'STANDARD FREE' || account.accountType?.toLowerCase().includes('free') === true;
+    const quotas = account.quotas || [];
+    const fiveHourQuotas = quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
+    const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
+
+    if (target === 'gemini') {
+      const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+      const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
+      const gemini5h = geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash'));
+
+      if (isFree) {
+        if (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) {
+          return geminiWeekly.percentage;
+        }
+        if (gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0) {
+          return gemini5h.percentage;
+        }
+        return account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+      } else {
+        if (gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0) {
+          return gemini5h.percentage;
+        }
+        if (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) {
+          return geminiWeekly.percentage;
+        }
+        return account.fiveHourQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+      }
+    }
+
+    if (target === 'claude') {
+      const claudeGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+      const claudeWeekly = claudeGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+      const claude5h = claudeGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+
+      if (isFree) {
+        if (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) {
+          return claudeWeekly.percentage;
+        }
+        if (claude5h && !claude5h.disabled && claude5h.percentage >= 0) {
+          return claude5h.percentage;
+        }
+        return account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+      } else {
+        if (claude5h && !claude5h.disabled && claude5h.percentage >= 0) {
+          return claude5h.percentage;
+        }
+        if (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) {
+          return claudeWeekly.percentage;
+        }
+        return account.fiveHourQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+      }
+    }
+
+    return account.averageQuotaPercentage ?? 0;
+  }
+
+  /**
+   * Auto-switches to next account with healthy quota if current account is exhausted or unusable.
+   * If autoSwitch is turned OFF, it NEVER auto-switches under any circumstance.
    */
   public async checkAutoSwitch(): Promise<void> {
     const autoSwitch = this.storage.getAutoSwitchEnabled();
@@ -737,26 +814,47 @@ export class AccountManager {
     const active = this.getActiveAccount();
     if (!active) return;
 
-    // Do not auto-switch if quota data hasn't been fetched yet
-    if (!active.lastRefreshedAt || !active.quotas || active.quotas.length === 0) {
-      return;
+    const isAuthFailed = active.status === 'auth_failed';
+    const isBanned = active.isBanned || active.status === 'banned';
+
+    // If account credentials are ok, wait until quota data is loaded before evaluating low quota
+    if (!isAuthFailed && !isBanned) {
+      if (!active.lastRefreshedAt || !active.quotas || active.quotas.length === 0) {
+        return;
+      }
     }
 
     const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
     const threshold = config.get<number>(CONFIG_KEYS.LOW_QUOTA_THRESHOLD, EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT);
+    const target = this.getAutoSwitchTarget();
 
-    const isDepleted = active.averageQuotaPercentage <= threshold;
-    const isUnusable = active.isBanned || active.status === 'auth_failed' || active.status === 'banned';
+    const activeQuota = this.getAccountTargetQuota(active, target);
+    const isDepleted = activeQuota <= threshold;
+    const isUnusable = isAuthFailed || isBanned;
 
     if (isDepleted || isUnusable) {
-      const candidate = this.accounts.find(
-        (a) => a.email !== active.email && !a.isBanned && a.status === 'active' && a.averageQuotaPercentage > threshold
+      const targetLabel = target === 'gemini' ? 'Gemini' : target === 'claude' ? 'Claude & GPT' : 'Total';
+
+      // Find candidates that have healthy quota for this target
+      const candidates = this.accounts.filter(
+        (a) => a.email !== active.email && !a.isBanned && a.status === 'active' && this.getAccountTargetQuota(a, target) > threshold
       );
 
+      // Best candidate: sort descending by that target's quota
+      candidates.sort((a, b) => this.getAccountTargetQuota(b, target) - this.getAccountTargetQuota(a, target));
+
+      const candidate = candidates[0];
+
       if (candidate) {
-        const reason = isUnusable ? 'account credentials/ban status' : `low quota (${active.averageQuotaPercentage}%)`;
+        const candidateQuota = this.getAccountTargetQuota(candidate, target);
+        const reason = isAuthFailed
+          ? 'authentication failed (token expired/invalid)'
+          : isBanned
+          ? 'account suspended/banned by Google'
+          : `low ${targetLabel} quota (${activeQuota}%)`;
+
         vscode.window.showWarningMessage(
-          `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidate.averageQuotaPercentage}% left)...`
+          `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${targetLabel}: ${candidateQuota}% left)...`
         );
         await this.switchAccount(candidate.email);
       }

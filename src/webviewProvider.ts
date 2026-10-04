@@ -151,6 +151,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'setAutoSwitch':
           await this.accountManager.setAutoSwitchEnabled(data.enabled);
           break;
+        case 'setAutoSwitchTarget':
+          await this.accountManager.setAutoSwitchTarget(data.target);
+          break;
         case 'ready':
           this.updateWebview();
           break;
@@ -178,6 +181,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       overall,
       heartbeat,
       autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
+      autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
       isLight
     };
 
@@ -234,6 +238,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         overall,
         heartbeat,
         autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
+        autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
         isLight
       };
       const b64State = Buffer.from(JSON.stringify(initialState)).toString('base64');

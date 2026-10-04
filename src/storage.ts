@@ -3,8 +3,8 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as cp from 'child_process';
-import { AccountInfo, OAuthTokens } from './types';
-import { STORAGE_KEYS } from './constants';
+import { AccountInfo, OAuthTokens, AutoSwitchTarget } from './types';
+import { STORAGE_KEYS, CONFIG_KEYS, EXTENSION_DEFAULTS } from './constants';
 
 export interface DiscoveredAccount {
   email: string;
@@ -42,6 +42,25 @@ export class StorageService {
 
   public async setAutoSwitchEnabled(enabled: boolean): Promise<void> {
     await this.context.globalState.update(STORAGE_KEYS.AUTO_SWITCH, enabled);
+  }
+
+  public getAutoSwitchTarget(): AutoSwitchTarget {
+    const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+    const configTarget = config.get<AutoSwitchTarget>(CONFIG_KEYS.AUTO_SWITCH_TARGET);
+    if (configTarget && (configTarget === 'total' || configTarget === 'gemini' || configTarget === 'claude')) {
+      return configTarget;
+    }
+    return this.context.globalState.get<AutoSwitchTarget>(STORAGE_KEYS.AUTO_SWITCH_TARGET, EXTENSION_DEFAULTS.DEFAULT_AUTO_SWITCH_TARGET);
+  }
+
+  public async setAutoSwitchTarget(target: AutoSwitchTarget): Promise<void> {
+    await this.context.globalState.update(STORAGE_KEYS.AUTO_SWITCH_TARGET, target);
+    try {
+      const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+      await config.update(CONFIG_KEYS.AUTO_SWITCH_TARGET, target, vscode.ConfigurationTarget.Global);
+    } catch {
+      // Ignore if config update fails
+    }
   }
 
   public async getAccountTokens(email: string): Promise<OAuthTokens | null> {
