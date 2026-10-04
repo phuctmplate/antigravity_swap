@@ -54,20 +54,28 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
     vscode.postMessage({ command: 'setAutoSwitch', enabled: checked });
   };
 
-  const handlePopOut = () => {
-    vscode.postMessage({ command: 'popOut' });
-  };
-
   return (
     <div className="flex flex-wrap items-center gap-1.5 mb-3">
+      
+      {/* Google Sign In Button */}
+      <Button
+        onClick={handleSignIn}
+        size="sm"
+        variant="default"
+        title="Add account via Google OAuth sign in"
+      >
+        <Plus className="w-3.5 h-3.5" />
+        <span>Google Sign In</span>
+      </Button>
+      
       {/* Import Antigravity Button */}
       <Button
         onClick={handleImport}
         size="sm"
-        variant="default"
+        variant="secondary"
         title="Import account from active Antigravity IDE session"
       >
-        <Zap className="w-3.5 h-3.5 fill-current" />
+        <Zap className="w-3.5 h-3.5" />
         <span>Import</span>
       </Button>
 
@@ -81,17 +89,6 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
       >
         <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-primary' : ''}`} />
         <span>{isRefreshing ? 'Refreshing...' : 'Refresh Quotas'}</span>
-      </Button>
-
-      {/* Google Sign In Button */}
-      <Button
-        onClick={handleSignIn}
-        size="sm"
-        variant="secondary"
-        title="Add account via Google OAuth sign in"
-      >
-        <Plus className="w-3.5 h-3.5" />
-        <span>Google Sign In</span>
       </Button>
 
       {/* Auto-Switch shadcn Switch */}
@@ -109,18 +106,6 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
           Auto-Switch
         </span>
       </div>
-
-      {/* Pop Out Detached Window Button */}
-      <Button
-        onClick={handlePopOut}
-        size="sm"
-        variant="outline"
-        title="Pop out dashboard into a detached window / editor tab to monitor easily"
-        className="ml-auto gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-      >
-        <ExternalLink className="w-3.5 h-3.5" />
-        <span>Pop Out</span>
-      </Button>
     </div>
   );
 };

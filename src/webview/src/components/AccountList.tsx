@@ -8,9 +8,9 @@ import { Badge } from './ui/badge';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useToast } from './Toast';
 import {
-  Plus,
   Zap,
   LogIn,
+  Plus,
   Filter,
   CheckSquare,
   Square,
@@ -41,7 +41,7 @@ export const AccountList: React.FC<AccountListProps> = ({
   onSelectAccount
 }) => {
   const [filterType, setFilterType] = useState<string>('all');
-  const [sortMode, setSortMode] = useState<'tier' | 'name-asc' | 'name-desc'>('tier');
+  const [sortMode, setSortMode] = useState<'tier' | 'tier-asc' | 'name-asc' | 'name-desc'>('tier');
   const [pageSize, setPageSize] = useState<number>(10);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
@@ -61,10 +61,6 @@ export const AccountList: React.FC<AccountListProps> = ({
   const lastRefreshMap = useRef<Map<string, number>>(new Map());
   const vscode = getVsCodeApi();
   const { showToast } = useToast();
-
-  const handleAddManual = () => {
-    vscode.postMessage({ command: 'addManual' });
-  };
 
   const handleImport = () => {
     vscode.postMessage({ command: 'importCurrentAntigravity' });
@@ -129,7 +125,19 @@ export const AccountList: React.FC<AccountListProps> = ({
       return nameB.localeCompare(nameA, undefined, { sensitivity: 'base', numeric: true });
     }
 
-    // Default 'tier': Ultra/Enterprise first, then Pro, then Free.
+    if (sortMode === 'tier-asc') {
+      // Free first, then Pro, then Ultra/Enterprise
+      const rankA = getTierRank(a);
+      const rankB = getTierRank(b);
+      if (rankA !== rankB) {
+        return rankB - rankA;
+      }
+      const nameA = a.name || a.email;
+      const nameB = b.name || b.email;
+      return nameA.localeCompare(nameB, undefined, { sensitivity: 'base', numeric: true });
+    }
+
+    // Default 'tier' (tier-desc): Ultra/Enterprise first, then Pro, then Free.
     // Within the same tier, always sort alphabetically by name (A-Z)
     const rankA = getTierRank(a);
     const rankB = getTierRank(b);
@@ -368,16 +376,6 @@ export const AccountList: React.FC<AccountListProps> = ({
               <span>{isMultiSelectMode ? 'Done' : 'Select'}</span>
             </Button>
           )}
-
-          <Button
-            onClick={handleAddManual}
-            size="xs"
-            variant="outline"
-            title="Add account via token"
-          >
-            <Plus className="w-3 h-3" />
-            <span>Manual</span>
-          </Button>
         </div>
       </div>
 
@@ -493,6 +491,7 @@ export const AccountList: React.FC<AccountListProps> = ({
               title="Sort accounts"
             >
               <option value="tier">Sort: Tier (Ultra → Pro → Free)</option>
+              <option value="tier-asc">Sort: Tier (Free → Pro → Ultra)</option>
               <option value="name-asc">Sort: Name (A → Z)</option>
               <option value="name-desc">Sort: Name (Z → A)</option>
             </select>
@@ -508,22 +507,27 @@ export const AccountList: React.FC<AccountListProps> = ({
             <div className="text-xs text-foreground font-medium mb-3">
               No accounts connected. Import from current Antigravity or sign in!
             </div>
-            <div className="flex flex-col gap-2">
-              <Button
-                onClick={handleImport}
-                size="sm"
-                variant="default"
-              >
-                <Zap className="w-3.5 h-3.5 fill-current" />
-                <span>Import</span>
-              </Button>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {/* Google Sign In Button */}
               <Button
                 onClick={handleSignIn}
                 size="sm"
-                variant="secondary"
+                variant="default"
+                title="Add account via Google OAuth sign in"
               >
-                <LogIn className="w-3.5 h-3.5" />
+                <Plus className="w-3.5 h-3.5" />
                 <span>Google Sign In</span>
+              </Button>
+
+              {/* Import Antigravity Button */}
+              <Button
+                onClick={handleImport}
+                size="sm"
+                variant="secondary"
+                title="Import account from active Antigravity IDE session"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>Import</span>
               </Button>
             </div>
           </CardContent>

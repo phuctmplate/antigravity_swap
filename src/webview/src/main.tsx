@@ -3,6 +3,45 @@ import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
+// Dynamic theme synchronization with VS Code / Antigravity IDE
+function applyTheme(forceIsLight?: boolean) {
+  try {
+    const isLight = typeof forceIsLight === 'boolean'
+      ? forceIsLight
+      : (document.body?.classList.contains('vscode-light') ||
+         document.body?.classList.contains('vscode-high-contrast-light') ||
+         false);
+
+    if (isLight) {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
+  } catch (err) {
+    console.warn('[Antigravity Swap] applyTheme error:', err);
+  }
+}
+
+// Initial theme check
+applyTheme();
+
+// Observe VS Code body class mutations when user toggles theme in IDE without reloading
+if (typeof MutationObserver !== 'undefined' && document.body) {
+  const themeObserver = new MutationObserver(() => {
+    applyTheme();
+  });
+  themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+}
+
+// Listen for themeChanged messages from extension backend
+window.addEventListener('message', (event) => {
+  const message = event.data;
+  if (message?.type === 'themeChanged' && typeof message.isLight === 'boolean') {
+    applyTheme(message.isLight);
+  } else if (message?.type === 'stateUpdate' && typeof message.isLight === 'boolean') {
+    applyTheme(message.isLight);
+  }
+});
 
 console.log('[Antigravity Swap Webview] Initializing React...');
 

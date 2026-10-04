@@ -5,7 +5,7 @@ import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
-import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, CheckSquare, Square } from 'lucide-react';
+import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, CheckSquare, Square, Gauge } from 'lucide-react';
 import { quotaFillClass, quotaTextClass } from '../lib/quota';
 import { cn } from '../lib/utils';
 
@@ -162,79 +162,81 @@ export const AccountCard: React.FC<AccountCardProps> = ({
         <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-gradient-to-b from-primary to-indigo-500" />
       )}
 
-      {/* Selected Badge (Single Select view) */}
-      {!isMultiSelectMode && isSelected && (
-        <span className="absolute top-2 right-2 rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-semibold text-foreground border border-white/20 pointer-events-none shadow-2xs">
-          Selected
-        </span>
-      )}
-
       <CardContent className="flex flex-col flex-1 p-2.5">
-        {/* Card Header: Avatar & Info */}
-        <div className={cn("flex items-center gap-2 mb-2 pr-14", isMultiSelectMode && "pl-6")}>
-          <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-pink-500 text-xs font-bold text-white overflow-hidden border border-white/20 shadow-xs">
-            {account.avatarUrl ? (
-              <img src={account.avatarUrl} alt={account.name || ''} className="h-full w-full object-cover" />
-            ) : (
-              avatarChar
-            )}
-          </div>
-
-          <div className="flex flex-1 flex-col min-w-0">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-bold text-xs text-foreground truncate max-w-[120px]">
-                {account.name || account.email}
-              </span>
-
-              {/* Status & Tier Badges */}
-              {isActive && (
-                <Badge variant="default" className="text-[8px] px-1 py-0 font-extrabold">
-                  ACTIVE
-                </Badge>
-              )}
-              {isBanned && (
-                <Badge variant="destructive" className="text-[8px] px-1 py-0 gap-0.5 font-extrabold">
-                  <ShieldAlert className="w-2.5 h-2.5" />
-                  <span>BANNED</span>
-                </Badge>
-              )}
-              {isAuthFailed && (
-                <Badge variant="warning" className="text-[8px] px-1 py-0 gap-0.5 font-extrabold">
-                  <AlertTriangle className="w-2.5 h-2.5" />
-                  <span>AUTH FAILED</span>
-                </Badge>
-              )}
-              {account.tierBadge === 'ENTERPRISE' && (
-                <Badge variant="success" className="text-[8px] px-1 py-0 font-extrabold">
-                  ENTERPRISE
-                </Badge>
-              )}
-              {account.tierBadge === 'ULTRA' && (
-                <Badge variant="info" className="text-[8px] px-1 py-0 font-extrabold bg-purple-500/20 text-purple-300 border-purple-500/30">
-                  ULTRA
-                </Badge>
-              )}
-              {account.tierBadge === 'AI PREMIUM' && (
-                <Badge variant="info" className="text-[8px] px-1 py-0 font-extrabold">
-                  AI PREMIUM
-                </Badge>
-              )}
-              {account.tierBadge === 'PRO' && (
-                <Badge variant="pro" className="text-[8px] px-1 py-0 font-extrabold">
-                  PRO
-                </Badge>
-              )}
-              {isFree && (
-                <Badge variant="outline" className="text-[8px] px-1 py-0 font-extrabold text-muted-foreground border-border/70 bg-muted/30">
-                  FREE
-                </Badge>
+        {/* Card Header: Avatar, Info, and Overall Quota Percentage */}
+        <div className={cn("flex items-start justify-between gap-2 mb-2", isMultiSelectMode && "pl-6")}>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-pink-500 text-xs font-bold text-white overflow-hidden border border-white/20 shadow-xs">
+              {account.avatarUrl ? (
+                <img src={account.avatarUrl} alt={account.name || ''} className="h-full w-full object-cover" />
+              ) : (
+                avatarChar
               )}
             </div>
-            <div className="text-[10px] text-muted-foreground truncate">{account.email}</div>
-            {account.statusMessage && (
-              <div className="text-[10px] text-amber-400 mt-0.5">{account.statusMessage}</div>
-            )}
+
+            <div className="flex flex-1 flex-col min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-xs text-foreground truncate max-w-[120px]">
+                  {account.name || account.email}
+                </span>
+
+                {/* Status & Tier Badges */}
+                {isActive && (
+                  <Badge variant="default" className="text-[8px] px-1 py-0 font-extrabold">
+                    ACTIVE
+                  </Badge>
+                )}
+                {isBanned && (
+                  <Badge variant="destructive" className="text-[8px] px-1 py-0 gap-0.5 font-extrabold">
+                    <ShieldAlert className="w-2.5 h-2.5" />
+                    <span>BANNED</span>
+                  </Badge>
+                )}
+                {isAuthFailed && (
+                  <Badge variant="warning" className="text-[8px] px-1 py-0 gap-0.5 font-extrabold">
+                    <AlertTriangle className="w-2.5 h-2.5" />
+                    <span>AUTH FAILED</span>
+                  </Badge>
+                )}
+                {account.tierBadge === 'ENTERPRISE' && (
+                  <Badge variant="success" className="text-[8px] px-1 py-0 font-extrabold">
+                    ENTERPRISE
+                  </Badge>
+                )}
+                {account.tierBadge === 'ULTRA' && (
+                  <Badge variant="info" className="text-[8px] px-1 py-0 font-extrabold bg-fuchsia-100 text-fuchsia-800 border-fuchsia-300 dark:bg-purple-500/20 dark:text-purple-300 dark:border-purple-500/30">
+                    ULTRA
+                  </Badge>
+                )}
+                {account.tierBadge === 'AI PREMIUM' && (
+                  <Badge variant="info" className="text-[8px] px-1 py-0 font-extrabold">
+                    AI PREMIUM
+                  </Badge>
+                )}
+                {account.tierBadge === 'PRO' && (
+                  <Badge variant="pro" className="text-[8px] px-1 py-0 font-extrabold">
+                    PRO
+                  </Badge>
+                )}
+                {isFree && (
+                  <Badge variant="outline" className="text-[8px] px-1 py-0 font-extrabold text-muted-foreground border-border/70 bg-muted/30">
+                    FREE
+                  </Badge>
+                )}
+              </div>
+              <div className="text-[10px] text-muted-foreground truncate">{account.email}</div>
+              {account.statusMessage && (
+                <div className="text-[10px] text-amber-400 mt-0.5">{account.statusMessage}</div>
+              )}
+            </div>
           </div>
+
+          {/* Right Side: Selected Indicator (Single Select view) */}
+          {!isMultiSelectMode && isSelected && (
+            <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-semibold text-foreground border border-white/20 pointer-events-none shadow-2xs shrink-0">
+              Selected
+            </span>
+          )}
         </div>
 
         {/* Quota Section: Separate Gemini and Claude & GPT, separate 5h and Weekly */}
@@ -367,6 +369,26 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             </>
           )}
         </div>
+
+        {/* Total Account Quota Progress Bar */}
+        {!isBanned && !isAuthFailed && (
+          <div className="flex flex-col gap-1 rounded-md bg-accent/15 p-1.5 border border-border/30 mb-1.5">
+            <div className="flex justify-between items-center text-[9.5px]">
+              <span className="text-muted-foreground flex items-center gap-1 font-medium">
+                <Gauge className="w-3 h-3 text-muted-foreground/80 flex-shrink-0" />
+                <span className="text-foreground/90 font-semibold">Total Quota Left</span>
+              </span>
+              <span className={cn("font-bold font-mono text-[10px]", isFree && (!account.averageQuotaPercentage || account.averageQuotaPercentage === 0) ? "text-muted-foreground" : getTextColor(account.averageQuotaPercentage ?? 0))}>
+                {isFree && (!account.averageQuotaPercentage || account.averageQuotaPercentage === 0) ? 'Standard' : `${account.averageQuotaPercentage ?? 0}%`}
+              </span>
+            </div>
+            <Progress
+              value={account.averageQuotaPercentage ?? 0}
+              indicatorClassName={getFillClass(account.averageQuotaPercentage ?? 0)}
+              className="h-1.5 w-full"
+            />
+          </div>
+        )}
 
         {/* Card Action Buttons */}
         <div className="flex items-center justify-between gap-1 mt-auto pt-1.5 border-t border-border/60">
