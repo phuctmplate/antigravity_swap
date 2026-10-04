@@ -6,7 +6,7 @@ import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { ConfirmDialog } from './ConfirmDialog';
-import { useToast } from './Toast';
+import { toast } from 'sonner';
 import {
   Zap,
   LogIn,
@@ -60,7 +60,6 @@ export const AccountList: React.FC<AccountListProps> = ({
 
   const lastRefreshMap = useRef<Map<string, number>>(new Map());
   const vscode = getVsCodeApi();
-  const { showToast } = useToast();
 
   const handleImport = () => {
     vscode.postMessage({ command: 'importCurrentAntigravity' });
@@ -215,9 +214,8 @@ export const AccountList: React.FC<AccountListProps> = ({
 
     if (elapsed < REFRESH_COOLDOWN_MS) {
       const remainingSec = Math.ceil((REFRESH_COOLDOWN_MS - elapsed) / 1000);
-      showToast(
-        `Please wait ${remainingSec}s before refreshing ${email} again to avoid rate limits.`,
-        'warning'
+      toast.warning(
+        `Please wait ${remainingSec}s before refreshing ${email} again to avoid rate limits.`
       );
       return;
     }
@@ -226,7 +224,7 @@ export const AccountList: React.FC<AccountListProps> = ({
     setRefreshingEmails((prev) => new Set(prev).add(email));
 
     vscode.postMessage({ command: 'refreshAccount', email });
-    showToast(`Refreshing quota for ${email}...`, 'info');
+    toast.info(`Refreshing quota for ${email}...`);
 
     setTimeout(() => {
       setRefreshingEmails((prev) => {
@@ -260,9 +258,8 @@ export const AccountList: React.FC<AccountListProps> = ({
 
     if (emailsReady.length === 0) {
       const remSec = Math.ceil(minRemaining / 1000);
-      showToast(
-        `Please wait ${remSec}s before refreshing selected accounts again to avoid rate limits.`,
-        'warning'
+      toast.warning(
+        `Please wait ${remSec}s before refreshing selected accounts again to avoid rate limits.`
       );
       return;
     }
@@ -277,7 +274,7 @@ export const AccountList: React.FC<AccountListProps> = ({
     });
 
     vscode.postMessage({ command: 'refreshMultipleAccounts', emails: emailsReady });
-    showToast(`Refreshing ${emailsReady.length} account(s)...`, 'info');
+    toast.info(`Refreshing ${emailsReady.length} account(s)...`);
 
     setTimeout(() => {
       setIsBulkRefreshing(false);
@@ -313,10 +310,10 @@ export const AccountList: React.FC<AccountListProps> = ({
     const { emails } = deleteDialog;
     if (emails.length === 1) {
       vscode.postMessage({ command: 'removeAccount', email: emails[0], confirmed: true });
-      showToast(`Removed account ${emails[0]}`, 'success');
+      toast.success(`Removed account ${emails[0]}`);
     } else if (emails.length > 1) {
       vscode.postMessage({ command: 'removeMultipleAccounts', emails });
-      showToast(`Successfully removed ${emails.length} accounts`, 'success');
+      toast.success(`Successfully removed ${emails.length} accounts`);
     }
 
     // Clean up checked emails

@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { getVsCodeApi } from '../vscode';
 import { Button } from './ui/button';
 import { Switch } from './ui/switch';
-import { useToast } from './Toast';
+import { toast } from 'sonner';
 import { Zap, RotateCw, Plus, ExternalLink } from 'lucide-react';
 
 interface ControllerBarProps {
@@ -19,7 +19,6 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const lastRefreshRef = useRef<number>(0);
   const vscode = getVsCodeApi();
-  const { showToast } = useToast();
 
   const handleImport = () => {
     vscode.postMessage({ command: 'importCurrentAntigravity' });
@@ -31,9 +30,8 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
 
     if (elapsed < GLOBAL_REFRESH_COOLDOWN_MS) {
       const remSec = Math.ceil((GLOBAL_REFRESH_COOLDOWN_MS - elapsed) / 1000);
-      showToast(
-        `Please wait ${remSec}s before refreshing all accounts again to prevent rate limits.`,
-        'warning'
+      toast.warning(
+        `Please wait ${remSec}s before refreshing all accounts again to prevent rate limits.`
       );
       return;
     }
@@ -41,7 +39,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
     lastRefreshRef.current = now;
     setIsRefreshing(true);
     vscode.postMessage({ command: 'refreshAll' });
-    showToast('Refreshing quotas for all accounts...', 'info');
+    toast.info('Refreshing quotas for all accounts...');
     setTimeout(() => setIsRefreshing(false), 2500);
   };
 

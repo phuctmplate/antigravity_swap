@@ -4,7 +4,7 @@ import { Header } from './components/Header';
 import { ControllerBar } from './components/ControllerBar';
 import { AccountList } from './components/AccountList';
 import { ModelQuotas } from './components/ModelQuotas';
-import { ToastProvider } from './components/Toast';
+import { Toaster } from './components/ui/sonner';
 import { getVsCodeApi } from './vscode';
 
 const defaultState: WebviewState = {
@@ -139,8 +139,9 @@ export const AppContent: React.FC = () => {
 
 export const App: React.FC = () => {
   return (
-    <ToastProvider>
+    <>
       <AppContent />
-    </ToastProvider>
+      <Toaster />
+    </>
   );
 };
