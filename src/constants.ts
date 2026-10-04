@@ -60,7 +60,8 @@ export const CONFIG_KEYS = {
   SECTION: 'antigravitySwap',
   HEARTBEAT_INTERVAL: 'heartbeatIntervalSeconds',
   AUTO_SWITCH_WHEN_LOW: 'autoSwitchWhenQuotaLow',
-  LOW_QUOTA_THRESHOLD: 'lowQuotaThresholdPercent'
+  LOW_QUOTA_THRESHOLD: 'lowQuotaThresholdPercent',
+  ENABLE_IDE_PATCH: 'enableIdeExtensionPatch'
 } as const;
 
 /**
@@ -68,7 +69,7 @@ export const CONFIG_KEYS = {
  */
 export const EXTENSION_DEFAULTS = {
   DEFAULT_HEARTBEAT_SECONDS: 30,
-  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 5,
+  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 3,
   ACCOUNT_REFRESH_COOLDOWN_MS: 10000,
   GLOBAL_REFRESH_COOLDOWN_MS: 10000
 } as const;

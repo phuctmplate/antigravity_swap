@@ -8,6 +8,9 @@ import { CONFIG_KEYS, EXTENSION_DEFAULTS } from './constants';
 export class AccountManager {
   private accounts: AccountInfo[] = [];
   private activeEmail?: string;
+  private isSwitching = false;
+  private lastSwitchTime = 0;
+  private static readonly SWITCH_COOLDOWN_MS = 2000;
   private readonly _onDidChangeState = new vscode.EventEmitter<void>();
   public readonly onDidChangeState = this._onDidChangeState.event;
 
@@ -15,105 +18,147 @@ export class AccountManager {
     private readonly storage: StorageService,
     private readonly oauthService: OAuthService,
     private readonly quotaService: QuotaService
-  ) {}
+  ) {
+    // Synchronously preload accounts and activeEmail from in-memory globalState (0ms)
+    const rawAccounts = this.storage.getAccounts();
+    this.accounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
+    this.activeEmail = this.storage.getActiveAccountEmail();
+  }
 
   public async initialize(): Promise<void> {
-    this.accounts = this.storage.getAccounts();
+    const rawAccounts = this.storage.getAccounts();
+    this.accounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
+    if (this.accounts.length !== rawAccounts.length) {
+      await this.storage.saveAccounts(this.accounts);
+      console.log(`[Antigravity Swap] Sanitized ${rawAccounts.length - this.accounts.length} invalid/phantom account(s).`);
+    }
 
-    // Listen to IDE window focus to instantly catch external logins/logouts in the IDE
-    vscode.window.onDidChangeWindowState((e) => {
-      if (e.focused) {
-        this.syncCurrentAccountFromIde().catch(() => {});
+    // Read currently active IDE session
+    const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
+
+    if (!currentSession || !currentSession.email || !this.storage.isValidEmail(currentSession.email)) {
+      // IDE is currently logged out!
+      this.activeEmail = undefined;
+      this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
+      await this.storage.setActiveAccountEmail(undefined);
+    } else {
+      // IDE has an active session: align active account with IDE or savedActive
+      const ideEmail = currentSession.email.toLowerCase();
+      const savedActive = this.storage.getActiveAccountEmail()?.toLowerCase();
+      const effectiveEmail = (savedActive && this.accounts.some((a) => a.email.toLowerCase() === savedActive))
+        ? savedActive
+        : (this.accounts.some((a) => a.email.toLowerCase() === ideEmail))
+          ? ideEmail
+          : undefined;
+
+      if (effectiveEmail) {
+        this.activeEmail = effectiveEmail;
+        this.accounts = this.accounts.map((a) => ({
+          ...a,
+          isActive: a.email.toLowerCase() === effectiveEmail
+        }));
+        await this.storage.setActiveAccountEmail(effectiveEmail);
+        await this.storage.syncGoogleAccountsJson(effectiveEmail);
       }
-    });
-
-    // Sync state with current IDE session
-    await this.syncCurrentAccountFromIde();
+    }
 
     // Auto-discover previous accounts from system if list is empty
     if (this.accounts.length === 0) {
       await this.importDetectedAccounts();
     }
 
+    // Listen to IDE window focus to sync IDE session changes
+    vscode.window.onDidChangeWindowState((e) => {
+      if (e.focused) {
+        this.handleIdeSessionChange().catch(() => {});
+      }
+    });
+
     // Initial quota check only for accounts with valid tokens
     await this.refreshAllQuotas().catch((err) => console.warn('[Antigravity Swap] Initial quota refresh failed:', err));
 
-    // ONLY auto-switch if auto-switch is explicitly enabled by user
+    // ONLY auto-switch if auto-switch is explicitly enabled by user AND quotas were loaded
     if (this.isAutoSwitchEnabled()) {
       await this.checkAutoSwitch();
     }
   }
 
   /**
-   * Syncs active account status from the IDE's internal state.vscdb
+   * Handles real-time IDE auth session changes (login / logout / switch).
+   * - If user logs out from IDE: clears active account state so extension reflects logout.
+   * - If user logs in on IDE: synchronizes active state and tokens for that account.
    */
-  public async syncCurrentAccountFromIde(): Promise<void> {
+  public async handleIdeSessionChange(): Promise<void> {
+    await new Promise((r) => setTimeout(r, 150));
+
     const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
-    const ideEmail = currentSession?.email;
 
-    if (!ideEmail) {
-      if (this.activeEmail !== undefined) {
-        this.activeEmail = undefined;
-        this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
-        await this.storage.saveAccounts(this.accounts);
-        await this.storage.setActiveAccountEmail(undefined);
-        this._onDidChangeState.fire();
-      }
-      return;
-    }
-
-    const existingAcc = this.accounts.find((a) => a.email === ideEmail);
-
-    if (!existingAcc) {
-      // User logged into an account in IDE that is NOT in the extension's list.
-      // Rule: Do NOT auto-import it. Only clear active status so no extension account is active.
+    if (!currentSession || !currentSession.email || !this.storage.isValidEmail(currentSession.email) || !currentSession.accessToken) {
+      // IDE is logged out!
       if (this.activeEmail !== undefined || this.accounts.some((a) => a.isActive)) {
-        console.log(`[Antigravity Swap] Current IDE account (${ideEmail}) is not in extension list. Deactivating extension accounts.`);
+        console.log('[Antigravity Swap] Detected IDE logout: clearing active account selection.');
         this.activeEmail = undefined;
         this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
-        await this.storage.saveAccounts(this.accounts);
         await this.storage.setActiveAccountEmail(undefined);
+        await this.storage.saveAccounts(this.accounts);
         this._onDidChangeState.fire();
       }
       return;
     }
 
-    // Account is in extension list: sync changes and update active status
-    let changed = false;
-    if (currentSession.accessToken) {
-      const existingTokens = await this.storage.getAccountTokens(ideEmail);
+    // IDE is logged in to a valid account!
+    const email = currentSession.email.trim().toLowerCase();
+    const existingAcc = this.accounts.find((a) => a.email.toLowerCase() === email);
+
+    if (existingAcc) {
+      // Update tokens
+      const existingTokens = await this.storage.getAccountTokens(existingAcc.email);
       const tokens: OAuthTokens = {
         accessToken: currentSession.accessToken,
         refreshToken: currentSession.refreshToken || existingTokens?.refreshToken,
         expiresAt: Date.now() + 3600 * 1000
       };
-      await this.storage.saveAccountTokens(ideEmail, tokens);
-    }
+      await this.storage.saveAccountTokens(existingAcc.email, tokens);
 
-    if (currentSession.name && existingAcc.name !== currentSession.name) {
-      existingAcc.name = currentSession.name;
-      changed = true;
-    }
-    if (currentSession.avatarUrl && existingAcc.avatarUrl !== currentSession.avatarUrl) {
-      existingAcc.avatarUrl = currentSession.avatarUrl;
-      changed = true;
-    }
-
-    if (this.activeEmail !== ideEmail || !existingAcc.isActive) {
-      this.activeEmail = ideEmail;
+      // Set active
+      this.activeEmail = existingAcc.email;
       this.accounts = this.accounts.map((a) => ({
         ...a,
-        isActive: a.email === ideEmail,
-        lastUsedAt: a.email === ideEmail ? new Date().toISOString() : a.lastUsedAt
+        isActive: a.email.toLowerCase() === email,
+        status: a.email.toLowerCase() === email ? 'active' : a.status,
+        statusMessage: a.email.toLowerCase() === email ? undefined : a.statusMessage,
+        name: (a.email.toLowerCase() === email && currentSession.name) ? currentSession.name : a.name,
+        avatarUrl: (a.email.toLowerCase() === email && currentSession.avatarUrl) ? currentSession.avatarUrl : a.avatarUrl
       }));
-      changed = true;
-    }
-
-    if (changed) {
+      await this.storage.setActiveAccountEmail(existingAcc.email);
       await this.storage.saveAccounts(this.accounts);
-      await this.storage.setActiveAccountEmail(ideEmail);
       this._onDidChangeState.fire();
+      this.refreshAccountQuota(existingAcc.email).catch(() => {});
+      console.log(`[Antigravity Swap] Synchronized active account to ${existingAcc.email} following IDE login.`);
+    } else {
+      // Current IDE session is not in extension: clear active flag on extension accounts
+      if (this.activeEmail !== undefined) {
+        this.activeEmail = undefined;
+        this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
+        await this.storage.setActiveAccountEmail(undefined);
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
+      }
     }
+  }
+
+  /**
+   * Checks if an external IDE login occurred for an account already in the extension.
+   */
+  public async checkExternalIdeSession(): Promise<void> {
+    await this.handleIdeSessionChange();
+  }
+
+  /**
+   * Syncs initial active account status from the IDE's internal state.vscdb if none is selected
+   */
+  public async syncCurrentAccountFromIde(): Promise<void> {
+    await this.handleIdeSessionChange();
   }
 
   public getAccounts(): AccountInfo[] {
@@ -145,107 +190,127 @@ export class AccountManager {
    * @param isManual Set to true when the user explicitly pressed "Switch" — this disables auto-switch.
    */
   public async switchAccount(email: string, isManual = false): Promise<boolean> {
-    const target = this.accounts.find((a) => a.email === email);
-    if (!target) {
-      vscode.window.showErrorMessage(`Account ${email} not found in Antigravity Swap.`);
+    const now = Date.now();
+    if (this.isSwitching || now - this.lastSwitchTime < AccountManager.SWITCH_COOLDOWN_MS) {
+      console.log('[Antigravity Swap] Switch rate-limited / cooldown active. Ignored.');
       return false;
     }
 
-    if (target.isBanned || target.status === 'banned') {
-      vscode.window.showErrorMessage(`Cannot switch: Account ${email} is banned or suspended by Google Terms of Service.`);
-      return false;
+    if (this.activeEmail === email) {
+      return true;
     }
 
-    if (target.status === 'auth_failed') {
-      const choice = await vscode.window.showErrorMessage(
-        `Cannot switch: Account ${email} authentication failed / credentials expired. Re-login now?`,
-        'Re-login Account',
-        'Cancel'
-      );
-      if (choice === 'Re-login Account') {
-        await this.reloginAccount(email);
+    this.isSwitching = true;
+    this.lastSwitchTime = now;
+
+    try {
+      const target = this.accounts.find((a) => a.email === email);
+      if (!target) {
+        vscode.window.showErrorMessage(`Account ${email} not found in Antigravity Swap.`);
+        return false;
       }
-      return false;
-    }
 
-    let tokens = await this.storage.getAccountTokens(email);
-    if (!tokens || !tokens.accessToken) {
-      target.status = 'auth_failed';
-      target.statusMessage = 'Credentials missing. Re-login required.';
-      target.quotas = [];
-      target.averageQuotaPercentage = 0;
-      await this.storage.saveAccounts(this.accounts);
-      this._onDidChangeState.fire();
-
-      const reloginChoice = await vscode.window.showWarningMessage(
-        `Cannot switch: Credentials missing or expired for ${email}. Re-login now?`,
-        'Re-login Account',
-        'Cancel'
-      );
-      if (reloginChoice === 'Re-login Account') {
-        await this.reloginAccount(email);
+      if (target.isBanned || target.status === 'banned') {
+        vscode.window.showErrorMessage(`Cannot switch: Account ${email} is banned or suspended by Google Terms of Service.`);
+        return false;
       }
-      return false;
-    }
 
-    // Check if access token is expired and refresh
-    if (tokens.expiresAt && Date.now() > tokens.expiresAt - 60000 && tokens.refreshToken) {
-      try {
-        tokens = await this.oauthService.refreshAccessToken(tokens.refreshToken);
-        await this.storage.saveAccountTokens(email, tokens);
-      } catch (err: any) {
-        console.warn(`[Antigravity Swap] Token refresh failed before switch: ${err.message}`);
+      if (target.status === 'auth_failed') {
+        return false;
+      }
+
+      let tokens = await this.storage.getAccountTokens(email);
+      if (!tokens || !tokens.accessToken) {
         target.status = 'auth_failed';
-        target.statusMessage = 'Credentials expired. Re-login required.';
+        target.statusMessage = 'Credentials missing. Re-login required.';
         target.quotas = [];
         target.averageQuotaPercentage = 0;
         await this.storage.saveAccounts(this.accounts);
         this._onDidChangeState.fire();
-
-        const rechoice = await vscode.window.showErrorMessage(
-          `Cannot switch: Credentials for ${email} expired. Please re-login.`,
-          'Re-login Now',
-          'Cancel'
-        );
-        if (rechoice === 'Re-login Now') {
-          await this.reloginAccount(email);
-        }
         return false;
       }
+
+      // Check if access token is expired and refresh
+      if (tokens.expiresAt && Date.now() > tokens.expiresAt - 60000 && tokens.refreshToken) {
+        try {
+          tokens = await this.oauthService.refreshAccessToken(tokens.refreshToken);
+          await this.storage.saveAccountTokens(email, tokens);
+        } catch (err: any) {
+          console.warn(`[Antigravity Swap] Token refresh failed before switch: ${err.message}`);
+          target.status = 'auth_failed';
+          target.statusMessage = 'Credentials expired. Re-login required.';
+          target.quotas = [];
+          target.averageQuotaPercentage = 0;
+          await this.storage.saveAccounts(this.accounts);
+          this._onDidChangeState.fire();
+          return false;
+        }
+      } else if (tokens.expiresAt && Date.now() > tokens.expiresAt && !tokens.refreshToken) {
+        // Access token expired and no refresh token available
+        target.status = 'auth_failed';
+        target.statusMessage = 'Session expired. Re-login required.';
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
+        return false;
+      }
+
+      const previousEmail = this.activeEmail || this.accounts.find((a) => a.isActive)?.email;
+
+      // 1. Update internal state
+      this.accounts = this.accounts.map((a) => ({
+        ...a,
+        isActive: a.email === email,
+        lastUsedAt: a.email === email ? new Date().toISOString() : a.lastUsedAt
+      }));
+      this.activeEmail = email;
+      await this.storage.saveAccounts(this.accounts);
+      await this.storage.setActiveAccountEmail(email);
+
+      // 2. If the user manually chose this account, disable auto-switch so it won't override their choice
+      if (isManual) {
+        await this.storage.setAutoSwitchEnabled(false);
+      }
+
+      // 3. Update google_accounts.json FIRST so the new active email and old list are in place for eviction
+      await this.storage.syncGoogleAccountsJson(email);
+
+      // 4. Hot-switch in-memory via Unified State Sync API so language server and agent immediately get the new token!
+      const liveSwitchOk = await this.storage.liveSwitchOAuthToken(target, tokens);
+
+      // 5. Explicitly evict previous sessions via antigravity.evictAuthSession if available
+      if (previousEmail && previousEmail !== email) {
+        try {
+          await vscode.commands.executeCommand('antigravity.evictAuthSession', previousEmail);
+        } catch (_) {}
+      }
+      for (const a of this.accounts) {
+        if (a.email !== email) {
+          try {
+            await vscode.commands.executeCommand('antigravity.evictAuthSession', a.email);
+          } catch (_) {}
+        }
+      }
+
+      // 6. Update IDE state database (state.vscdb) and cloud agent DB in-place
+      await this.storage.syncToIdeStateDb(target, tokens, liveSwitchOk);
+      await this.storage.syncToCloudAccountsDb(email);
+
+      // 7. Hot-restart the Antigravity Language Server in the background so it immediately picks up new credentials without closing IDE
+      try {
+        await vscode.commands.executeCommand('antigravity.restartLanguageServer');
+        console.log('[Antigravity Swap] Executed antigravity.restartLanguageServer successfully');
+      } catch (lsErr: any) {
+        console.warn('[Antigravity Swap] restartLanguageServer command warning:', lsErr?.message || lsErr);
+      }
+
+      this._onDidChangeState.fire();
+      this.refreshAccountQuota(email).catch(() => {});
+
+      vscode.window.showInformationMessage(`Switched to: ${target.name || email}!`);
+      return true;
+    } finally {
+      this.isSwitching = false;
     }
-
-    // 1. Update internal state
-    this.accounts = this.accounts.map((a) => ({
-      ...a,
-      isActive: a.email === email,
-      lastUsedAt: a.email === email ? new Date().toISOString() : a.lastUsedAt
-    }));
-    this.activeEmail = email;
-    await this.storage.saveAccounts(this.accounts);
-    await this.storage.setActiveAccountEmail(email);
-
-    // 2. If the user manually chose this account, disable auto-switch so it won't override their choice
-    if (isManual) {
-      await this.storage.setAutoSwitchEnabled(false);
-    }
-
-    // 3. Update IDE state database (state.vscdb) and cloud agent DB in-place
-    await this.storage.syncToIdeStateDb(target, tokens);
-    await this.storage.syncToCloudAccountsDb(email);
-
-    // 4. Hot-restart the Antigravity Language Server in the background so it immediately picks up new credentials without closing IDE
-    try {
-      await vscode.commands.executeCommand('antigravity.restartLanguageServer');
-      console.log('[Antigravity Swap] Executed antigravity.restartLanguageServer successfully');
-    } catch (lsErr: any) {
-      console.warn('[Antigravity Swap] restartLanguageServer command warning:', lsErr?.message || lsErr);
-    }
-
-    this._onDidChangeState.fire();
-    this.refreshAccountQuota(email).catch(() => {});
-
-    vscode.window.showInformationMessage(`Switched to: ${target.name || email}!`);
-    return true;
   }
 
   /**
@@ -321,8 +386,8 @@ export class AccountManager {
    */
   public async importCurrentAntigravityAccount(): Promise<AccountInfo | null> {
     const current = await this.storage.getCurrentAntigravityAccount();
-    if (!current || !current.email || !current.accessToken) {
-      vscode.window.showWarningMessage('No active Antigravity session with valid access token found in state database.');
+    if (!current || !current.email || !this.storage.isValidEmail(current.email) || !current.accessToken) {
+      vscode.window.showWarningMessage('No active Antigravity session with valid access token found in IDE.');
       return null;
     }
 
@@ -379,9 +444,11 @@ export class AccountManager {
     this.activeEmail = current.email;
 
     await this.storage.saveAccounts(this.accounts);
-    await this.storage.setActiveAccountEmail(this.activeEmail);
-
-    vscode.window.showInformationMessage(`Successfully imported active account ${current.email} from Antigravity IDE!`);
+    if (existingIdx >= 0) {
+      console.log(`[Antigravity Swap] Updated credentials and quota for ${current.email} from IDE session.`);
+    } else {
+      vscode.window.showInformationMessage(`Successfully imported new account ${current.email} from Antigravity IDE!`);
+    }
     this._onDidChangeState.fire();
 
     this.refreshAccountQuota(current.email).catch(() => {});
@@ -636,8 +703,8 @@ export class AccountManager {
    * Heartbeat execution: polls active account quota and checks background account status.
    */
   public async runHeartbeatTick(): Promise<void> {
-    // Check if user changed login/logout in IDE externally
-    await this.syncCurrentAccountFromIde();
+    // Keep active state synchronized with IDE external login/logout
+    await this.checkExternalIdeSession().catch(() => {});
 
     const active = this.getActiveAccount();
     if (active) {
@@ -669,6 +736,11 @@ export class AccountManager {
 
     const active = this.getActiveAccount();
     if (!active) return;
+
+    // Do not auto-switch if quota data hasn't been fetched yet
+    if (!active.lastRefreshedAt || !active.quotas || active.quotas.length === 0) {
+      return;
+    }
 
     const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
     const threshold = config.get<number>(CONFIG_KEYS.LOW_QUOTA_THRESHOLD, EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT);

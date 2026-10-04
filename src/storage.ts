@@ -114,25 +114,132 @@ export class StorageService {
 
   /**
    * Performs an instant in-memory hot switch via Antigravity Unified State Sync (USS) API.
-   * Updates the running Language Server and AI Agent in place WITHOUT closing or restarting the IDE.
+   * Updates userStatus and OAuthTokenInfo in Unified State Sync so the IDE, Language Server,
+   * and AI Agent immediately pick up the new credentials with zero reload.
    */
   public async liveSwitchOAuthToken(account: AccountInfo, tokens: OAuthTokens): Promise<boolean> {
     try {
       const unifiedSync = (vscode as any).antigravityUnifiedStateSync;
-      if (unifiedSync && unifiedSync.OAuthPreferences && typeof unifiedSync.OAuthPreferences.setOAuthTokenInfo === 'function') {
+      if (unifiedSync) {
         const isGcpTos = !account.email.toLowerCase().endsWith('@gmail.com') && !account.email.toLowerCase().endsWith('@googlemail.com');
-        await unifiedSync.OAuthPreferences.setOAuthTokenInfo({
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken || '',
-          expiryDateSeconds: Math.floor((tokens.expiresAt || Date.now() + 3600000) / 1000),
-          tokenType: 'Bearer',
-          isGcpTos: isGcpTos
-        });
-        console.log('[Antigravity Swap] Successfully hot-switched OAuth token via antigravityUnifiedStateSync!');
+
+        // 1. If existing UserStatus is present in memory, patch email/name/avatar while strictly PRESERVING models!
+        // We NEVER overwrite with a stripped 5-field skeleton that wipes out clientModelConfigs and avatar!
+        if (unifiedSync.UserStatus && typeof unifiedSync.UserStatus.getUserStatus === 'function') {
+          try {
+            const rawStatus = await unifiedSync.UserStatus.getUserStatus();
+            if (rawStatus) {
+              const existingBytes = Buffer.from(rawStatus, 'base64');
+              // Only patch if existing status has actual content
+              if (existingBytes.length > 50) {
+                const patchedBytes = this.patchUserStatusPayload(existingBytes, account.email, account.name, account.avatarUrl);
+                const patchedB64 = Buffer.from(patchedBytes).toString('base64');
+                if (typeof unifiedSync.pushUpdate === 'function') {
+                  await unifiedSync.pushUpdate({
+                    topicName: 'uss-userStatus',
+                    appliedUpdate: {
+                      key: 'userStatusSentinelKey',
+                      newRow: {
+                        value: patchedB64,
+                        eTag: 0
+                      }
+                    }
+                  });
+                  console.log(`[Antigravity Swap] Patched in-memory userStatus for ${account.email} preserving model configs`);
+                }
+              }
+            }
+          } catch (usErr) {
+            console.warn('[Antigravity Swap] patch in-memory userStatus warning:', usErr);
+          }
+        }
+
+        // 2. Set OAuth token info in Unified State Sync
+        if (unifiedSync.OAuthPreferences && typeof unifiedSync.OAuthPreferences.setOAuthTokenInfo === 'function') {
+          await unifiedSync.OAuthPreferences.setOAuthTokenInfo({
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken || '',
+            expiryDateSeconds: Math.floor((tokens.expiresAt || Date.now() + 3600000) / 1000),
+            tokenType: 'Bearer',
+            isGcpTos: isGcpTos
+          });
+
+          console.log(`[Antigravity Swap] Successfully hot-switched OAuth token for ${account.email} via antigravityUnifiedStateSync!`);
+        }
+
+        // 3. Push authStateWithContextSentinelKey: {"state":"signedIn"} to uss-oauth!
+        // This is CRITICAL: Antigravity IDE derives _authState from this key.
+        // If missing or not "signedIn", workbench hides the avatar and disables models!
+        if (typeof unifiedSync.pushUpdate === 'function') {
+          const authStatePayload = JSON.stringify({
+            state: 'signedIn',
+            context: {
+              project: '',
+              showProjectError: false,
+              errorMessage: '',
+              ineligibleMessage: '',
+              verificationUrl: '',
+              isGcpTos: isGcpTos,
+              browserOpenFailed: false,
+              appealUrl: '',
+              appealLinkText: ''
+            }
+          });
+          try {
+            await unifiedSync.pushUpdate({
+              topicName: 'uss-oauth',
+              appliedUpdate: {
+                key: 'authStateWithContextSentinelKey',
+                newRow: {
+                  value: authStatePayload,
+                  eTag: 0
+                }
+              }
+            });
+            console.log('[Antigravity Swap] Successfully pushed authStateWithContextSentinelKey: signedIn');
+          } catch (asErr) {
+            console.warn('[Antigravity Swap] pushUpdate authState warning:', asErr);
+          }
+        }
+
+        // 4. Trigger handleAuthRefresh immediately so the IDE updates sessions and evicts old accounts
+        try {
+          await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
+          console.log('[Antigravity Swap] Triggered antigravity.handleAuthRefresh successfully');
+        } catch (refErr) {
+          console.warn('[Antigravity Swap] handleAuthRefresh warning:', refErr);
+        }
+
         return true;
       }
     } catch (err) {
       console.warn('[Antigravity Swap] liveSwitchOAuthToken warning:', err);
+    }
+    return false;
+  }
+
+  /**
+   * Syncs active account to ~/.gemini/google_accounts.json if it exists.
+   */
+  public async syncGoogleAccountsJson(email: string): Promise<boolean> {
+    const filePath = path.join(os.homedir(), '.gemini', 'google_accounts.json');
+    try {
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const data = JSON.parse(raw);
+        const oldActive = data.active;
+        const oldList: string[] = Array.isArray(data.old) ? data.old : [];
+        if (oldActive && oldActive !== email && !oldList.includes(oldActive)) {
+          oldList.push(oldActive);
+        }
+        data.active = email;
+        data.old = oldList.filter((e: string) => e !== email);
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+        console.log(`[Antigravity Swap] Synced active account in google_accounts.json to ${email}`);
+        return true;
+      }
+    } catch (e) {
+      console.warn('[Antigravity Swap] syncGoogleAccountsJson warning:', e);
     }
     return false;
   }
@@ -181,9 +288,6 @@ export class StorageService {
         account.email
       );
 
-      const userStatusPayload = this.createMinimalUserStatusPayload(account.email);
-      const unifiedUserStatus = this.createUnifiedStateEntry('userStatusSentinelKey', userStatusPayload);
-
       // Prepare updated accounts list
       const updatedAccounts = allAccounts.map((a) => ({
         ...a,
@@ -196,13 +300,32 @@ export class StorageService {
         'antigravitySwap.activeEmail': account.email
       });
 
+      // Safely preserve existing userStatus models if available in stateDb, or remove corrupted skeleton
+      let patchedUserStatusTopic: string | null = null;
+      try {
+        const nativeDb = this.getSqliteDb(stateDbPath);
+        if (nativeDb) {
+          const row = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityUnifiedStateSync.userStatus');
+          if (row && row.value && row.value.length > 250) {
+            patchedUserStatusTopic = this.patchUnifiedStateSyncTopicUserStatus(
+              Buffer.from(row.value, 'base64'),
+              account.email,
+              account.name,
+              account.avatarUrl
+            );
+          }
+          nativeDb.close();
+        }
+      } catch {}
+
       const rows: Array<{ key: string; value: string | null }> = [
         { key: 'antigravityAuthStatus', value: authStatus },
         { key: 'antigravityUnifiedStateSync.oauthToken', value: unifiedOAuth },
-        { key: 'antigravityUnifiedStateSync.userStatus', value: unifiedUserStatus },
+        { key: 'antigravityUnifiedStateSync.userStatus', value: patchedUserStatusTopic },
         { key: 'antigravityOnboarding', value: 'true' },
         { key: 'antigravitySwap.activeEmail', value: account.email },
-        { key: 'antigravity-community.antigravity-swap', value: extensionStateValue }
+        { key: 'antigravity-community.antigravity-swap', value: extensionStateValue },
+        { key: 'phuctmplate.antigravity-swap', value: extensionStateValue }
       ];
 
       if (account.avatarUrl) {
@@ -451,10 +574,10 @@ main().catch(() => process.exit(1));
   }
 
   /**
-   * Directly updates Antigravity IDE global state database so the internal IDE runtime
-   * immediately synchronizes credentials.
+   * Updates Antigravity IDE global state database with valid Unified State Sync protobuf
+   * to guarantee that cold-boot / window-reloads retain the switched account.
    */
-  public async syncToIdeStateDb(account: AccountInfo, tokens: OAuthTokens): Promise<boolean> {
+  public async syncToIdeStateDb(account: AccountInfo, tokens: OAuthTokens, skipUssKeys = false): Promise<boolean> {
     const stateDbPath = path.join(
       os.homedir(),
       'AppData',
@@ -470,16 +593,8 @@ main().catch(() => process.exit(1));
     }
 
     try {
-      // 1. Update antigravityAuthStatus (JSON)
-      const authStatus = JSON.stringify({
-        name: account.name || account.email.split('@')[0],
-        email: account.email,
-        apiKey: tokens.accessToken
-      });
-      await this.execSqliteUpsert(stateDbPath, 'antigravityAuthStatus', authStatus);
-
-      // 2. Update antigravityUnifiedStateSync.oauthToken (Protobuf)
       if (tokens.accessToken) {
+        // 1. Sync antigravityUnifiedStateSync.oauthToken with both token and signedIn state
         const unifiedOAuth = this.createUnifiedOAuthToken(
           tokens.accessToken,
           tokens.refreshToken || '',
@@ -490,16 +605,59 @@ main().catch(() => process.exit(1));
         );
         await this.execSqliteUpsert(stateDbPath, 'antigravityUnifiedStateSync.oauthToken', unifiedOAuth);
 
-        // 3. Update antigravityUnifiedStateSync.userStatus (Protobuf)
-        const userStatusPayload = this.createMinimalUserStatusPayload(account.email);
-        const unifiedUserStatus = this.createUnifiedStateEntry('userStatusSentinelKey', userStatusPayload);
-        await this.execSqliteUpsert(stateDbPath, 'antigravityUnifiedStateSync.userStatus', unifiedUserStatus);
+        // 2. Handle antigravityUnifiedStateSync.userStatus safely:
+        // We NEVER overwrite with a stripped skeleton!
+        // If existing row has real models (> 250 chars), patch email/name/avatar and keep models.
+        // If it's a corrupted skeleton (<= 200 chars), delete it so IDE loads fresh from Google!
+        try {
+          const nativeDb = this.getSqliteDb(stateDbPath);
+          if (nativeDb) {
+            const existingRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityUnifiedStateSync.userStatus');
+            if (existingRow && existingRow.value) {
+              if (existingRow.value.length > 250) {
+                const topicBuf = Buffer.from(existingRow.value, 'base64');
+                const patchedTopic = this.patchUnifiedStateSyncTopicUserStatus(topicBuf, account.email, account.name, account.avatarUrl);
+                if (patchedTopic) {
+                  nativeDb.prepare('UPDATE ItemTable SET value = ? WHERE key = ?').run(patchedTopic, 'antigravityUnifiedStateSync.userStatus');
+                  console.log(`[Antigravity Swap] Patched state.vscdb userStatus for ${account.email} preserving models`);
+                }
+              } else if (existingRow.value.length <= 200) {
+                nativeDb.prepare('DELETE FROM ItemTable WHERE key = ?').run('antigravityUnifiedStateSync.userStatus');
+                console.log('[Antigravity Swap] Removed corrupted skeleton userStatus from state.vscdb');
+              }
+            }
+            nativeDb.close();
+          }
+        } catch (usDbErr) {
+          console.warn('[Antigravity Swap] syncToIdeStateDb userStatus handling warning:', usDbErr);
+        }
+
+        // 3. Update antigravityAuthStatus
+        const authStatus = JSON.stringify({
+          name: account.name || account.email.split('@')[0],
+          email: account.email,
+          apiKey: tokens.accessToken
+        });
+        await this.execSqliteUpsert(stateDbPath, 'antigravityAuthStatus', authStatus);
       }
 
-      // 4. Update onboarding status
+      // Pre-grant extension authentication access to avoid access prompts
+      const allowedJson = JSON.stringify([
+        { id: 'google.antigravity', name: 'Antigravity', allowed: true },
+        { id: 'phuctmplate.antigravity-swap', name: 'Antigravity Swap', allowed: true }
+      ]);
+      const acctLabel = account.name || account.email;
+      await this.execSqliteUpsert(stateDbPath, `antigravity_auth-${acctLabel}`, allowedJson);
+      await this.execSqliteUpsert(stateDbPath, `antigravity_auth-${account.email}`, allowedJson);
+      await this.execSqliteUpsert(stateDbPath, `antigravity-${acctLabel}`, allowedJson);
+      await this.execSqliteUpsert(stateDbPath, `antigravity-${account.email}`, allowedJson);
+      await this.execSqliteUpsert(stateDbPath, 'google.antigravity-antigravity_auth', acctLabel);
+      await this.execSqliteUpsert(stateDbPath, 'google.antigravity-antigravity', acctLabel);
+
+      // Update onboarding status
       await this.execSqliteUpsert(stateDbPath, 'antigravityOnboarding', 'true');
 
-      // 5. Update profile picture if available
+      // Update profile picture if available
       if (account.avatarUrl) {
         await this.execSqliteUpsert(stateDbPath, 'antigravity.profileUrl', account.avatarUrl);
       }
@@ -544,10 +702,66 @@ main().catch(() => process.exit(1));
   }
 
   /**
-   * Reads the currently signed-in Antigravity IDE account and active token from state.vscdb
-   * using zero-dependency binary parsing.
+  /**
+   * Validates whether an email string is a genuine clean email address
+   * and not an internal extension key, phantom token, or system setting.
+   */
+  public isValidEmail(email?: string): boolean {
+    if (!email || typeof email !== 'string') return false;
+    const trimmed = email.trim().toLowerCase();
+    if (
+      trimmed.startsWith('antigravity') ||
+      trimmed.includes('secure.') ||
+      trimmed.includes('.accesstoken') ||
+      trimmed.includes('example.com') ||
+      trimmed.includes('codeium') ||
+      trimmed.includes('github')
+    ) {
+      return false;
+    }
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    return emailRegex.test(trimmed);
+  }
+
+  /**
+   * Reads the currently signed-in Antigravity IDE account and active token.
+   * Prioritizes live in-memory Antigravity Unified State Sync API first,
+   * falling back to local state.vscdb structured storage.
+   * Returns null if no active session is found (e.g. user is logged out).
    */
   public async getCurrentAntigravityAccount(): Promise<DiscoveredAccount | null> {
+    // 1. Prioritize live in-memory Unified State Sync
+    try {
+      const unifiedSync = (vscode as any).antigravityUnifiedStateSync;
+      if (unifiedSync?.OAuthPreferences?.getOAuthTokenInfo) {
+        const tokenInfo = await unifiedSync.OAuthPreferences.getOAuthTokenInfo();
+        if (tokenInfo?.accessToken) {
+          let email = '';
+          let name = '';
+          if (unifiedSync.UserStatus?.getUserStatus) {
+            const rawStatus = await unifiedSync.UserStatus.getUserStatus();
+            if (rawStatus) {
+              const statusBytes = Buffer.from(rawStatus, 'base64');
+              const parsed = this.parseUserStatusBytes(statusBytes);
+              email = parsed.email;
+              name = parsed.name;
+            }
+          }
+          if (email && this.isValidEmail(email)) {
+            return {
+              email,
+              name: name || email.split('@')[0],
+              accessToken: tokenInfo.accessToken,
+              refreshToken: tokenInfo.refreshToken
+            };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[StorageService] Error reading live account from unifiedStateSync:', e);
+    }
+
+    // 2. Fallback to state.vscdb structured query ONLY
     const stateDbPath = path.join(
       os.homedir(),
       'AppData',
@@ -560,69 +774,62 @@ main().catch(() => process.exit(1));
     if (!fs.existsSync(stateDbPath)) return null;
 
     try {
-      const buf = fs.readFileSync(stateDbPath);
-      const str = buf.toString('latin1');
+      const nativeDb = this.getSqliteDb(stateDbPath);
+      if (nativeDb) {
+        try {
+          const userStatusRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityUnifiedStateSync.userStatus');
+          const oauthRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityUnifiedStateSync.oauthToken');
+          const authStatusRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityAuthStatus');
+          const profRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravity.profileUrl');
+          nativeDb.close();
 
-      let email = '';
-      let name = '';
-      let accessToken = '';
-      let avatarUrl: string | undefined;
+          let email = '';
+          let name = '';
+          let accessToken = '';
+          const avatarUrl = profRow?.value || undefined;
 
-      // 1. Search for antigravityAuthStatus JSON
-      let idx = 0;
-      while ((idx = str.indexOf('antigravityAuthStatus', idx)) !== -1) {
-        const snippet = str.substring(idx + 'antigravityAuthStatus'.length, idx + 'antigravityAuthStatus'.length + 8000);
-        const jsonStart = snippet.search(/[{\[]/);
-        if (jsonStart !== -1 && jsonStart < 100) {
-          let depth = 0;
-          let inString = false;
-          let escape = false;
-          const startChar = snippet[jsonStart];
-          const endChar = startChar === '{' ? '}' : ']';
-
-          for (let i = jsonStart; i < snippet.length; i++) {
-            const c = snippet[i];
-            if (escape) { escape = false; continue; }
-            if (c === '\\') { escape = true; continue; }
-            if (c === '"') { inString = !inString; continue; }
-            if (!inString) {
-              if (c === startChar) depth++;
-              else if (c === endChar) {
-                depth--;
-                if (depth === 0) {
-                  try {
-                    const parsed = JSON.parse(snippet.substring(jsonStart, i + 1));
-                    if (parsed.email && parsed.apiKey) {
-                      email = parsed.email;
-                      name = parsed.name || parsed.email.split('@')[0];
-                      accessToken = parsed.apiKey;
-                    }
-                  } catch {}
-                  break;
-                }
+          // Check structured uss keys
+          if (userStatusRow?.value && oauthRow?.value) {
+            const usBytes = Buffer.from(userStatusRow.value, 'base64');
+            const { email: parsedEmail, name: parsedName } = this.parseUserStatusBytes(usBytes);
+            if (this.isValidEmail(parsedEmail)) {
+              const oauthStr = Buffer.from(oauthRow.value, 'base64').toString('latin1');
+              const yaMatch = oauthStr.match(/ya29\.[A-Za-z0-9_\-]+/);
+              if (yaMatch) {
+                email = parsedEmail;
+                name = parsedName;
+                accessToken = yaMatch[0];
               }
             }
           }
-        }
-        idx += 'antigravityAuthStatus'.length;
-      }
 
-      // 2. Search profileUrl
-      const profIdx = str.lastIndexOf('antigravity.profileUrl');
-      if (profIdx !== -1) {
-        const profSnippet = str.substring(profIdx, profIdx + 500);
-        const match = profSnippet.match(/https?:\/\/[^\s\x00-\x1F"']+/);
-        if (match) avatarUrl = match[0];
-      }
+          // Check antigravityAuthStatus row
+          if ((!email || !accessToken) && authStatusRow?.value) {
+            try {
+              const auth = JSON.parse(authStatusRow.value);
+              if (auth.email && this.isValidEmail(auth.email) && auth.apiKey?.startsWith('ya29.')) {
+                email = auth.email;
+                name = auth.name || auth.email.split('@')[0];
+                accessToken = auth.apiKey;
+              }
+            } catch {}
+          }
 
-      if (email && accessToken) {
-        return { email, name: name || email.split('@')[0], accessToken, avatarUrl };
+          if (email && accessToken && this.isValidEmail(email)) {
+            return {
+              email,
+              name: name || email.split('@')[0],
+              accessToken,
+              avatarUrl
+            };
+          }
+        } catch {}
       }
-      return null;
     } catch (err) {
       console.warn('[StorageService] Error getting current Antigravity account:', err);
-      return null;
     }
+
+    return null;
   }
 
   /**
@@ -712,13 +919,160 @@ main().catch(() => process.exit(1));
     ]);
   }
 
-  private createUnifiedStateEntry(sentinelKey: string, payload: Uint8Array): string {
-    const payloadBase64 = Buffer.from(payload).toString('base64');
-    const row = this.encodeStringField(1, payloadBase64);
-    const dataEntry = Buffer.concat([
+  public parseProtoFields(buf: Uint8Array): Array<{ fieldNum: number; wireType: number; data: bigint | Uint8Array; rawBytes: Uint8Array }> {
+    let pos = 0;
+    const fields: Array<{ fieldNum: number; wireType: number; data: bigint | Uint8Array; rawBytes: Uint8Array }> = [];
+    while (pos < buf.length) {
+      const tagStart = pos;
+      let tag = 0;
+      let shift = 0;
+      while (pos < buf.length) {
+        const b = buf[pos++];
+        tag |= (b & 0x7F) << shift;
+        shift += 7;
+        if ((b & 0x80) === 0) break;
+      }
+      const wireType = tag & 7;
+      const fieldNum = tag >> 3;
+      let data: bigint | Uint8Array = 0n;
+
+      if (wireType === 0) {
+        let val = 0n;
+        let valShift = 0n;
+        while (pos < buf.length) {
+          const b = buf[pos++];
+          val |= BigInt(b & 0x7F) << valShift;
+          valShift += 7n;
+          if ((b & 0x80) === 0) break;
+        }
+        data = val;
+      } else if (wireType === 2) {
+        let len = 0;
+        let lenShift = 0;
+        while (pos < buf.length) {
+          const b = buf[pos++];
+          len |= (b & 0x7F) << lenShift;
+          lenShift += 7;
+          if ((b & 0x80) === 0) break;
+        }
+        data = buf.subarray(pos, pos + len);
+        pos += len;
+      } else if (wireType === 1) {
+        data = buf.subarray(pos, pos + 8);
+        pos += 8;
+      } else if (wireType === 5) {
+        data = buf.subarray(pos, pos + 4);
+        pos += 4;
+      } else {
+        break;
+      }
+      fields.push({ fieldNum, wireType, data, rawBytes: buf.subarray(tagStart, pos) });
+    }
+    return fields;
+  }
+
+  public patchUserStatusPayload(existingBytes: Uint8Array, newEmail: string, newName?: string, newAvatarUrl?: string): Uint8Array {
+    const fields = this.parseProtoFields(existingBytes);
+    const resultParts: Uint8Array[] = [];
+    let hasEmail = false;
+    let hasName = false;
+    let hasAvatar = false;
+
+    for (const f of fields) {
+      if (f.fieldNum === 7) {
+        resultParts.push(this.encodeStringField(7, newEmail));
+        hasEmail = true;
+      } else if (f.fieldNum === 3) {
+        resultParts.push(this.encodeStringField(3, newName || newEmail.split('@')[0]));
+        hasName = true;
+      } else if (f.fieldNum === 26) {
+        if (newAvatarUrl) {
+          resultParts.push(this.encodeStringField(26, newAvatarUrl));
+        } else if (f.wireType === 2 && f.data instanceof Uint8Array) {
+          resultParts.push(this.encodeStringField(26, Buffer.from(f.data).toString('utf8')));
+        }
+        hasAvatar = true;
+      } else {
+        // PRESERVE ALL OTHER FIELDS (including models, paid tier, permissions, etc.)
+        resultParts.push(f.rawBytes);
+      }
+    }
+
+    if (!hasEmail) {
+      resultParts.push(this.encodeStringField(7, newEmail));
+    }
+    if (!hasName) {
+      resultParts.push(this.encodeStringField(3, newName || newEmail.split('@')[0]));
+    }
+    if (!hasAvatar && newAvatarUrl) {
+      resultParts.push(this.encodeStringField(26, newAvatarUrl));
+    }
+
+    return Buffer.concat(resultParts.map(p => Buffer.from(p)));
+  }
+
+  public patchUnifiedStateSyncTopicUserStatus(
+    topicBuf: Uint8Array,
+    newEmail: string,
+    newName?: string,
+    newAvatarUrl?: string
+  ): string | null {
+    try {
+      const topFields = this.parseProtoFields(topicBuf);
+      const newEntries: Uint8Array[] = [];
+      let found = false;
+
+      for (const f of topFields) {
+        if (f.fieldNum === 1 && f.wireType === 2 && f.data instanceof Uint8Array) {
+          const entryFields = this.parseProtoFields(f.data);
+          const keyField = entryFields.find(e => e.fieldNum === 1);
+          const key = keyField && keyField.data instanceof Uint8Array ? Buffer.from(keyField.data).toString('utf8') : '';
+
+          if (key === 'userStatusSentinelKey') {
+            const rowField = entryFields.find(e => e.fieldNum === 2);
+            if (rowField && rowField.data instanceof Uint8Array) {
+              const rowFields = this.parseProtoFields(rowField.data);
+              const valField = rowFields.find(r => r.fieldNum === 1);
+              if (valField && valField.data instanceof Uint8Array) {
+                const innerB64 = Buffer.from(valField.data).toString('utf8');
+                const innerBytes = Buffer.from(innerB64, 'base64');
+                const patchedBytes = this.patchUserStatusPayload(innerBytes, newEmail, newName, newAvatarUrl);
+                const patchedB64 = Buffer.from(patchedBytes).toString('base64');
+                const newRow = this.encodeStringField(1, patchedB64);
+                const newEntry = Buffer.concat([
+                  Buffer.from(this.encodeStringField(1, 'userStatusSentinelKey')),
+                  Buffer.from(this.encodeLenDelimField(2, newRow))
+                ]);
+                newEntries.push(this.encodeLenDelimField(1, newEntry));
+                found = true;
+                continue;
+              }
+            }
+          }
+          newEntries.push(this.encodeLenDelimField(1, f.data));
+        }
+      }
+
+      if (found) {
+        return Buffer.concat(newEntries.map(e => Buffer.from(e))).toString('base64');
+      }
+    } catch (e) {
+      console.warn('[Antigravity Swap] patchUnifiedStateSyncTopicUserStatus error:', e);
+    }
+    return null;
+  }
+
+  public createDataEntry(sentinelKey: string, valueStr: string): Uint8Array {
+    const row = this.encodeStringField(1, valueStr);
+    return Buffer.concat([
       Buffer.from(this.encodeStringField(1, sentinelKey)),
       Buffer.from(this.encodeLenDelimField(2, row))
     ]);
+  }
+
+  private createUnifiedStateEntry(sentinelKey: string, payload: Uint8Array): string {
+    const payloadBase64 = Buffer.from(payload).toString('base64');
+    const dataEntry = this.createDataEntry(sentinelKey, payloadBase64);
     const topic = this.encodeLenDelimField(1, dataEntry);
     return Buffer.from(topic).toString('base64');
   }
@@ -731,14 +1085,117 @@ main().catch(() => process.exit(1));
     idToken?: string,
     email?: string
   ): string {
+    if (isGcpTos && email) {
+      const lower = email.toLowerCase();
+      if (lower.endsWith('@gmail.com') || lower.endsWith('@googlemail.com')) {
+        isGcpTos = false;
+      }
+    }
     const oauthInfo = this.createOAuthInfo(accessToken, refreshToken, expirySeconds, isGcpTos, idToken, email);
-    return this.createUnifiedStateEntry('oauthTokenInfoSentinelKey', oauthInfo);
+    const oauthB64 = Buffer.from(oauthInfo).toString('base64');
+    const entry1 = this.createDataEntry('oauthTokenInfoSentinelKey', oauthB64);
+
+    const authStateJson = JSON.stringify({
+      state: 'signedIn',
+      context: {
+        project: '',
+        showProjectError: false,
+        errorMessage: '',
+        ineligibleMessage: '',
+        verificationUrl: '',
+        isGcpTos: isGcpTos,
+        browserOpenFailed: false,
+        appealUrl: '',
+        appealLinkText: ''
+      }
+    });
+    const entry2 = this.createDataEntry('authStateWithContextSentinelKey', authStateJson);
+
+    const topicMsg = Buffer.concat([
+      Buffer.from(this.encodeLenDelimField(1, entry1)),
+      Buffer.from(this.encodeLenDelimField(1, entry2))
+    ]);
+    return Buffer.from(topicMsg).toString('base64');
   }
 
-  private createMinimalUserStatusPayload(email: string): Uint8Array {
+  public createUserStatusPayload(email: string, name?: string): Uint8Array {
+    const field1 = this.encodeVarintField(1, 1); // pro: true
+    const field3 = this.encodeStringField(3, name || email.split('@')[0]); // name
+    const field7 = this.encodeStringField(7, email); // email
+    const field31 = this.encodeVarintField(31, 1); // has_used_antigravity: true
+    const field34 = this.encodeVarintField(34, 1); // accepted_latest_terms_of_service: true
     return Buffer.concat([
-      Buffer.from(this.encodeStringField(3, email)),
-      Buffer.from(this.encodeStringField(7, email))
+      Buffer.from(field1),
+      Buffer.from(field3),
+      Buffer.from(field7),
+      Buffer.from(field31),
+      Buffer.from(field34)
     ]);
+  }
+
+  public createUnifiedUserStatus(email: string, name?: string): string {
+    const userStatusPayload = this.createUserStatusPayload(email, name);
+    return this.createUnifiedStateEntry('userStatusSentinelKey', userStatusPayload);
+  }
+
+  public createSerializedUpdateRequest(topicName: string, sentinelKey: string, innerPayloadBytes: Uint8Array): string {
+    const innerBase64 = Buffer.from(innerPayloadBytes).toString('base64');
+    const rowMsg = this.encodeStringField(1, innerBase64);
+    const appliedUpdateMsg = Buffer.concat([
+      Buffer.from(this.encodeStringField(1, sentinelKey)),
+      Buffer.from(this.encodeLenDelimField(2, rowMsg))
+    ]);
+    const updateRequestMsg = Buffer.concat([
+      Buffer.from(this.encodeStringField(1, topicName)),
+      Buffer.from(this.encodeLenDelimField(5, appliedUpdateMsg))
+    ]);
+    return Buffer.from(updateRequestMsg).toString('base64');
+  }
+
+  public parseUserStatusBytes(bytes: Uint8Array): { email: string; name: string } {
+    let email = '';
+    let name = '';
+    let pos = 0;
+    while (pos < bytes.length) {
+      let tag = 0;
+      let shift = 0;
+      while (pos < bytes.length) {
+        const b = bytes[pos++];
+        tag |= (b & 0x7F) << shift;
+        shift += 7;
+        if ((b & 0x80) === 0) break;
+      }
+      const wireType = tag & 7;
+      const fieldNum = tag >> 3;
+
+      if (wireType === 0) {
+        while (pos < bytes.length && (bytes[pos++] & 0x80) !== 0) {}
+      } else if (wireType === 2) {
+        let len = 0;
+        let lenShift = 0;
+        while (pos < bytes.length) {
+          const b = bytes[pos++];
+          len |= (b & 0x7F) << lenShift;
+          lenShift += 7;
+          if ((b & 0x80) === 0) break;
+        }
+        if (pos + len <= bytes.length) {
+          const strBytes = bytes.subarray(pos, pos + len);
+          if (fieldNum === 7) {
+            email = Buffer.from(strBytes).toString('utf8');
+          } else if (fieldNum === 3) {
+            name = Buffer.from(strBytes).toString('utf8');
+          }
+        }
+        pos += len;
+      } else if (wireType === 1) {
+        pos += 8;
+      } else if (wireType === 5) {
+        pos += 4;
+      } else {
+        break;
+      }
+    }
+    return { email, name };
   }
 }

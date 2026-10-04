@@ -16,7 +16,8 @@
   ],
   "icon": "media/icon.png",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:antigravitySwap.dashboardView"
   ],
   "enabledApiProposals": [
     "antigravityUnifiedStateSync"
@@ -96,6 +97,18 @@
         "title": "Pop Out Dashboard (Detach Window)",
         "category": "Antigravity Swap",
         "icon": "$(link-external)"
+      },
+      {
+        "command": "antigravitySwap.restoreOriginalIdeExtension",
+        "title": "Restore Original Antigravity IDE Extension (Revert Patch)",
+        "category": "Antigravity Swap",
+        "icon": "$(history)"
+      },
+      {
+        "command": "antigravitySwap.enableIdeExtensionPatch",
+        "title": "Enable Antigravity IDE Extension Patch (Zero-Reload Mode)",
+        "category": "Antigravity Swap",
+        "icon": "$(tools)"
       }
     ],
     "menus": {
@@ -125,6 +138,11 @@
     "configuration": {
       "title": "Antigravity Swap",
       "properties": {
+        "antigravitySwap.enableIdeExtensionPatch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable self-healing patch for Antigravity IDE built-in extension to allow instant zero-reload account switching and clean session eviction."
+        },
         "antigravitySwap.heartbeatIntervalSeconds": {
           "type": "number",
           "default": 30,
@@ -137,8 +155,8 @@
         },
         "antigravitySwap.lowQuotaThresholdPercent": {
           "type": "number",
-          "default": 5,
-          "description": "Percentage threshold (default 5%) below which the active account triggers auto-switching to another healthy account."
+          "default": 3,
+          "description": "Percentage threshold (default 3%) below which the active account triggers auto-switching to another healthy account."
         }
       }
     }

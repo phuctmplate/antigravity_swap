@@ -7,9 +7,23 @@ import { StatusBarService } from './statusBar';
 import { WebviewProvider } from './webviewProvider';
 import { HeartbeatService } from './heartbeatService';
 import { CONFIG_KEYS, EXTENSION_DEFAULTS } from './constants';
+import { ensureIdeExtensionPatched, restoreIdeExtensionBackup } from './patchIdeExtension';
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('[Antigravity Swap] Activating extension with Heartbeat & Ban detection...');
+
+  // Check if IDE extension patch is enabled in background (non-blocking)
+  const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+  const patchEnabled = config.get<boolean>(CONFIG_KEYS.ENABLE_IDE_PATCH, true);
+  if (patchEnabled) {
+    setTimeout(() => {
+      try {
+        ensureIdeExtensionPatched();
+      } catch (patchErr) {
+        console.warn('[Antigravity Swap] Error ensuring IDE extension patched:', patchErr);
+      }
+    }, 100);
+  }
 
   const storageService = new StorageService(context, context.secrets);
   const oauthService = new OAuthService();
@@ -30,8 +44,21 @@ export async function activate(context: vscode.ExtensionContext) {
     console.error('[Antigravity Swap] AccountManager initialization error:', err);
   });
 
+  // Listen for IDE auth session changes (login / logout / account switch directly in IDE)
+  context.subscriptions.push(
+    vscode.authentication.onDidChangeSessions(async (e) => {
+      console.log(`[Antigravity Swap] Auth session changed for provider: ${e.provider.id}`);
+      if (
+        e.provider.id === 'antigravity_auth' ||
+        e.provider.id.includes('antigravity') ||
+        e.provider.id === 'google'
+      ) {
+        await accountManager.handleIdeSessionChange();
+      }
+    })
+  );
+
   // Start Heartbeat service
-  const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
   const heartbeatSec = config.get<number>(CONFIG_KEYS.HEARTBEAT_INTERVAL, EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
   heartbeatService.start(heartbeatSec);
   context.subscriptions.push(heartbeatService);
@@ -42,6 +69,39 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Register Commands
   context.subscriptions.push(
+    vscode.commands.registerCommand('antigravitySwap.restoreOriginalIdeExtension', async () => {
+      const ok = restoreIdeExtensionBackup();
+      if (ok) {
+        // Disable auto-patching so it won't be re-applied automatically on next launch
+        await vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION).update(CONFIG_KEYS.ENABLE_IDE_PATCH, false, vscode.ConfigurationTarget.Global);
+        const choice = await vscode.window.showInformationMessage(
+          'Original Antigravity extension restored from backup. Auto-patching has been disabled. Please reload the window to apply.',
+          'Reload Window'
+        );
+        if (choice === 'Reload Window') {
+          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+      } else {
+        vscode.window.showErrorMessage('Failed to restore backup: extension.js.bak not found or invalid.');
+      }
+    }),
+
+    vscode.commands.registerCommand('antigravitySwap.enableIdeExtensionPatch', async () => {
+      await vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION).update(CONFIG_KEYS.ENABLE_IDE_PATCH, true, vscode.ConfigurationTarget.Global);
+      const ok = ensureIdeExtensionPatched();
+      if (ok) {
+        const choice = await vscode.window.showInformationMessage(
+          'Antigravity IDE extension patch enabled and applied. Please reload the window to activate zero-reload account switching.',
+          'Reload Window'
+        );
+        if (choice === 'Reload Window') {
+          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+      } else {
+        vscode.window.showErrorMessage('Failed to apply IDE extension patch.');
+      }
+    }),
+
     vscode.commands.registerCommand('antigravitySwap.openQuickMenu', async () => {
       await statusBar.showQuickMenu();
     }),
