@@ -26,22 +26,34 @@ export class StatusBarService implements vscode.Disposable {
     const active = this.accountManager.getActiveAccount();
     const overall = this.accountManager.getOverallSummary();
 
-    if (accounts.length === 0 || !active || active.status === 'auth_failed') {
+    if (accounts.length === 0 || !active) {
       this.statusBarItem.text = '$(account) AGY Swap';
       this.statusBarItem.tooltip = 'Antigravity Swap: No active account. Click to connect or switch.';
       this.statusBarItem.backgroundColor = undefined;
       return;
     }
 
+    if (active.status === 'auth_failed') {
+      const displayName = active.name ? active.name.split(' ')[0] : active.email.split('@')[0];
+      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | All: ${overall.overallPercentage ?? 0}%`;
+      this.statusBarItem.tooltip = `Antigravity Swap: Authentication failed for ${active.email}. Click to re-login or switch.`;
+      this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+      return;
+    }
+
+    const geminiPct = this.accountManager.getAccountTargetQuota(active, 'gemini');
+    const claudePct = this.accountManager.getAccountTargetQuota(active, 'claude');
     const activePct = active.averageQuotaPercentage ?? 0;
     const overallPct = overall.overallPercentage ?? 0;
+
+    const minQuota = Math.min(geminiPct, claudePct);
 
     // Color indicator based on quota health
     let icon = '$(zap)';
     if (active.isBanned) {
       icon = '$(error)';
       this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-    } else if (activePct < 20) {
+    } else if (minQuota < 20 || activePct < 20) {
       icon = '$(warning)';
       this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
@@ -49,7 +61,7 @@ export class StatusBarService implements vscode.Disposable {
     }
 
     const displayName = active.name ? active.name.split(' ')[0] : active.email.split('@')[0];
-    this.statusBarItem.text = `${icon} ${displayName}: ${activePct}% | All: ${overallPct}%`;
+    this.statusBarItem.text = `${icon} ${displayName} (Gemini: ${geminiPct}%, Claude: ${claudePct}%) | All: ${overallPct}%`;
 
     // Build a clean, readable MarkdownString tooltip
     const md = new vscode.MarkdownString('', true);
@@ -60,9 +72,9 @@ export class StatusBarService implements vscode.Disposable {
     md.appendMarkdown(`### $(zap) Antigravity Swap\n\n`);
 
     // Active account summary
-    const accountHealthIcon = active.isBanned ? '$(error)' : activePct < 20 ? '$(warning)' : '$(check)';
+    const accountHealthIcon = active.isBanned ? '$(error)' : minQuota < 20 ? '$(warning)' : '$(check)';
     md.appendMarkdown(`**Active:** ${active.name || active.email}\n\n`);
-    md.appendMarkdown(`${accountHealthIcon} \`${active.email}\` — **${activePct}%** remaining\n\n`);
+    md.appendMarkdown(`${accountHealthIcon} \`${active.email}\` — **Gemini: ${geminiPct}%** · **Claude & GPT: ${claudePct}%** (Total: ${activePct}%)\n\n`);
 
     // Overall summary line
     const allAccIcon = overallPct < 20 ? '$(warning)' : '$(account)';
