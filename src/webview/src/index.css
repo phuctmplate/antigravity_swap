@@ -183,18 +183,17 @@
   }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Standard W3C Scrollbar (supported in modern Chromium 121+, Firefox, etc.) */
+html,
+body,
+#root,
+* {
+  scrollbar-width: thin;
+ scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent) var(--background);
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+
+::view-transition {
+  animation-delay: 500ms;
 }
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
-}
+
+
