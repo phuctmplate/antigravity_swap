@@ -4,6 +4,20 @@
 
 ---
 
+## 📸 Preview
+
+### Sidebar Integration & Fast Switch
+Integrated directly into the Antigravity IDE sidebar with account overview and instant switching:
+
+![Antigravity Swap Sidebar Preview](media/preview-sidebar.png)
+
+### Wide Quota Dashboard & Per-Model Breakdown
+Full dashboard view with responsive side-by-side account management and real-time per-model quota monitors:
+
+![Antigravity Swap Dashboard Preview](media/preview-dashboard.png)
+
+---
+
 ## ✨ Key Features
 
 - 🔄 **Zero-Reload Fast Account Switching**: Switch between multiple Google / Antigravity accounts instantly without reloading or restarting your IDE window.
