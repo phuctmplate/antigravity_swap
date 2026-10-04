@@ -5,6 +5,7 @@ import { Badge } from './ui/badge';
 import { Progress } from './ui/progress';
 import { Clock, Calendar, Users, ShieldCheck, Sparkles } from 'lucide-react';
 import { quotaFillClass, quotaTextClass, quotaStrokeColor } from '../lib/quota';
+import { LogoIcon } from './LogoIcon';
 
 interface HeaderProps {
   overall: OverallQuotaSummary;
@@ -33,6 +34,19 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
 
   return (
     <div className="flex flex-col gap-2.5 mb-3">
+      {/* Title Header */}
+      <div className="flex items-center justify-between px-0.5 pt-0.5">
+        <div className="flex items-center gap-2">
+          <LogoIcon className="w-5 h-5 flex-shrink-0 drop-shadow-sm" />
+          <span className="font-bold text-sm tracking-tight text-foreground">
+            Antigravity Swap
+          </span>
+        </div>
+        <Badge variant="outline" className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 h-5">
+          v1.0.0
+        </Badge>
+      </div>
+
       {/* Hero Overview Card */}
       {/* NOTE: no backdrop-blur here — backdrop-filter inside VS Code webview iframes
           can blank the whole compositor layer to black on some GPUs. */}
@@ -46,7 +60,8 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
                 cy="32"
                 r={radius}
                 fill="none"
-                stroke="oklch(0.3 0 0)"
+                stroke="currentColor"
+                className="text-muted/60 dark:text-muted/30"
                 strokeWidth="5.5"
               />
               <circle
@@ -83,7 +98,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
               </Badge>
               {hasPro && (
                 <Badge variant="pro" className="gap-1">
-                  <Sparkles className="w-3 h-3 text-purple-400" />
+                  <Sparkles className="w-3 h-3 text-purple-700 dark:text-purple-300" />
                   <span>{overall.proAccountsCount} Pro</span>
                 </Badge>
               )}

@@ -8,6 +8,8 @@ interface ProgressProps extends React.HTMLAttributes<HTMLDivElement> {
 
 const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
   ({ className, value = 0, indicatorClassName, ...props }, ref) => {
+    const clamped = Math.min(100, Math.max(0, value ?? 0));
+
     return (
       <div
         ref={ref}
@@ -19,10 +21,13 @@ const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
       >
         <div
           className={cn(
-            'h-full w-full flex-1 bg-primary transition-all duration-300',
+            'h-full rounded-full bg-primary transition-all duration-300',
             indicatorClassName
           )}
-          style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
+          style={{
+            width: `${clamped}%`,
+            opacity: clamped > 0 ? 1 : 0
+          }}
         />
       </div>
     );
