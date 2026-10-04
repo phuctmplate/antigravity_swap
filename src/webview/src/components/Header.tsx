@@ -37,7 +37,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
       {/* Title Header */}
       <div className="flex items-center justify-between px-0.5 pt-0.5">
         <div className="flex items-center gap-2">
-          <LogoIcon className="w-5 h-5 flex-shrink-0 drop-shadow-sm" />
+          <LogoIcon className="w-5 h-5 shrink-0 drop-shadow-sm" />
           <span className="font-bold text-sm tracking-tight text-foreground">
             Antigravity Swap
           </span>
@@ -53,7 +53,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
       <Card className="relative overflow-hidden border-border/80 bg-card">
         <CardContent className="flex items-center gap-3.5 p-3.5">
           {/* Circular SVG Gauge */}
-          <div className="relative flex h-16 w-16 flex-shrink-0 items-center justify-center">
+          <div className="relative flex h-16 w-16 shrink-0 items-center justify-center">
             <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 64 64">
               <circle
                 cx="32"

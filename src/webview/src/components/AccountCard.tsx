@@ -159,14 +159,14 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 
       {/* Active Left Vertical Accent Bar (hidden when multi-select to avoid clutter) */}
       {isActive && !isMultiSelectMode && (
-        <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-gradient-to-b from-primary to-indigo-500" />
+        <div className="absolute left-0 top-0 bottom-0 w-0.75 bg-linear-to-b from-primary to-indigo-500" />
       )}
 
       <CardContent className="flex flex-col flex-1 p-2.5">
         {/* Card Header: Avatar, Info, and Overall Quota Percentage */}
         <div className={cn("flex items-start justify-between gap-2 mb-2", isMultiSelectMode && "pl-6")}>
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-pink-500 text-xs font-bold text-white overflow-hidden border border-white/20 shadow-xs">
+            <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-blue-500 to-pink-500 text-xs font-bold text-white overflow-hidden border border-white/20 shadow-xs">
               {account.avatarUrl ? (
                 <img src={account.avatarUrl} alt={account.name || ''} className="h-full w-full object-cover" />
               ) : (
@@ -176,7 +176,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 
             <div className="flex flex-1 flex-col min-w-0">
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-bold text-xs text-foreground truncate max-w-[120px]">
+                <span className="font-bold text-xs text-foreground truncate max-w-30">
                   {account.name || account.email}
                 </span>
 
@@ -243,12 +243,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
         <div className="mt-1 mb-2 flex-1 flex flex-col gap-2">
           {isBanned ? (
             <div className="text-[10px] font-medium text-destructive py-1 flex items-center gap-1">
-              <ShieldAlert className="w-3 h-3 text-destructive flex-shrink-0" />
+              <ShieldAlert className="w-3 h-3 text-destructive shrink-0" />
               <span>Account suspended by Google Terms of Service.</span>
             </div>
           ) : isAuthFailed ? (
             <div className="text-[10px] font-medium text-amber-400 py-1 flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+              <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
               <span>Authentication required. Click Re-login to authenticate.</span>
             </div>
           ) : (
@@ -270,11 +270,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   <div className="flex flex-col gap-0.5">
                     <div className="flex justify-between items-center text-[9px]">
                       <span className="text-muted-foreground flex items-center gap-1 min-w-0">
-                        <Clock className="w-2.5 h-2.5 text-sky-400 flex-shrink-0" />
+                        <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
                         <span className="text-foreground/90 font-medium">5h Window</span>
                         <span className="text-[8px] text-muted-foreground/80 font-normal truncate">{bucketNote(gemini5h)}</span>
                       </span>
-                      <span className={`font-bold ml-1 flex-shrink-0 ${gemini5h.disabled ? 'text-muted-foreground' : getTextColor(gemini5h.percentage)}`}>
+                      <span className={`font-bold ml-1 shrink-0 ${gemini5h.disabled ? 'text-muted-foreground' : getTextColor(gemini5h.percentage)}`}>
                         {gemini5h.disabled ? 'N/A' : `${gemini5h.percentage}%`}
                       </span>
                     </div>
@@ -291,11 +291,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   <div className="flex flex-col gap-0.5">
                     <div className="flex justify-between items-center text-[9px]">
                       <span className="text-muted-foreground flex items-center gap-1 min-w-0">
-                        <Calendar className="w-2.5 h-2.5 text-purple-400 flex-shrink-0" />
+                        <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
                         <span className="text-foreground/90 font-medium">Weekly</span>
                         <span className="text-[8px] text-muted-foreground/80 font-normal truncate">{bucketNote(geminiWeekly)}</span>
                       </span>
-                      <span className={`font-bold ml-1 flex-shrink-0 ${getTextColor(geminiWeekly.percentage)}`}>
+                      <span className={`font-bold ml-1 shrink-0 ${getTextColor(geminiWeekly.percentage)}`}>
                         {geminiWeekly.percentage}%
                       </span>
                     </div>
@@ -327,11 +327,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   <div className="flex flex-col gap-0.5">
                     <div className="flex justify-between items-center text-[9px]">
                       <span className="text-muted-foreground flex items-center gap-1 min-w-0">
-                        <Clock className="w-2.5 h-2.5 text-sky-400 flex-shrink-0" />
+                        <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
                         <span className="text-foreground/90 font-medium">5h Window</span>
                         <span className={`text-[8px] font-normal truncate ${claude5h.disabled ? 'text-amber-400/90' : 'text-muted-foreground/80'}`}>{bucketNote(claude5h)}</span>
                       </span>
-                      <span className={`font-bold ml-1 flex-shrink-0 ${claude5h.disabled ? 'text-muted-foreground' : getTextColor(claude5h.percentage)}`}>
+                      <span className={`font-bold ml-1 shrink-0 ${claude5h.disabled ? 'text-muted-foreground' : getTextColor(claude5h.percentage)}`}>
                         {claude5h.disabled ? 'N/A' : `${claude5h.percentage}%`}
                       </span>
                     </div>
@@ -348,11 +348,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   <div className="flex flex-col gap-0.5">
                     <div className="flex justify-between items-center text-[9px]">
                       <span className="text-muted-foreground flex items-center gap-1 min-w-0">
-                        <Calendar className="w-2.5 h-2.5 text-purple-400 flex-shrink-0" />
+                        <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
                         <span className="text-foreground/90 font-medium">Weekly</span>
                         <span className="text-[8px] text-muted-foreground/80 font-normal truncate">{bucketNote(claudeWeekly)}</span>
                       </span>
-                      <span className={`font-bold ml-1 flex-shrink-0 ${getTextColor(claudeWeekly.percentage)}`}>
+                      <span className={`font-bold ml-1 shrink-0 ${getTextColor(claudeWeekly.percentage)}`}>
                         {claudeWeekly.percentage}%
                       </span>
                     </div>
@@ -375,7 +375,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
           <div className="flex flex-col gap-1 rounded-md bg-accent/15 p-1.5 border border-border/30 mb-1.5">
             <div className="flex justify-between items-center text-[9.5px]">
               <span className="text-muted-foreground flex items-center gap-1 font-medium">
-                <Gauge className="w-3 h-3 text-muted-foreground/80 flex-shrink-0" />
+                <Gauge className="w-3 h-3 text-muted-foreground/80 shrink-0" />
                 <span className="text-foreground/90 font-semibold">Total Quota Left</span>
               </span>
               <span className={cn("font-bold font-mono text-[10px]", isFree && (!account.averageQuotaPercentage || account.averageQuotaPercentage === 0) ? "text-muted-foreground" : getTextColor(account.averageQuotaPercentage ?? 0))}>
@@ -436,7 +436,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 disabled={isSwitching}
                 size="xs"
                 variant="default"
-                className="min-w-[56px]"
+                className="min-w-14"
               >
                 {isSwitching ? (
                   <RotateCw className="w-3 h-3 animate-spin" />
