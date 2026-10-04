@@ -7,32 +7,59 @@ import { ModelQuotas } from './components/ModelQuotas';
 import { ToastProvider } from './components/Toast';
 import { getVsCodeApi } from './vscode';
 
-export const AppContent: React.FC = () => {
-  const [state, setState] = useState<WebviewState>({
-    accounts: [],
-    activeAccount: null,
-    overall: {
-      totalAccounts: 0,
-      overallPercentage: 0,
-      averageActiveAccountPercentage: 0,
-      highestAccountQuotaPercentage: 0,
-      accountsWithHealthyQuota: 0,
-      accountsLowOrDepleted: 0,
-      accountsWithErrors: 0,
-      proAccountsCount: 0,
-      lastUpdated: new Date().toISOString()
-    },
-    autoSwitchEnabled: false
-  });
+const defaultState: WebviewState = {
+  accounts: [],
+  activeAccount: null,
+  overall: {
+    totalAccounts: 0,
+    overallPercentage: 0,
+    averageActiveAccountPercentage: 0,
+    highestAccountQuotaPercentage: 0,
+    accountsWithHealthyQuota: 0,
+    accountsLowOrDepleted: 0,
+    accountsWithErrors: 0,
+    proAccountsCount: 0,
+    lastUpdated: new Date().toISOString()
+  },
+  autoSwitchEnabled: false
+};
 
-  const [selectedEmail, setSelectedEmail] = useState<string | null>(null);
+function getInitialState(): WebviewState {
+  try {
+    const rootEl = document.getElementById('root');
+    const rawB64 = rootEl?.getAttribute('data-initial-state');
+    if (rawB64) {
+      const json = decodeURIComponent(escape(atob(rawB64)));
+      const parsed = JSON.parse(json);
+      if (parsed && Array.isArray(parsed.accounts)) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('[Antigravity Swap] Could not parse data-initial-state:', e);
+  }
+
+  const cached = getVsCodeApi().getState() as WebviewState | undefined;
+  if (cached && Array.isArray(cached.accounts)) {
+    return cached;
+  }
+
+  return defaultState;
+}
+
+export const AppContent: React.FC = () => {
+  const [state, setState] = useState<WebviewState>(getInitialState);
+
+  const [selectedEmail, setSelectedEmail] = useState<string | null>(() => {
+    return state.activeAccount?.email || state.accounts[0]?.email || null;
+  });
   // Use a ref so the message handler always sees the latest selectedEmail
   // without needing to be in the useEffect dependency array
   const selectedEmailRef = useRef<string | null>(null);
   selectedEmailRef.current = selectedEmail;
 
   useEffect(() => {
-    // Notify extension host that webview is ready
+    // Notify extension host that webview is ready for live stream updates
     getVsCodeApi().postMessage({ command: 'ready' });
 
     const handleMessage = (event: MessageEvent) => {
@@ -49,13 +76,15 @@ export const AppContent: React.FC = () => {
             : (activeAccount?.email || accounts[0]?.email || null);
 
           setSelectedEmail(nextSelected);
-          setState({
+          const nextState: WebviewState = {
             accounts,
             activeAccount,
             overall: data.overall,
             heartbeat: data.heartbeat,
             autoSwitchEnabled: data.autoSwitchEnabled !== false
-          });
+          };
+          setState(nextState);
+          getVsCodeApi().setState(nextState);
         }
       } catch (err) {
         console.error('[Antigravity Swap] handleMessage error:', err);

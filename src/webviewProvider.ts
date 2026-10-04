@@ -16,6 +16,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   ) {
     this.accountManager.onDidChangeState(() => this.updateWebview());
     this.heartbeatService.onHeartbeat(() => this.updateWebview());
+    vscode.window.onDidChangeActiveColorTheme((theme) => {
+      this.sendThemeUpdate(theme);
+    });
   }
 
   public resolveWebviewView(
@@ -34,12 +37,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
-        this.accountManager.syncCurrentAccountFromIde().catch(() => {});
         this.updateWebview();
       }
     });
-
-    this.accountManager.syncCurrentAccountFromIde().then(() => this.updateWebview());
 
     webviewView.webview.onDidReceiveMessage((data) => this.handleWebviewMessage(data));
 
@@ -167,13 +167,18 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     const overall = this.accountManager.getOverallSummary();
     const heartbeat = this.heartbeatService.getHeartbeatInfo();
 
+    const isLight =
+      vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light ||
+      vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrastLight;
+
     const stateMessage = {
       type: 'stateUpdate',
       accounts,
       activeAccount,
       overall,
       heartbeat,
-      autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled()
+      autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
+      isLight
     };
 
     if (this._view) {
@@ -181,6 +186,20 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     }
     if (this._panel) {
       this._panel.webview.postMessage(stateMessage);
+    }
+  }
+
+  public sendThemeUpdate(theme?: vscode.ColorTheme): void {
+    const currentTheme = theme || vscode.window.activeColorTheme;
+    const isLight =
+      currentTheme.kind === vscode.ColorThemeKind.Light ||
+      currentTheme.kind === vscode.ColorThemeKind.HighContrastLight;
+    const msg = { type: 'themeChanged', isLight };
+    if (this._view) {
+      this._view.webview.postMessage(msg);
+    }
+    if (this._panel) {
+      this._panel.webview.postMessage(msg);
     }
   }
 
@@ -194,9 +213,34 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   <p>Run <code>npm run build</code> to build the webview.</p>
 </body></html>`;
     }
+    const template = fs.readFileSync(htmlPath, 'utf8');
 
     const nonce = this.getNonce();
-    let html = fs.readFileSync(htmlPath, 'utf8');
+    let html = template;
+
+    // Inject initial snapshot data directly into root attribute for instant 0ms first frame render
+    try {
+      const accounts = this.accountManager.getAccounts();
+      const activeAccount = this.accountManager.getActiveAccount();
+      const overall = this.accountManager.getOverallSummary();
+      const heartbeat = this.heartbeatService.getHeartbeatInfo();
+      const isLight =
+        vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light ||
+        vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrastLight;
+
+      const initialState = {
+        accounts,
+        activeAccount,
+        overall,
+        heartbeat,
+        autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
+        isLight
+      };
+      const b64State = Buffer.from(JSON.stringify(initialState)).toString('base64');
+      html = html.replace('<div id="root"></div>', `<div id="root" data-initial-state="${b64State}"></div>`);
+    } catch (e) {
+      console.warn('[Antigravity Swap] Could not inject initial state into HTML:', e);
+    }
 
     // viteSingleFile inlines everything as <script type="module" crossorigin>...</script>
     // IMPORTANT: Use non-global replace (no /g flag) to only inject nonce onto the FIRST
