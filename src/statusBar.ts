@@ -25,6 +25,8 @@ export class StatusBarService implements vscode.Disposable {
     const accounts = this.accountManager.getAccounts();
     const active = this.accountManager.getActiveAccount();
     const overall = this.accountManager.getOverallSummary();
+    const instantPct = overall.instantPercentage ?? 0;
+    const overallPct = overall.overallPercentage ?? 0;
 
     if (accounts.length === 0 || !active) {
       this.statusBarItem.text = '$(account) AGY Swap';
@@ -33,9 +35,10 @@ export class StatusBarService implements vscode.Disposable {
       return;
     }
 
+    const displayName = active.name ? active.name.split(' ')[0] : active.email.split('@')[0];
+
     if (active.status === 'auth_failed') {
-      const displayName = active.name ? active.name.split(' ')[0] : active.email.split('@')[0];
-      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | All: ${overall.overallPercentage ?? 0}%`;
+      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | Instant: ${instantPct}% | Overall: ${overallPct}%`;
       this.statusBarItem.tooltip = `Antigravity Swap: Authentication failed for ${active.email}. Click to re-login or switch.`;
       this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
@@ -44,7 +47,6 @@ export class StatusBarService implements vscode.Disposable {
     const geminiPct = this.accountManager.getAccountTargetQuota(active, 'gemini');
     const claudePct = this.accountManager.getAccountTargetQuota(active, 'claude');
     const activePct = active.averageQuotaPercentage ?? 0;
-    const overallPct = overall.overallPercentage ?? 0;
 
     const minQuota = Math.min(geminiPct, claudePct);
 
@@ -60,8 +62,7 @@ export class StatusBarService implements vscode.Disposable {
       this.statusBarItem.backgroundColor = undefined;
     }
 
-    const displayName = active.name ? active.name.split(' ')[0] : active.email.split('@')[0];
-    this.statusBarItem.text = `${icon} ${displayName} (Gemini: ${geminiPct}%, Claude: ${claudePct}%) | All: ${overallPct}%`;
+    this.statusBarItem.text = `${icon} ${displayName} (Gemini: ${geminiPct}%, Claude: ${claudePct}%) | Instant: ${instantPct}% | Overall: ${overallPct}%`;
 
     // Build a clean, readable MarkdownString tooltip
     const md = new vscode.MarkdownString('', true);
@@ -76,9 +77,9 @@ export class StatusBarService implements vscode.Disposable {
     md.appendMarkdown(`**Active:** ${active.name || active.email}\n\n`);
     md.appendMarkdown(`${accountHealthIcon} \`${active.email}\` — **Gemini: ${geminiPct}%** · **Claude & GPT: ${claudePct}%** (Total: ${activePct}%)\n\n`);
 
-    // Overall summary line
+    // Overall & Instant summary line
     const allAccIcon = overallPct < 20 ? '$(warning)' : '$(account)';
-    md.appendMarkdown(`${allAccIcon} **All ${overall.totalAccounts} account(s):** ${overallPct}% avg\n\n`);
+    md.appendMarkdown(`${allAccIcon} **All ${overall.totalAccounts} account(s):** **Instant:** ${instantPct}% · **Overall:** ${overallPct}%\n\n`);
 
     // Model quotas section
     const quotas = active.quotas ?? [];
@@ -108,11 +109,13 @@ export class StatusBarService implements vscode.Disposable {
     const accounts = this.accountManager.getAccounts();
     const active = this.accountManager.getActiveAccount();
     const overall = this.accountManager.getOverallSummary();
+    const instantPct = overall.instantPercentage ?? 0;
+    const overallPct = overall.overallPercentage ?? 0;
 
     const items: vscode.QuickPickItem[] = [];
 
     items.push({
-      label: `Overall Quota: ${overall.overallPercentage}% across ${overall.totalAccounts} account(s)`,
+      label: `Instant: ${instantPct}% · Overall: ${overallPct}% across ${overall.totalAccounts} account(s)`,
       description: `Active: ${active ? active.email : 'None'} (${active ? active.averageQuotaPercentage : 0}%)`,
       kind: vscode.QuickPickItemKind.Separator
     });

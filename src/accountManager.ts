@@ -67,9 +67,15 @@ export class AccountManager {
       await this.importDetectedAccounts();
     }
 
-    // Listen to IDE window focus to sync IDE session changes
+    // Listen to external accounts storage changes (e.g. from other IDE instances/windows)
+    this.storage.onDidAccountsChange(async () => {
+      await this.reloadFromStorage();
+    });
+
+    // Listen to IDE window focus to sync external file/state updates & IDE session changes
     vscode.window.onDidChangeWindowState((e) => {
       if (e.focused) {
+        this.reloadFromStorage().catch(() => {});
         this.handleIdeSessionChange().catch(() => {});
       }
     });
@@ -80,6 +86,28 @@ export class AccountManager {
     // ONLY auto-switch if auto-switch is explicitly enabled by user AND quotas were loaded
     if (this.isAutoSwitchEnabled()) {
       await this.checkAutoSwitch();
+    }
+  }
+
+  /**
+   * Reloads accounts and active email state from shared storage (triggered by external instance changes).
+   */
+  public async reloadFromStorage(): Promise<void> {
+    const rawAccounts = this.storage.getAccounts();
+    const cleanAccounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
+    this.accounts = cleanAccounts;
+    const active = this.storage.getActiveAccountEmail();
+    this.activeEmail = (active && this.accounts.some((a) => a.email === active)) ? active : this.accounts.find((a) => a.isActive)?.email;
+    this._onDidChangeState.fire();
+  }
+
+  /**
+   * Handles VS Code workspace configuration updates across all instances.
+   */
+  public handleConfigurationChange(): void {
+    this._onDidChangeState.fire();
+    if (this.isAutoSwitchEnabled()) {
+      this.checkAutoSwitch().catch(() => {});
     }
   }
 
@@ -533,7 +561,7 @@ export class AccountManager {
       vscode.window.showInformationMessage(`Added account ${userInfo.email} to Antigravity Swap!`);
       this._onDidChangeState.fire();
 
-      this.refreshAccountQuota(account.email).catch(() => {});
+      this.refreshAccountQuota(account.email, true).catch(() => {});
       return account;
     } catch (err: any) {
       vscode.window.showErrorMessage(`Login failed: ${err.message}`);
@@ -585,7 +613,7 @@ export class AccountManager {
     await this.storage.saveAccounts(this.accounts);
     vscode.window.showInformationMessage(`Account ${email} saved successfully!`);
     this._onDidChangeState.fire();
-    this.refreshAccountQuota(email).catch(() => {});
+    this.refreshAccountQuota(email, true).catch(() => {});
     return true;
   }
 
@@ -648,31 +676,113 @@ export class AccountManager {
   }
 
   /**
-   * Refreshes quota balances for multiple selected accounts.
+   * Refreshes quota balances for multiple selected accounts with fast pacing delays.
    */
-  public async refreshMultipleAccounts(emails: string[]): Promise<void> {
+  public async refreshMultipleAccounts(emails: string[], onProgress?: (current: number, total: number, email: string) => void): Promise<void> {
     if (!emails || emails.length === 0) return;
-    for (const email of emails) {
-      await this.refreshAccountQuota(email);
+    const batchSize = EXTENSION_DEFAULTS.REFRESH_BATCH_SIZE;
+    const pacingDelayMs = EXTENSION_DEFAULTS.BATCH_PACING_DELAY_MS;
+    const total = emails.length;
+    let completedCount = 0;
+
+    for (let i = 0; i < total; i += batchSize) {
+      const chunk = emails.slice(i, i + batchSize);
+      await Promise.all(
+        chunk.map(async (email) => {
+          try {
+            await this.refreshAccountQuota(email);
+          } catch (err) {
+            console.warn(`[Antigravity Swap] Failed to refresh account ${email}:`, err);
+          } finally {
+            completedCount++;
+            if (onProgress) {
+              onProgress(completedCount, total, email);
+            }
+          }
+        })
+      );
+
+      this.storage.renewRefreshLease();
+
+      if (i + batchSize < total && pacingDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, pacingDelayMs));
+      }
     }
+
     await this.checkAutoSwitch();
     this._onDidChangeState.fire();
   }
 
   /**
    * Refreshes quota balances for all accounts with credentials.
+   * Prioritizes the active account first, followed by remaining accounts in parallel batch chunks.
+   * Uses distributed lease and periodically renews the lease during batch execution.
    */
-  public async refreshAllQuotas(): Promise<void> {
-    for (const acc of this.accounts) {
-      await this.refreshAccountQuota(acc.email);
+  public async refreshAllQuotas(force = false, onProgress?: (current: number, total: number, email: string) => void): Promise<void> {
+    if (!this.storage.tryAcquireRefreshLease(force)) {
+      console.log('[Antigravity Swap] Refresh skipped (lease held or in cooldown). Reloading accounts from shared storage.');
+      await this.reloadFromStorage();
+      return;
     }
-    await this.checkAutoSwitch();
-    this._onDidChangeState.fire();
+
+    const batchSize = EXTENSION_DEFAULTS.REFRESH_BATCH_SIZE;
+    const pacingDelayMs = EXTENSION_DEFAULTS.BATCH_PACING_DELAY_MS;
+
+    try {
+      const active = this.getActiveAccount();
+      // Prioritize active account first for instant UI response
+      const orderedAccounts = [
+        ...(active ? [active] : []),
+        ...this.accounts.filter((a) => a.email !== active?.email)
+      ];
+
+      const total = orderedAccounts.length;
+      let completedCount = 0;
+
+      for (let i = 0; i < total; i += batchSize) {
+        const chunk = orderedAccounts.slice(i, i + batchSize);
+        await Promise.all(
+          chunk.map(async (acc) => {
+            try {
+              await this.refreshAccountQuota(acc.email);
+            } catch (err) {
+              console.warn(`[Antigravity Swap] Failed to refresh account ${acc.email}:`, err);
+            } finally {
+              completedCount++;
+              if (onProgress) {
+                onProgress(completedCount, total, acc.email);
+              }
+            }
+          })
+        );
+
+        this.storage.renewRefreshLease();
+
+        // Pacing delay between batch chunks to prevent API rate limits
+        if (i + batchSize < total && pacingDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, pacingDelayMs));
+        }
+      }
+
+      await this.checkAutoSwitch();
+      this._onDidChangeState.fire();
+    } finally {
+      this.storage.releaseRefreshLease();
+    }
   }
 
-  public async refreshAccountQuota(email: string): Promise<void> {
+  public async refreshAccountQuota(email: string, force = false): Promise<void> {
     const acc = this.accounts.find((a) => a.email === email);
     if (!acc) return;
+
+    // Silent per-account rate limiting: skip network request if refreshed within cooldown
+    const now = Date.now();
+    if (!force && acc.lastRefreshedAt) {
+      const lastRefreshed = new Date(acc.lastRefreshedAt).getTime();
+      if (!isNaN(lastRefreshed) && now - lastRefreshed < EXTENSION_DEFAULTS.ACCOUNT_REFRESH_COOLDOWN_MS) {
+        return;
+      }
+    }
 
     const tokens = await this.storage.getAccountTokens(email);
     if (!tokens || !tokens.accessToken) {
@@ -687,62 +797,81 @@ export class AccountManager {
       return;
     }
 
-    const res = await this.quotaService.fetchAccountQuotas(acc, tokens, async (newTokens) => {
-      await this.storage.saveAccountTokens(email, newTokens);
-    });
+    try {
+      const res = await this.quotaService.fetchAccountQuotas(acc, tokens, async (newTokens) => {
+        await this.storage.saveAccountTokens(email, newTokens);
+      });
 
-    acc.quotas = res.quotas;
-    acc.quotaGroups = res.quotaGroups;
-    acc.geminiGroup = res.geminiGroup;
-    acc.claudeGptGroup = res.claudeGptGroup;
-    acc.averageQuotaPercentage = res.averagePercentage;
-    acc.fiveHourQuotaPercentage = res.fiveHourPercentage;
-    acc.weeklyQuotaPercentage = res.weeklyPercentage;
-    acc.fiveHourResetTime = res.fiveHourResetTime;
-    acc.fiveHourResetCountdown = res.fiveHourResetCountdown;
-    acc.weeklyResetTime = res.weeklyResetTime;
-    acc.weeklyResetCountdown = res.weeklyResetCountdown;
-    acc.has5HourQuota = res.has5HourQuota;
-    acc.hasWeeklyQuota = res.hasWeeklyQuota;
-    acc.accountType = res.accountType;
-    acc.tierBadge = res.tierBadge;
-    acc.status = res.status;
-    acc.isBanned = res.isBanned;
-    acc.banReason = res.isBanned ? res.statusMessage : undefined;
-    acc.statusMessage = res.statusMessage;
-    acc.lastRefreshedAt = new Date().toISOString();
-    acc.lastHeartbeatAt = new Date().toISOString();
+      acc.quotas = res.quotas;
+      acc.quotaGroups = res.quotaGroups;
+      acc.geminiGroup = res.geminiGroup;
+      acc.claudeGptGroup = res.claudeGptGroup;
+      acc.averageQuotaPercentage = res.averagePercentage;
+      acc.fiveHourQuotaPercentage = res.fiveHourPercentage;
+      acc.weeklyQuotaPercentage = res.weeklyPercentage;
+      acc.fiveHourResetTime = res.fiveHourResetTime;
+      acc.fiveHourResetCountdown = res.fiveHourResetCountdown;
+      acc.weeklyResetTime = res.weeklyResetTime;
+      acc.weeklyResetCountdown = res.weeklyResetCountdown;
+      acc.has5HourQuota = res.has5HourQuota;
+      acc.hasWeeklyQuota = res.hasWeeklyQuota;
+      acc.accountType = res.accountType;
+      acc.tierBadge = res.tierBadge;
+      acc.status = res.status;
+      acc.isBanned = res.isBanned;
+      acc.banReason = res.isBanned ? res.statusMessage : undefined;
+      acc.statusMessage = res.statusMessage;
+      acc.lastRefreshedAt = new Date().toISOString();
+      acc.lastHeartbeatAt = new Date().toISOString();
 
-    await this.storage.saveAccounts(this.accounts);
-    this._onDidChangeState.fire();
+      await this.storage.saveAccounts(this.accounts);
+      this._onDidChangeState.fire();
+    } catch (err) {
+      console.warn(`[Antigravity Swap] Error refreshing quota for ${email}:`, err);
+    }
   }
 
   /**
    * Heartbeat execution: polls active account quota and checks background account status.
+   * Checks the distributed lease so multiple instances do not spam Google APIs simultaneously.
    */
   public async runHeartbeatTick(): Promise<void> {
     // Keep active state synchronized with IDE external login/logout
     await this.checkExternalIdeSession().catch(() => {});
 
-    const active = this.getActiveAccount();
-    if (active) {
-      await this.refreshAccountQuota(active.email);
+    // Try to acquire distributed lease for background heartbeat polling
+    if (!this.storage.tryAcquireRefreshLease(false)) {
+      // Another instance recently refreshed or is in progress; reload shared data
+      await this.reloadFromStorage();
+      await this.checkAutoSwitch();
+      return;
     }
 
-    // Also check one background account per tick in round-robin fashion
-    const bgAccounts = this.accounts.filter((a) => a.email !== active?.email && a.status === 'active');
-    if (bgAccounts.length > 0) {
-      const oldestSynced = bgAccounts.sort((a, b) => {
-        const tA = a.lastHeartbeatAt ? new Date(a.lastHeartbeatAt).getTime() : 0;
-        const tB = b.lastHeartbeatAt ? new Date(b.lastHeartbeatAt).getTime() : 0;
-        return tA - tB;
-      })[0];
-      if (oldestSynced) {
-        await this.refreshAccountQuota(oldestSynced.email);
+    try {
+      const active = this.getActiveAccount();
+      if (active) {
+        await this.refreshAccountQuota(active.email);
       }
-    }
 
-    await this.checkAutoSwitch();
+      // Check background accounts in round-robin batches (up to HEARTBEAT_BATCH_SIZE accounts per tick)
+      const bgAccounts = this.accounts.filter((a) => a.email !== active?.email && a.status === 'active');
+      if (bgAccounts.length > 0) {
+        const batchSize = Math.min(EXTENSION_DEFAULTS.HEARTBEAT_BATCH_SIZE, bgAccounts.length);
+        const sortedBgAccounts = [...bgAccounts].sort((a, b) => {
+          const tA = a.lastHeartbeatAt ? new Date(a.lastHeartbeatAt).getTime() : 0;
+          const tB = b.lastHeartbeatAt ? new Date(b.lastHeartbeatAt).getTime() : 0;
+          return tA - tB;
+        });
+        const batchToRefresh = sortedBgAccounts.slice(0, batchSize);
+        for (const target of batchToRefresh) {
+          await this.refreshAccountQuota(target.email);
+        }
+      }
+
+      await this.checkAutoSwitch();
+    } finally {
+      this.storage.releaseRefreshLease();
+    }
   }
 
   /**

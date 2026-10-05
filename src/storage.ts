@@ -15,17 +15,208 @@ export interface DiscoveredAccount {
 }
 
 export class StorageService {
+  private lastLocalSaveTime = 0;
+  private fileWatcher?: fs.FSWatcher;
+  private readonly _onDidAccountsChange = new vscode.EventEmitter<void>();
+  public readonly onDidAccountsChange = this._onDidAccountsChange.event;
+
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly secrets: vscode.SecretStorage
   ) {}
 
+  public getAccountsFilePath(): string {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, 'accounts.json');
+  }
+
   public getAccounts(): AccountInfo[] {
-    return this.context.globalState.get<AccountInfo[]>(STORAGE_KEYS.ACCOUNTS, []);
+    const filePath = this.getAccountsFilePath();
+    try {
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      }
+    } catch {}
+
+    const stateAccounts = this.context.globalState.get<AccountInfo[]>(STORAGE_KEYS.ACCOUNTS, []);
+    if (stateAccounts.length > 0) {
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(stateAccounts, null, 2), 'utf-8');
+      } catch {}
+    }
+    return stateAccounts;
   }
 
   public async saveAccounts(accounts: AccountInfo[]): Promise<void> {
+    this.lastLocalSaveTime = Date.now();
     await this.context.globalState.update(STORAGE_KEYS.ACCOUNTS, accounts);
+    const filePath = this.getAccountsFilePath();
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    }
+    const tmpPath = path.join(dir, `.accounts.${process.pid}.${Date.now()}.tmp`);
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(accounts, null, 2), 'utf-8');
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch {
+        // Fallback for Windows environments if destination file handle is momentarily locked
+        fs.copyFileSync(tmpPath, filePath);
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+    } catch (e) {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+      console.warn('[StorageService] Failed to atomically write accounts.json:', e);
+    }
+  }
+
+  public initFileWatcher(): vscode.Disposable {
+    const filePath = this.getAccountsFilePath();
+    let debounceTimer: NodeJS.Timeout | null = null;
+
+    try {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      this.fileWatcher = fs.watch(dir, (eventType, filename) => {
+        if (filename && (filename === 'accounts.json' || filename.includes('accounts'))) {
+          if (Date.now() - this.lastLocalSaveTime < 800) {
+            // Ignored: change caused by our own local save
+            return;
+          }
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            console.log('[StorageService] Detected external accounts.json change, triggering reload.');
+            this._onDidAccountsChange.fire();
+          }, 150);
+        }
+      });
+    } catch (e) {
+      console.warn('[StorageService] Could not initialize file watcher:', e);
+    }
+
+    const secretWatcher = this.secrets.onDidChange((e) => {
+      if (e.key.startsWith('antigravitySwap.tokens.')) {
+        if (Date.now() - this.lastLocalSaveTime < 800) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          this._onDidAccountsChange.fire();
+        }, 150);
+      }
+    });
+
+    return {
+      dispose: () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        if (this.fileWatcher) {
+          try { this.fileWatcher.close(); } catch {}
+        }
+        secretWatcher.dispose();
+      }
+    };
+  }
+
+  public getHeartbeatIntervalSeconds(): number {
+    try {
+      const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+      const val = config.get<number>(CONFIG_KEYS.HEARTBEAT_INTERVAL);
+      if (typeof val === 'number' && !isNaN(val) && val >= 5) {
+        return val;
+      }
+    } catch {}
+    return EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS;
+  }
+
+  /**
+   * Attempts to acquire a distributed refresh lease across multiple IDE windows.
+   * Prevents duplicate simultaneous API calls and enforces cooldown periods matching heartbeat settings.
+   */
+  public tryAcquireRefreshLease(force = false): boolean {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    const leaseFile = path.join(dir, '.refresh-lease.json');
+    const now = Date.now();
+    const LOCK_TTL_MS = 15000;
+    const heartbeatSec = this.getHeartbeatIntervalSeconds();
+    const COOLDOWN_MS = Math.max(5000, (heartbeatSec * 1000) - 2000);
+
+    if (!fs.existsSync(dir)) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    }
+
+    if (force) {
+      try {
+        fs.writeFileSync(leaseFile, JSON.stringify({ status: 'FETCHING', startedAt: now, pid: process.pid }), 'utf-8');
+        return true;
+      } catch {
+        return true;
+      }
+    }
+
+    try {
+      if (fs.existsSync(leaseFile)) {
+        const raw = fs.readFileSync(leaseFile, 'utf-8');
+        const lease = JSON.parse(raw);
+        const startedAt = typeof lease.startedAt === 'number' ? lease.startedAt : 0;
+        const lastCompletedAt = typeof lease.lastCompletedAt === 'number' ? lease.lastCompletedAt : 0;
+
+        // Check if an active request is in-flight within TTL
+        if (lease.status === 'FETCHING' && (now - startedAt) < LOCK_TTL_MS) {
+          return false;
+        }
+
+        // Check if a refresh was recently completed within cooldown
+        if ((now - lastCompletedAt) < COOLDOWN_MS) {
+          return false;
+        }
+      }
+
+      fs.writeFileSync(leaseFile, JSON.stringify({ status: 'FETCHING', startedAt: now, pid: process.pid }), 'utf-8');
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Extends the heartbeat timestamp of an active refresh lease during long-running batch operations.
+   */
+  public renewRefreshLease(): void {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    const leaseFile = path.join(dir, '.refresh-lease.json');
+    try {
+      if (fs.existsSync(leaseFile)) {
+        const raw = fs.readFileSync(leaseFile, 'utf-8');
+        const lease = JSON.parse(raw);
+        if (lease.status === 'FETCHING' && lease.pid === process.pid) {
+          fs.writeFileSync(leaseFile, JSON.stringify({ ...lease, startedAt: Date.now() }), 'utf-8');
+        }
+      }
+    } catch {}
+  }
+
+  /**
+   * Releases the distributed refresh lease after completing API quota fetches.
+   */
+  public releaseRefreshLease(): void {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    const leaseFile = path.join(dir, '.refresh-lease.json');
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(leaseFile, JSON.stringify({ status: 'IDLE', lastCompletedAt: Date.now(), pid: process.pid }), 'utf-8');
+    } catch {}
   }
 
   public getActiveAccountEmail(): string | undefined {
@@ -37,11 +228,22 @@ export class StorageService {
   }
 
   public getAutoSwitchEnabled(): boolean {
-    return this.context.globalState.get<boolean>(STORAGE_KEYS.AUTO_SWITCH, true);
+    const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+    const configVal = config.get<boolean>(CONFIG_KEYS.AUTO_SWITCH_WHEN_LOW);
+    if (typeof configVal === 'boolean') {
+      return configVal;
+    }
+    return this.context.globalState.get<boolean>(STORAGE_KEYS.AUTO_SWITCH, EXTENSION_DEFAULTS.DEFAULT_AUTO_SWITCH_ENABLED);
   }
 
   public async setAutoSwitchEnabled(enabled: boolean): Promise<void> {
     await this.context.globalState.update(STORAGE_KEYS.AUTO_SWITCH, enabled);
+    try {
+      const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+      await config.update(CONFIG_KEYS.AUTO_SWITCH_WHEN_LOW, enabled, vscode.ConfigurationTarget.Global);
+    } catch {
+      // Ignore if config update fails
+    }
   }
 
   public getAutoSwitchTarget(): AutoSwitchTarget {

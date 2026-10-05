@@ -2,7 +2,7 @@
   "name": "antigravity-swap",
   "displayName": "Antigravity Swap",
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "phuctmplate",
   "license": "MIT",
   "repository": {
@@ -155,24 +155,24 @@
         },
         "antigravitySwap.lowQuotaThresholdPercent": {
           "type": "number",
-          "default": 3,
+          "default": 2,
           "minimum": 0,
           "maximum": 100,
-          "description": "Percentage threshold (0-100%, default 3%) at or below which the active account triggers auto-switching to another healthy account."
+          "description": "Percentage threshold (0-100%, default 2%) at or below which the active account triggers auto-switching to another healthy account."
         },
         "antigravitySwap.autoSwitchTarget": {
           "type": "string",
           "enum": [
-            "total",
             "gemini",
-            "claude"
+            "claude",
+            "total"
           ],
           "enumDescriptions": [
-            "Total Quota (average across all models)",
             "Gemini Models (5-hour window for Pro/Ultra, Weekly for Free)",
-            "Claude & GPT Models (5-hour window for Pro/Ultra, Weekly for Free)"
+            "Claude & GPT Models (5-hour window for Pro/Ultra, Weekly for Free)",
+            "Total Quota (average across all models)"
           ],
-          "default": "total",
+          "default": "gemini",
           "description": "Specifies which quota model family triggers automatic account switching when depleted."
         }
       }
@@ -202,6 +202,7 @@
     "vite-plugin-singlefile": "^2.3.3"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-slot": "^1.3.3",
     "@radix-ui/react-switch": "^1.3.7",
     "class-variance-authority": "^0.7.1",

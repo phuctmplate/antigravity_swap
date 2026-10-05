@@ -79,7 +79,8 @@ export interface AccountInfo {
 export interface OverallQuotaSummary {
   totalAccounts: number;
   activeAccountEmail?: string;
-  overallPercentage: number; // Combined % across all accounts
+  instantPercentage: number; // Rolling/Instant % across all healthy accounts (5h for Pro/Paid, weekly for Free)
+  overallPercentage: number; // Combined weekly plan % across all healthy accounts
   
   // Separated Group Aggregate Percentages
   gemini5HourPercentage?: number;

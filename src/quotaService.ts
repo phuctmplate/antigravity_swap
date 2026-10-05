@@ -11,7 +11,7 @@ import {
   QuotaGroup
 } from './types';
 import { OAuthService } from './oauthService';
-import { API_ENDPOINTS } from './constants';
+import { API_ENDPOINTS, TIER_WEIGHTS, MODEL_WEIGHTS } from './constants';
 
 export interface QuotaFetchResult {
   quotas: ModelQuota[];
@@ -402,21 +402,55 @@ export class QuotaService {
     // Sort parsed model quotas deterministically (highest version first)
     parsedQuotas = QuotaService.sortModelQuotas(parsedQuotas);
 
-    // Compute window properties
+    // Compute window properties and group metrics
     const has5Hour = !!geminiGroup?.fiveHour || !!claudeGptGroup?.fiveHour;
     const hasWeekly = !!geminiGroup?.weekly || !!claudeGptGroup?.weekly;
 
-    const fiveHourResetTime = geminiGroup?.fiveHour?.resetTime;
-    const fiveHourResetCountdown = geminiGroup?.fiveHour?.resetCountdown;
-    const fiveHourPercentage = geminiGroup?.fiveHour ? geminiGroup.fiveHour.percentage : undefined;
+    const fiveHourResetTime = geminiGroup?.fiveHour?.resetTime || claudeGptGroup?.fiveHour?.resetTime;
+    const fiveHourResetCountdown = geminiGroup?.fiveHour?.resetCountdown || claudeGptGroup?.fiveHour?.resetCountdown;
 
-    const weeklyResetTime = geminiGroup?.weekly?.resetTime;
-    const weeklyResetCountdown = geminiGroup?.weekly?.resetCountdown;
-    const weeklyPercentage = geminiGroup?.weekly ? geminiGroup.weekly.percentage : undefined;
+    const weeklyResetTime = geminiGroup?.weekly?.resetTime || claudeGptGroup?.weekly?.resetTime;
+    const weeklyResetCountdown = geminiGroup?.weekly?.resetCountdown || claudeGptGroup?.weekly?.resetCountdown;
+
+    // Group-level weekly percentages
+    const geminiWk = (geminiGroup?.weekly && !geminiGroup.weekly.disabled && geminiGroup.weekly.percentage >= 0)
+      ? geminiGroup.weekly.percentage
+      : undefined;
+    const claudeWk = (claudeGptGroup?.weekly && !claudeGptGroup.weekly.disabled && claudeGptGroup.weekly.percentage >= 0)
+      ? claudeGptGroup.weekly.percentage
+      : undefined;
+
+    // Combined Weekly percentage (Capacity metric) with weighted model ratio (Gemini 70%, Claude 30%)
+    let weeklyPercentage: number | undefined;
+    if (geminiWk !== undefined && claudeWk !== undefined) {
+      weeklyPercentage = Math.round((geminiWk * MODEL_WEIGHTS.GEMINI + claudeWk * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+    } else if (geminiWk !== undefined) {
+      weeklyPercentage = geminiWk;
+    } else if (claudeWk !== undefined) {
+      weeklyPercentage = claudeWk;
+    }
+
+    // Group-level 5-hour rolling window percentages
+    const gemini5h = (geminiGroup?.fiveHour && !geminiGroup.fiveHour.disabled && geminiGroup.fiveHour.percentage >= 0)
+      ? geminiGroup.fiveHour.percentage
+      : undefined;
+    const claude5h = (claudeGptGroup?.fiveHour && !claudeGptGroup.fiveHour.disabled && claudeGptGroup.fiveHour.percentage >= 0)
+      ? claudeGptGroup.fiveHour.percentage
+      : undefined;
+
+    // Combined 5-hour percentage with weighted model ratio (Gemini 70%, Claude 30%)
+    let fiveHourPercentage: number | undefined;
+    if (gemini5h !== undefined && claude5h !== undefined) {
+      fiveHourPercentage = Math.round((gemini5h * MODEL_WEIGHTS.GEMINI + claude5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+    } else if (gemini5h !== undefined) {
+      fiveHourPercentage = gemini5h;
+    } else if (claude5h !== undefined) {
+      fiveHourPercentage = claude5h;
+    }
 
     // Check model availability per group
-    const geminiAvailable = (geminiGroup?.weekly?.percentage ?? 0) > 0 && (!geminiGroup?.fiveHour || geminiGroup.fiveHour.percentage > 0);
-    const claudeAvailable = (claudeGptGroup?.weekly?.percentage ?? 0) > 0 && (!claudeGptGroup?.fiveHour || claudeGptGroup.fiveHour.percentage > 0);
+    const geminiAvailable = (geminiWk ?? 0) > 0 && (gemini5h === undefined || gemini5h > 0);
+    const claudeAvailable = (claudeWk ?? 0) > 0 && (claude5h === undefined || claude5h > 0);
 
     let status: AccountStatus = 'active';
     let statusMessage: string | undefined;
@@ -430,25 +464,9 @@ export class QuotaService {
       statusMessage = 'Claude depleted · Gemini available';
     }
 
-    // Overall average percentage across active model groups (Gemini + Claude & GPT)
-    const geminiActivePct = geminiGroup?.fiveHour && !geminiGroup.fiveHour.disabled && geminiGroup.fiveHour.percentage >= 0
-      ? geminiGroup.fiveHour.percentage
-      : (geminiGroup?.weekly && !geminiGroup.weekly.disabled && geminiGroup.weekly.percentage >= 0 ? geminiGroup.weekly.percentage : undefined);
-
-    const claudeActivePct = claudeGptGroup?.fiveHour && !claudeGptGroup.fiveHour.disabled && claudeGptGroup.fiveHour.percentage >= 0
-      ? claudeGptGroup.fiveHour.percentage
-      : (claudeGptGroup?.weekly && !claudeGptGroup.weekly.disabled && claudeGptGroup.weekly.percentage >= 0 ? claudeGptGroup.weekly.percentage : undefined);
-
-    let averagePercentage = 0;
-    if (geminiActivePct !== undefined && claudeActivePct !== undefined) {
-      averagePercentage = Math.round((geminiActivePct + claudeActivePct) / 2);
-    } else if (geminiActivePct !== undefined) {
-      averagePercentage = geminiActivePct;
-    } else if (claudeActivePct !== undefined) {
-      averagePercentage = claudeActivePct;
-    } else {
-      averagePercentage = this.calculateAveragePercentage(parsedQuotas);
-    }
+    // Total Quota of each Account is determined strictly by its Weekly Plan Quota
+    // (5h window is an instant rate limit, not overall capacity)
+    const averagePercentage = weeklyPercentage ?? this.calculateAveragePercentage(parsedQuotas);
 
     return {
       quotas: parsedQuotas,
@@ -1216,6 +1234,7 @@ export class QuotaService {
     if (accounts.length === 0) {
       return {
         totalAccounts: 0,
+        instantPercentage: 0,
         overallPercentage: 0,
         overall5HourPercentage: 0,
         overallWeeklyPercentage: 0,
@@ -1229,25 +1248,28 @@ export class QuotaService {
       };
     }
 
-    const getTierWeights = (tier: AccountTierType) => {
+    const getTierWeight = (tier: AccountTierType): number => {
       switch (tier) {
         case 'ENTERPRISE':
-          return { overall: 5.0, fiveHour: 5.0, weekly: 5.0 };
+          return TIER_WEIGHTS.ENTERPRISE;
         case 'ULTRA':
-          return { overall: 4.0, fiveHour: 4.0, weekly: 4.0 };
+          return TIER_WEIGHTS.ULTRA;
         case 'AI PREMIUM':
-          return { overall: 3.0, fiveHour: 3.0, weekly: 3.0 };
+          return TIER_WEIGHTS['AI PREMIUM'];
         case 'PRO':
-          return { overall: 1.0, fiveHour: 1.0, weekly: 1.0 };
+          return TIER_WEIGHTS.PRO;
         case 'STANDARD FREE':
         default:
-          return { overall: 0.5, fiveHour: 0.5, weekly: 0.5 };
+          return TIER_WEIGHTS.FREE;
       }
     };
 
     const activeAcc = accounts.find((a) => a.isActive) || accounts[0];
     let sumOverallWeighted = 0;
     let totalOverallWeight = 0;
+
+    let sumInstantWeighted = 0;
+    let totalInstantWeight = 0;
 
     let sum5hWeighted = 0;
     let total5hWeight = 0;
@@ -1279,62 +1301,78 @@ export class QuotaService {
 
       healthyCount++;
 
-      // Use actual measured quota percentage
-      const p = acc.averageQuotaPercentage ?? 0;
-      if (p > maxPercentage) maxPercentage = p;
-      if (p < 20) {
+      // Weekly / Capacity percentage of this account (Gemini 70% + Claude 30%)
+      const pWeekly = acc.weeklyQuotaPercentage ?? acc.averageQuotaPercentage ?? 0;
+      if (pWeekly > maxPercentage) maxPercentage = pWeekly;
+      if (pWeekly < 20) {
         lowCount++;
       }
 
-      const weights = getTierWeights(acc.tierBadge);
-      const accWeight = weights.overall;
+      const weight = getTierWeight(acc.tierBadge);
 
-      // Overall weighted capacity
-      sumOverallWeighted += p * accWeight;
-      totalOverallWeight += accWeight;
+      // 1. Overall capacity: weighted sum of weekly plan quotas across all healthy accounts
+      sumOverallWeighted += pWeekly * weight;
+      totalOverallWeight += weight;
 
-      // 5-Hour Rolling Window: only accounts with 5h quota allocations
+      // 2. Instant quota: 5-hour rolling window for paid/pro accounts, weekly for free tier
+      let pInstant = pWeekly;
+      if (!isFree) {
+        if (acc.fiveHourQuotaPercentage !== undefined) {
+          pInstant = acc.fiveHourQuotaPercentage;
+        } else if (acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled && acc.geminiGroup.fiveHour.percentage >= 0) {
+          const g5h = acc.geminiGroup.fiveHour.percentage;
+          const c5h = (acc.claudeGptGroup?.fiveHour && !acc.claudeGptGroup.fiveHour.disabled && acc.claudeGptGroup.fiveHour.percentage >= 0)
+            ? acc.claudeGptGroup.fiveHour.percentage
+            : undefined;
+          pInstant = c5h !== undefined ? Math.round((g5h * MODEL_WEIGHTS.GEMINI + c5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE)) : g5h;
+        }
+      }
+      sumInstantWeighted += pInstant * weight;
+      totalInstantWeight += weight;
+
+      // 3. 5-Hour Rolling Window aggregates
       const has5h = acc.fiveHourQuotaPercentage !== undefined || (acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled);
       if (has5h) {
         const val5h = acc.fiveHourQuotaPercentage ?? acc.geminiGroup?.fiveHour?.percentage ?? acc.claudeGptGroup?.fiveHour?.percentage ?? 0;
-        sum5hWeighted += val5h * weights.fiveHour;
-        total5hWeight += weights.fiveHour;
+        sum5hWeighted += val5h * weight;
+        total5hWeight += weight;
       }
 
-      // Weekly Plan Quota: only accounts with weekly quota allocations
+      // 4. Weekly Plan Quota aggregates
       const hasWk = acc.weeklyQuotaPercentage !== undefined || (acc.geminiGroup?.weekly && !acc.geminiGroup.weekly.disabled);
       if (hasWk) {
         const valWk = acc.weeklyQuotaPercentage ?? acc.geminiGroup?.weekly?.percentage ?? acc.claudeGptGroup?.weekly?.percentage ?? 0;
-        sumWeeklyWeighted += valWk * weights.weekly;
-        totalWeeklyWeight += weights.weekly;
+        sumWeeklyWeighted += valWk * weight;
+        totalWeeklyWeight += weight;
       }
 
       // Gemini Separated Aggregates
       const g5h = acc.geminiGroup?.fiveHour;
       if (g5h && !g5h.disabled && g5h.percentage >= 0) {
-        sumGemini5h += g5h.percentage * weights.fiveHour;
-        totalGemini5hWeight += weights.fiveHour;
+        sumGemini5h += g5h.percentage * weight;
+        totalGemini5hWeight += weight;
       }
       const gWk = acc.geminiGroup?.weekly;
       if (gWk && !gWk.disabled && gWk.percentage >= 0) {
-        sumGeminiWeekly += gWk.percentage * weights.weekly;
-        totalGeminiWeeklyWeight += weights.weekly;
+        sumGeminiWeekly += gWk.percentage * weight;
+        totalGeminiWeeklyWeight += weight;
       }
 
       // Claude & GPT Separated Aggregates
       const c5h = acc.claudeGptGroup?.fiveHour;
       if (c5h && !c5h.disabled && c5h.percentage >= 0) {
-        sumClaude5h += c5h.percentage * weights.fiveHour;
-        totalClaude5hWeight += weights.fiveHour;
+        sumClaude5h += c5h.percentage * weight;
+        totalClaude5hWeight += weight;
       }
       const cWk = acc.claudeGptGroup?.weekly;
       if (cWk && !cWk.disabled && cWk.percentage >= 0) {
-        sumClaudeWeekly += cWk.percentage * weights.weekly;
-        totalClaudeWeeklyWeight += weights.weekly;
+        sumClaudeWeekly += cWk.percentage * weight;
+        totalClaudeWeeklyWeight += weight;
       }
     }
 
     const overallPct = totalOverallWeight > 0 ? Math.round(sumOverallWeighted / totalOverallWeight) : 0;
+    const instantPct = totalInstantWeight > 0 ? Math.round(sumInstantWeighted / totalInstantWeight) : 0;
     const overall5hPct = total5hWeight > 0 ? Math.round(sum5hWeighted / total5hWeight) : undefined;
     const overallWeeklyPct = totalWeeklyWeight > 0 ? Math.round(sumWeeklyWeighted / totalWeeklyWeight) : undefined;
     const gemini5hPct = totalGemini5hWeight > 0 ? Math.round(sumGemini5h / totalGemini5hWeight) : undefined;
@@ -1346,6 +1384,7 @@ export class QuotaService {
     return {
       totalAccounts: accounts.length,
       activeAccountEmail: activeAcc?.email,
+      instantPercentage: errorCount === accounts.length ? 0 : instantPct,
       overallPercentage: errorCount === accounts.length ? 0 : overallPct,
       gemini5HourPercentage: gemini5hPct,
       geminiWeeklyPercentage: geminiWkPct,

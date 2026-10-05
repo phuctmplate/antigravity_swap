@@ -35,13 +35,23 @@ export const API_ENDPOINTS = {
 
 /**
  * Account Tier Weights for Overall Quota Calculation
+ * Free tier weight is proportionately smaller than paid subscriptions.
  */
 export const TIER_WEIGHTS = {
   ENTERPRISE: 5.0,
   ULTRA: 4.0,
   'AI PREMIUM': 3.0,
   PRO: 1.0,
-  FREE: 0.5
+  FREE: 0.1
+} as const;
+
+/**
+ * Model Weights for Account & Aggregate Quota Calculations
+ * Claude & GPT third-party models contribute less than primary Gemini models.
+ */
+export const MODEL_WEIGHTS = {
+  GEMINI: 0.7,
+  CLAUDE: 0.3
 } as const;
 
 /**
@@ -72,8 +82,14 @@ export const CONFIG_KEYS = {
  */
 export const EXTENSION_DEFAULTS = {
   DEFAULT_HEARTBEAT_SECONDS: 30,
-  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 3,
-  DEFAULT_AUTO_SWITCH_TARGET: 'total',
-  ACCOUNT_REFRESH_COOLDOWN_MS: 10000,
-  GLOBAL_REFRESH_COOLDOWN_MS: 10000
+  DEFAULT_AUTO_SWITCH_ENABLED: false,
+  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 2,
+  DEFAULT_AUTO_SWITCH_TARGET: 'gemini',
+  ACCOUNT_REFRESH_COOLDOWN_MS: 15000,
+  GLOBAL_REFRESH_COOLDOWN_MS: 15000,
+  BATCH_PACING_DELAY_MS: 100,
+  HEARTBEAT_BATCH_SIZE: 3,
+  REFRESH_BATCH_SIZE: 3
 } as const;
+
+

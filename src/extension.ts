@@ -26,6 +26,8 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   const storageService = new StorageService(context, context.secrets);
+  context.subscriptions.push(storageService.initFileWatcher());
+
   const oauthService = new OAuthService();
   const quotaService = new QuotaService(oauthService);
   const accountManager = new AccountManager(storageService, oauthService, quotaService);
@@ -54,6 +56,18 @@ export async function activate(context: vscode.ExtensionContext) {
         e.provider.id === 'google'
       ) {
         await accountManager.handleIdeSessionChange();
+      }
+    })
+  );
+
+  // Listen for VS Code workspace configuration changes across all instances
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration(CONFIG_KEYS.SECTION)) {
+        accountManager.handleConfigurationChange();
+        const updatedConfig = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+        const newInterval = updatedConfig.get<number>(CONFIG_KEYS.HEARTBEAT_INTERVAL, EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
+        heartbeatService.start(newInterval);
       }
     })
   );
@@ -219,15 +233,24 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('antigravitySwap.refreshQuotas', async () => {
-      vscode.window.withProgress(
+      await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: 'Heartbeat: Refreshing all Antigravity account quotas...',
+          title: 'Antigravity Swap: Refreshing quotas (batched to protect your accounts)...',
           cancellable: false
         },
-        async () => {
-          await heartbeatService.tick();
-          vscode.window.showInformationMessage('⚡ Heartbeat quota check completed!');
+        async (progress) => {
+          let lastInc = 0;
+          await accountManager.refreshAllQuotas(true, (current, total, email) => {
+            const pct = Math.round((current / total) * 100);
+            const increment = pct - lastInc;
+            lastInc = pct;
+            progress.report({
+              message: `(${current}/${total}) ${email}`,
+              increment: increment > 0 ? increment : undefined
+            });
+          });
+          vscode.window.showInformationMessage('⚡ All account quotas refreshed successfully!');
         }
       );
     }),

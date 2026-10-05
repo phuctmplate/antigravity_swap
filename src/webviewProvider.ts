@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AccountManager } from './accountManager';
 import { HeartbeatService } from './heartbeatService';
+import { EXTENSION_DEFAULTS } from './constants';
 
 export class WebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravitySwap.dashboardView';
@@ -126,7 +127,26 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'refreshMultipleAccounts':
           if (Array.isArray(data.emails) && data.emails.length > 0) {
-            await this.accountManager.refreshMultipleAccounts(data.emails);
+            await vscode.window.withProgress(
+              {
+                location: vscode.ProgressLocation.Notification,
+                title: 'Antigravity Swap: Refreshing selected quotas (batched to protect your accounts)...',
+                cancellable: false
+              },
+              async (progress) => {
+                let lastInc = 0;
+                await this.accountManager.refreshMultipleAccounts(data.emails, (current, total, email) => {
+                  const pct = Math.round((current / total) * 100);
+                  const increment = pct - lastInc;
+                  lastInc = pct;
+                  progress.report({
+                    message: `(${current}/${total}) ${email}`,
+                    increment: increment > 0 ? increment : undefined
+                  });
+                });
+                vscode.window.showInformationMessage('⚡ Selected account quotas refreshed successfully!');
+              }
+            );
           }
           break;
         case 'removeMultipleAccounts':
