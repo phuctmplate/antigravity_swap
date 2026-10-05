@@ -784,6 +784,9 @@ export class AccountManager {
       }
     }
 
+    // Set early in-flight timestamp to prevent concurrent double-triggers
+    acc.lastRefreshedAt = new Date().toISOString();
+
     const tokens = await this.storage.getAccountTokens(email);
     if (!tokens || !tokens.accessToken) {
       acc.status = 'auth_failed';
