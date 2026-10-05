@@ -125,61 +125,243 @@ export class OAuthService {
   }
 
   private getHtmlResponse(title: string, message: string, isSuccess: boolean): string {
-    const color = isSuccess ? '#38bdf8' : '#ef4444';
     const uriScheme = vscode.env?.uriScheme || 'vscode';
+    const statusBg = isSuccess ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+    const statusBorder = isSuccess ? 'rgba(16, 185, 129, 0.25)' : 'rgba(239, 68, 68, 0.25)';
+    const statusColor = isSuccess ? '#10b981' : '#ef4444';
+
+    const statusIconSvg = isSuccess
+      ? `<svg class="status-icon-svg" viewBox="0 0 24 24" fill="none" stroke="${statusColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>`
+      : `<svg class="status-icon-svg" viewBox="0 0 24 24" fill="none" stroke="${statusColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>`;
 
     return `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Antigravity Swap Authentication</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Swap — ${title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111726;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0b0f1a;
-      color: #f8fafc;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text-main);
+      min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 100vh;
-      margin: 0;
+      padding: 24px;
+      overflow: hidden;
+      position: relative;
     }
+
+    .bg-gradient {
+      position: absolute;
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(253, 63, 32, 0.08) 0%, rgba(14, 165, 233, 0.05) 50%, transparent 70%);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
     .card {
-      background: #141b2d;
-      padding: 40px;
-      border-radius: 16px;
+      position: relative;
+      z-index: 10;
+      width: 100%;
+      max-width: 400px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 36px 28px 28px;
       text-align: center;
-      border: 1px solid rgba(56, 189, 248, 0.25);
-      box-shadow: 0 12px 36px rgba(0,0,0,0.5);
-      max-width: 420px;
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6), 0 0 1px 1px rgba(255, 255, 255, 0.05);
+      animation: fadeIn 0.4s ease-out forwards;
     }
-    h1 { color: ${color}; font-size: 22px; margin-bottom: 8px; }
-    p { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
-    .btn {
-      background: linear-gradient(135deg, #2563eb, #7c3aed);
-      color: #fff;
-      border: none;
-      padding: 10px 22px;
-      border-radius: 8px;
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .logo-svg {
+      width: 32px;
+      height: 32px;
+      filter: drop-shadow(0 2px 8px rgba(253, 63, 32, 0.3));
+    }
+
+    .logo-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: #f1f5f9;
+    }
+
+    .status-icon-wrapper {
+      width: 52px;
+      height: 52px;
+      margin: 0 auto 18px;
+      border-radius: 50%;
+      background: ${statusBg};
+      border: 1px solid ${statusBorder};
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .status-icon-svg {
+      width: 26px;
+      height: 26px;
+    }
+
+    h1 {
+      font-size: 19px;
+      font-weight: 700;
+      color: #f8fafc;
+      letter-spacing: -0.01em;
+      margin-bottom: 8px;
+    }
+
+    p.subtitle {
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+      padding: 0 4px;
+    }
+
+    .btn-return {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 11px 20px;
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
-      font-size: 13px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-return:hover {
+      background: #2563eb;
+      border-color: #3b82f6;
+      color: #ffffff;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+    }
+
+    .btn-return:active {
+      transform: translateY(0);
+    }
+
+    .btn-return svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .footer-note {
+      margin-top: 16px;
+      font-size: 11.5px;
+      color: var(--text-dim);
     }
   </style>
 </head>
 <body>
+  <div class="bg-gradient"></div>
+
   <div class="card">
+    <div class="logo-container">
+      <svg class="logo-svg" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M319.531 60.5C514.031 126 513 406.5 283.531 463C196.5 419.5 163 314.5 219.531 221C207 297.5 207.5 359 289.031 412.5C458 350 468.531 139 319.531 60.5Z" fill="url(#p0)"/>
+        <path d="M192.292 450.5C-2.20798 385 -1.17719 104.5 228.292 48C315.323 91.5 348.823 196.5 292.292 290C304.823 213.5 304.323 152 222.792 98.5C53.8228 161 43.2921 372 192.292 450.5Z" fill="url(#p1)"/>
+        <defs>
+          <linearGradient id="p0" x1="325" y1="462" x2="325" y2="60.5" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#D41609"/>
+            <stop offset="0.5" stop-color="#FD3F20"/>
+            <stop offset="1" stop-color="#FF6F43"/>
+          </linearGradient>
+          <linearGradient id="p1" x1="187" y1="49" x2="187" y2="450.5" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#D41609"/>
+            <stop offset="0.5" stop-color="#FD3F20"/>
+            <stop offset="1" stop-color="#FF6F43"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="logo-title">Antigravity Swap</span>
+    </div>
+
+    <div class="status-icon-wrapper">
+      ${statusIconSvg}
+    </div>
+
     <h1>${title}</h1>
-    <p>${message}</p>
-    <button class="btn" onclick="closeTab()">Return to Antigravity IDE</button>
+    <p class="subtitle">${message}</p>
+
+    <button class="btn-return" onclick="returnToIde()">
+      <span>Return to Antigravity IDE</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+        <polyline points="12 5 19 12 12 19"></polyline>
+      </svg>
+    </button>
+
+    <div class="footer-note">
+      You can safely close this browser tab anytime.
+    </div>
   </div>
+
   <script>
-    function closeTab() {
-      try { window.location.href = "${uriScheme}://"; } catch (e) {}
-      setTimeout(() => { try { window.close(); } catch (e) {} }, 500);
+    const uriScheme = "${uriScheme}";
+    function returnToIde() {
+      try {
+        window.location.href = uriScheme + "://";
+      } catch (e) {}
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch (e) {}
+      }, 500);
     }
     if (${isSuccess}) {
-      setTimeout(closeTab, 1200);
+      setTimeout(returnToIde, 1200);
     }
   </script>
 </body>

@@ -70,6 +70,7 @@ export interface Account {
 export interface OverallQuotaSummary {
   totalAccounts: number;
   activeAccountEmail?: string;
+  instantPercentage?: number;
   overallPercentage: number;
   
   // Separated Group Aggregate Percentages

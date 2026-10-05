@@ -111,23 +111,25 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   };
 
   // Dynamic state classes based on Multi-Select / Active / Selected hierarchy
-  let cardClasses = 'relative flex flex-col transition-all duration-150 cursor-pointer overflow-hidden ';
+  let cardClasses = 'relative flex flex-col transition-all duration-200 cursor-pointer overflow-hidden ';
   if (isMultiSelectMode && isChecked) {
-    cardClasses += 'border-primary ring-2 ring-primary/80 bg-primary/15 shadow-md';
+    cardClasses += isActive
+      ? 'border-primary ring-2 ring-primary/80 bg-primary/20 shadow-md saturate-125'
+      : 'border-foreground/35 ring-2 ring-foreground/20 bg-accent/70 shadow-md saturate-125';
   } else if (isBanned) {
     cardClasses += isSelected
-      ? 'border-destructive/80 bg-destructive/15 shadow-md'
-      : 'border-destructive/40 bg-destructive/10 hover:border-destructive/60';
+      ? 'border-destructive/80 bg-destructive/15 shadow-md ring-1 ring-destructive/40 saturate-125'
+      : 'border-destructive/40 bg-destructive/10 hover:border-destructive/60 opacity-80';
   } else if (isAuthFailed) {
     cardClasses += isSelected
-      ? 'border-amber-500/80 bg-amber-500/15 shadow-md'
-      : 'border-amber-500/40 bg-amber-500/10 hover:border-amber-500/60';
+      ? 'border-amber-500/80 bg-amber-500/15 shadow-md ring-1 ring-amber-500/40 saturate-125'
+      : 'border-amber-500/40 bg-amber-500/10 hover:border-amber-500/60 opacity-80';
   } else if (isActive && isSelected) {
-    cardClasses += 'border-primary/80 bg-primary/20 shadow-md shadow-primary/10 hover:bg-primary/25';
+    cardClasses += 'border-primary/90 bg-primary/20 shadow-md shadow-primary/15 ring-1 ring-primary/50 saturate-125 hover:bg-primary/25';
   } else if (isActive && !isSelected) {
-    cardClasses += 'border-primary/45 bg-primary/10 hover:bg-primary/15';
+    cardClasses += 'border-primary/50 bg-primary/10 hover:bg-primary/15';
   } else if (!isActive && isSelected) {
-    cardClasses += 'border-foreground/35 bg-accent/60 shadow-md hover:bg-accent/80';
+    cardClasses += 'border-foreground/25 bg-accent/50 ring-1 ring-foreground/15 shadow-sm saturate-125 hover:bg-accent/65';
   } else {
     cardClasses += 'border-border/80 bg-card/80 hover:bg-accent/30 hover:border-border';
   }
@@ -138,6 +140,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
     <Card
       onClick={handleCardClick}
       className={cardClasses}
+      style={isSelected ? { filter: 'saturate(1.25)' } : undefined}
     >
       {/* Top-Left Checkbox in Multi-Select Mode */}
       {isMultiSelectMode && (
@@ -230,13 +233,6 @@ export const AccountCard: React.FC<AccountCardProps> = ({
               )}
             </div>
           </div>
-
-          {/* Right Side: Selected Indicator (Single Select view) */}
-          {!isMultiSelectMode && isSelected && (
-            <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-semibold text-foreground border border-white/20 pointer-events-none shadow-2xs shrink-0">
-              Selected
-            </span>
-          )}
         </div>
 
         {/* Quota Section: Separate Gemini and Claude & GPT, separate 5h and Weekly */}

@@ -13,10 +13,12 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
-  const pct = overall.overallPercentage || 0;
-  const radius = 26;
+  const instantPct = overall.instantPercentage ?? 0;
+  const overallPct = overall.overallPercentage ?? 0;
+  const radius = 32;
   const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (pct / 100) * circumference;
+  const instantOffset = circumference - (instantPct / 100) * circumference;
+  const overallOffset = circumference - (overallPct / 100) * circumference;
 
   const healthyCount = accounts.filter(
     (a) => !a.isBanned && a.status !== 'banned' && a.status !== 'auth_failed'
@@ -43,66 +45,113 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
           </span>
         </div>
         <Badge variant="outline" className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 h-5">
-          v1.0.0
+          v1.1.0
         </Badge>
       </div>
 
-      {/* Hero Overview Card */}
-      {/* NOTE: no backdrop-blur here — backdrop-filter inside VS Code webview iframes
-          can blank the whole compositor layer to black on some GPUs. */}
-      <Card className="relative overflow-hidden border-border/80 bg-card">
-        <CardContent className="flex items-center gap-3.5 p-3.5">
-          {/* Circular SVG Gauge */}
-          <div className="relative flex h-16 w-16 shrink-0 items-center justify-center">
-            <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 64 64">
-              <circle
-                cx="32"
-                cy="32"
-                r={radius}
-                fill="none"
-                stroke="currentColor"
-                className="text-muted/60 dark:text-muted/30"
-                strokeWidth="5.5"
-              />
-              <circle
-                cx="32"
-                cy="32"
-                r={radius}
-                fill="none"
-                stroke={getGaugeColor(pct)}
-                strokeWidth="5.5"
-                strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
-                strokeLinecap="round"
-                style={{ transition: 'stroke-dashoffset 0.6s ease' }}
-              />
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-sm font-bold text-foreground tracking-tight">{pct}%</span>
+      {/* Hero Overview Card with Twin Circular Gauges */}
+      <Card className="relative overflow-hidden border-border/80 bg-card/95 shadow-sm">
+        <CardContent className="flex flex-col gap-2.5 p-3">
+          {/* Twin SVG Gauges Container - Centered near middle on all screen widths */}
+          <div className="flex items-center justify-center gap-6 sm:gap-10 max-w-sm mx-auto w-full px-2 py-1">
+            {/* 1. Instant Quota Gauge */}
+            <div
+              className="flex flex-col items-center gap-1.5 min-w-24 shrink-0 cursor-help"
+              title={`Instant Quota (${instantPct}%): Usable quota available right now across all healthy accounts (combines 5h window and free-tier weekly quotas).`}
+            >
+              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
+                <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 80 80">
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r={radius}
+                    fill="none"
+                    stroke="currentColor"
+                    className="text-muted/60 dark:text-muted/30"
+                    strokeWidth="6"
+                  />
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r={radius}
+                    fill="none"
+                    stroke={getGaugeColor(instantPct)}
+                    strokeWidth="6"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={instantOffset}
+                    strokeLinecap="round"
+                    style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-base font-bold text-foreground tracking-tight">{instantPct}%</span>
+                </div>
+              </div>
+              <div className="flex flex-col items-center text-center">
+                <span className="text-xs font-bold text-foreground tracking-tight">Instant</span>
+                <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">Available Right Now</span>
+              </div>
+            </div>
+
+            {/* Subtle Divider */}
+            <div className="h-16 w-px bg-border/80 shrink-0" />
+
+            {/* 2. Overall Quota Gauge */}
+            <div
+              className="flex flex-col items-center gap-1.5 min-w-24 shrink-0 cursor-help"
+              title={`Overall Quota (${overallPct}%): Total weekly plan capacity across all healthy accounts.`}
+            >
+              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
+                <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 80 80">
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r={radius}
+                    fill="none"
+                    stroke="currentColor"
+                    className="text-muted/60 dark:text-muted/30"
+                    strokeWidth="6"
+                  />
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r={radius}
+                    fill="none"
+                    stroke={getGaugeColor(overallPct)}
+                    strokeWidth="6"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={overallOffset}
+                    strokeLinecap="round"
+                    style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-base font-bold text-foreground tracking-tight">{overallPct}%</span>
+                </div>
+              </div>
+              <div className="flex flex-col items-center text-center">
+                <span className="text-xs font-bold text-foreground tracking-tight">Overall</span>
+                <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">Total Weekly Capacity</span>
+              </div>
             </div>
           </div>
 
           {/* Hero Meta Info & Status Pills */}
-          <div className="flex flex-1 flex-col gap-1.5 min-w-0">
-            <div className="text-xs font-semibold text-foreground tracking-wide flex items-center gap-1.5">
-              <span>Overall Quota</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant="secondary" className="gap-1">
-                <Users className="w-3 h-3 text-muted-foreground" />
-                <span>{accounts.length} Account{accounts.length !== 1 ? 's' : ''}</span>
+          <div className="flex items-center justify-center flex-wrap gap-1.5 pt-2 border-t border-border/60">
+            <Badge variant="secondary" className="gap-1 text-[10px] py-0.5 px-2">
+              <Users className="w-3 h-3 text-muted-foreground" />
+              <span>{accounts.length} Account{accounts.length !== 1 ? 's' : ''}</span>
+            </Badge>
+            <Badge variant="success" className="gap-1 text-[10px] py-0.5 px-2">
+              <ShieldCheck className="w-3 h-3" />
+              <span>{healthyCount} Healthy</span>
+            </Badge>
+            {hasPro && (
+              <Badge variant="pro" className="gap-1 text-[10px] py-0.5 px-2">
+                <Sparkles className="w-3 h-3 text-purple-700 dark:text-purple-300" />
+                <span>{overall.proAccountsCount} Pro</span>
               </Badge>
-              <Badge variant="success" className="gap-1">
-                <ShieldCheck className="w-3 h-3" />
-                <span>{healthyCount} Healthy</span>
-              </Badge>
-              {hasPro && (
-                <Badge variant="pro" className="gap-1">
-                  <Sparkles className="w-3 h-3 text-purple-700 dark:text-purple-300" />
-                  <span>{overall.proAccountsCount} Pro</span>
-                </Badge>
-              )}
-            </div>
+            )}
           </div>
         </CardContent>
       </Card>

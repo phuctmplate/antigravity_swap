@@ -13,6 +13,7 @@ const defaultState: WebviewState = {
   activeAccount: null,
   overall: {
     totalAccounts: 0,
+    instantPercentage: 0,
     overallPercentage: 0,
     averageActiveAccountPercentage: 0,
     highestAccountQuotaPercentage: 0,
@@ -84,7 +85,7 @@ export const AppContent: React.FC = () => {
             activeAccount,
             overall: data.overall,
             heartbeat: data.heartbeat,
-            autoSwitchEnabled: data.autoSwitchEnabled !== false,
+            autoSwitchEnabled: data.autoSwitchEnabled === true,
             autoSwitchTarget: data.autoSwitchTarget || DEFAULT_AUTO_SWITCH_TARGET,
             autoSwitchThreshold: typeof data.autoSwitchThreshold === 'number' ? data.autoSwitchThreshold : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
           };

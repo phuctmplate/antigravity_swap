@@ -544,7 +544,7 @@ export const AccountList: React.FC<AccountListProps> = ({
         </Card>
       ) : (
         <div className="flex flex-col gap-2">
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(185px,1fr))] gap-2">
             {pagedAccounts.map((acc) => (
               <AccountCard
                 key={acc.email}
