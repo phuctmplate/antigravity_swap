@@ -20,19 +20,13 @@ Full dashboard view with responsive side-by-side account management and real-tim
 
 ## ✨ Key Features
 
-- 🔄 **Zero-Reload Fast Account Switching**: Switch between multiple Google / Antigravity accounts instantly without reloading or restarting your IDE window.
-- ⚡ **1-Click Import from Antigravity**: Auto-detects and imports the currently logged-in account and active session tokens directly from Antigravity IDE's local storage.
-- 📊 **Real-Time Per-Model Quota Tracking**: View live remaining balance (%) and countdown reset timers for every model (Gemini 2.5/3.0, Claude 3.7 Sonnet / Opus, GPT models, etc.).
-- ⏱ **5-Hour Rolling & Weekly Quota Support**: Displays distinct 5-Hour rolling window and Weekly plan balance breakdowns for Pro / Enterprise accounts.
-- 🗂️ **Smart Tier & Alphabetical Sorting**: Default view intelligently prioritizes Ultra &rarr; Pro &rarr; Free tiers (with alphabetical ordering within each tier), with instant toggle for pure alphabetical sorting (A-Z / Z-A).
-- 🪟 **Pop-Out Floating Dashboard**: Detach the dashboard into a native floating auxiliary OS window with one click to monitor quotas side-by-side with your code editor.
-- 🖥️ **Responsive Wide-Screen Layout**: On wide displays, account cards and model quota breakdowns sit side-by-side with a responsive multi-column model grid.
-- 🔍 **Search, Filter & Batch Management**: Filter accounts by status/tier, search in real-time, and batch-select multiple accounts for 1-click removal.
-- 🛡️ **Account Health & Ban Detection**: Monitors Google TOS ban/suspension status, credential expiry, and provides 1-click **Re-login / Reconnect**.
-- 🌐 **Overall Aggregate Capacity**: Real-time radial SVG gauge calculating your total capacity across every registered account.
-- 🤖 **Auto-Switch on Low Quota**: Automatically switches to another healthy account when your active account reaches a low balance threshold.
-- 💓 **Silent Background Heartbeat & Rate Limiting**: Intelligent background polling keeps account health fresh with debounce protection against rapid manual refreshes.
-- 💡 **Status Bar Widget & Quick Menu**: Clean active account status and quota balance in the status bar with a 1-click QuickPick menu.
+- 🔄 **Zero-Reload Account Switching**: Switch between multiple Google / Antigravity accounts instantly without reloading windows or restarting your IDE.
+- 🪟 **Real-Time Multi-Instance Sync**: Seamlessly synchronizes accounts, active status, and preferences across all your open IDE windows in real-time.
+- 🤖 **Smart Auto-Switch on Low Quota**: Automatically switches to the healthiest account with the highest remaining balance when your active quota runs low.
+- 🪟 **Detachable Floating Dashboard**: Pop out the dashboard into an independent native floating window to monitor quotas alongside your workspace.
+
+> [!TIP]
+> **Recommended Account Capacity**: To ensure optimal synchronization performance and avoid automated spam or rate-limiting flags from upstream services, we recommend adding a maximum of **70 accounts**.
 
 ---
 
@@ -52,14 +46,13 @@ Full dashboard view with responsive side-by-side account management and real-tim
 | `antigravitySwap.enableIdeExtensionPatch` | **Enable IDE Extension Optimization** | Re-enable zero-reload session synchronization |
 
 ---
-
 ## ⚙️ Configuration Settings
 
 - `antigravitySwap.enableIdePatch`: (Default: `true`) Enables automated session synchronization for seamless zero-reload switching.
 - `antigravitySwap.heartbeatIntervalSeconds`: (Default: `30`) Heartbeat interval in seconds to poll quota health and detect expired/banned accounts.
 - `antigravitySwap.autoSwitchWhenQuotaLow`: (Default: `false`) Automatically switch to another account when current active quota is exhausted.
-- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `3`) Percentage threshold below which the active account triggers auto-switching to another healthy account.
-- `antigravitySwap.autoSwitchTarget`: (Default: `"total"`) Quota target to monitor for auto-switch (`"total"`, `"gemini"`, or `"claude"`). When a model family is selected, it monitors the 5-Hour window for Pro/Ultra accounts or Weekly balance for Free accounts.
+- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `2`) Percentage threshold below which the active account triggers auto-switching to another healthy account.
+- `antigravitySwap.autoSwitchTarget`: (Default: `"gemini"`) Quota target to monitor for auto-switch (`"gemini"`, `"claude"`, or `"total"`). When a model family is selected, it monitors the 5-Hour window for Pro/Ultra accounts or Weekly balance for Free accounts.
 
 ---
 
