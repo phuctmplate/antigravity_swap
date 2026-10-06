@@ -851,22 +851,21 @@ export class AccountManager {
     }
 
     try {
-      const active = this.getActiveAccount();
-      if (active) {
-        await this.refreshAccountQuota(active.email);
-      }
+      // Find candidate accounts eligible for background refresh (exclude banned or auth failed accounts)
+      const candidateAccounts = this.accounts.filter(
+        (a) => !a.isBanned && a.status !== 'banned' && a.status !== 'auth_failed'
+      );
 
-      // Check background accounts in round-robin batches (up to HEARTBEAT_BATCH_SIZE accounts per tick)
-      const bgAccounts = this.accounts.filter((a) => a.email !== active?.email && a.status === 'active');
-      if (bgAccounts.length > 0) {
-        const batchSize = Math.min(EXTENSION_DEFAULTS.HEARTBEAT_BATCH_SIZE, bgAccounts.length);
-        const sortedBgAccounts = [...bgAccounts].sort((a, b) => {
-          const tA = a.lastHeartbeatAt ? new Date(a.lastHeartbeatAt).getTime() : 0;
-          const tB = b.lastHeartbeatAt ? new Date(b.lastHeartbeatAt).getTime() : 0;
+      if (candidateAccounts.length > 0) {
+        // Pick the single account that has gone the longest without a refresh (oldest lastRefreshedAt or never refreshed)
+        const sorted = [...candidateAccounts].sort((a, b) => {
+          const tA = a.lastRefreshedAt ? new Date(a.lastRefreshedAt).getTime() : 0;
+          const tB = b.lastRefreshedAt ? new Date(b.lastRefreshedAt).getTime() : 0;
           return tA - tB;
         });
-        const batchToRefresh = sortedBgAccounts.slice(0, batchSize);
-        for (const target of batchToRefresh) {
+
+        const target = sorted[0];
+        if (target) {
           await this.refreshAccountQuota(target.email);
         }
       }

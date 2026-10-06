@@ -268,14 +268,14 @@ export class StorageService {
   private thresholdConfigDebounceTimer?: NodeJS.Timeout;
 
   public getAutoSwitchThreshold(): number {
+    const stateVal = this.context.globalState.get<number>(STORAGE_KEYS.LOW_QUOTA_THRESHOLD);
+    if (typeof stateVal === 'number' && !isNaN(stateVal) && stateVal >= 0 && stateVal <= 100) {
+      return Math.round(stateVal);
+    }
     const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
     const configVal = config.get<number>(CONFIG_KEYS.LOW_QUOTA_THRESHOLD);
     if (typeof configVal === 'number' && !isNaN(configVal) && configVal >= 0 && configVal <= 100) {
       return Math.round(configVal);
-    }
-    const stateVal = this.context.globalState.get<number>(STORAGE_KEYS.LOW_QUOTA_THRESHOLD);
-    if (typeof stateVal === 'number' && !isNaN(stateVal) && stateVal >= 0 && stateVal <= 100) {
-      return Math.round(stateVal);
     }
     return EXTENSION_DEFAULTS.DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT;
   }

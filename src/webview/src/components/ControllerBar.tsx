@@ -31,12 +31,15 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [thresholdInput, setThresholdInput] = useState<string>(() => String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+  const isInputFocusedRef = useRef<boolean>(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastRefreshRef = useRef<number>(0);
   const vscode = getVsCodeApi();
 
   React.useEffect(() => {
-    setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+    if (!isInputFocusedRef.current) {
+      setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
+    }
   }, [autoSwitchThreshold]);
 
   React.useEffect(() => {
@@ -231,10 +234,17 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                 pattern="[0-9]*"
                 maxLength={3}
                 value={thresholdInput}
+                onFocus={() => {
+                  isInputFocusedRef.current = true;
+                }}
                 onChange={(e) => handleInputChange(e.target.value)}
-                onBlur={() => commitThreshold(thresholdInput)}
+                onBlur={() => {
+                  isInputFocusedRef.current = false;
+                  commitThreshold(thresholdInput);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
+                    isInputFocusedRef.current = false;
                     commitThreshold(thresholdInput);
                     (e.target as HTMLInputElement).blur();
                   } else if (e.key === 'Escape') {
@@ -242,6 +252,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                       clearTimeout(debounceTimerRef.current);
                       debounceTimerRef.current = null;
                     }
+                    isInputFocusedRef.current = false;
                     setThresholdInput(String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT));
                     (e.target as HTMLInputElement).blur();
                   }

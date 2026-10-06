@@ -374,8 +374,8 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 <Gauge className="w-3 h-3 text-muted-foreground/80 shrink-0" />
                 <span className="text-foreground/90 font-semibold">Total Quota Left</span>
               </span>
-              <span className={cn("font-bold font-mono text-[10px]", isFree && (!account.averageQuotaPercentage || account.averageQuotaPercentage === 0) ? "text-muted-foreground" : getTextColor(account.averageQuotaPercentage ?? 0))}>
-                {isFree && (!account.averageQuotaPercentage || account.averageQuotaPercentage === 0) ? 'Standard' : `${account.averageQuotaPercentage ?? 0}%`}
+              <span className={cn("font-bold font-mono text-[10px]", account.averageQuotaPercentage != null ? getTextColor(account.averageQuotaPercentage) : "text-muted-foreground")}>
+                {account.averageQuotaPercentage != null ? `${account.averageQuotaPercentage}%` : '—'}
               </span>
             </div>
             <Progress
