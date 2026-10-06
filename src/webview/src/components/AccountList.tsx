@@ -354,7 +354,7 @@ export const AccountList: React.FC<AccountListProps> = ({
         <div className="flex items-center gap-1.5">
           <span>Accounts & Fast Switch</span>
           <span className="text-[10px] font-semibold text-foreground/80 normal-case">
-            ({accounts.length} connected)
+            ({accounts.length} {accounts.length === 1 ? 'account' : 'accounts'})
           </span>
         </div>
 

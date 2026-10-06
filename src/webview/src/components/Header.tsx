@@ -6,6 +6,8 @@ import { Progress } from './ui/progress';
 import { Clock, Calendar, Users, ShieldCheck, Sparkles } from 'lucide-react';
 import { quotaFillClass, quotaTextClass, quotaStrokeColor } from '../lib/quota';
 import { LogoIcon } from './LogoIcon';
+import { GithubIcon } from './GithubIcon';
+import { getVsCodeApi } from '../vscode';
 
 interface HeaderProps {
   overall: OverallQuotaSummary;
@@ -44,9 +46,25 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             Antigravity Swap
           </span>
         </div>
-        <Badge variant="outline" className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 h-5">
-          v1.1.0
-        </Badge>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              getVsCodeApi().postMessage({
+                command: 'openUrl',
+                url: 'https://github.com/phuctmplate/antigravity_swap'
+              });
+            }}
+            className="p-1 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted/60 transition-colors flex items-center justify-center cursor-pointer"
+            title="GitHub Repository (phuctmplate/antigravity_swap)"
+            aria-label="GitHub Repository"
+          >
+            <GithubIcon className="w-3.5 h-3.5" />
+          </button>
+          <Badge variant="outline" className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 h-5">
+            v1.1.1
+          </Badge>
+        </div>
       </div>
 
       {/* Hero Overview Card with Twin Circular Gauges */}

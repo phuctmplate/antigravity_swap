@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 (2026-10-07)
+- Fixed auto-switch threshold input flickering.
+- Optimized background quota refresh.
+- Improved account cards.
+
 ## 1.1.0 (2026-10-05)
 - Real-time multi-instance state synchronization across open IDE windows.
 - Introduce Instant Quota (5-hour window) and Overall Quota (weekly plan) dual circular gauges.

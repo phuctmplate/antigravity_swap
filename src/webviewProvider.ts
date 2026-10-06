@@ -103,6 +103,11 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'popOut':
           this.openDetachedPanel();
           break;
+        case 'openUrl':
+          if (data.url) {
+            vscode.env.openExternal(vscode.Uri.parse(data.url));
+          }
+          break;
         case 'switchAccount':
           await this.accountManager.switchAccount(data.email, data.isManual === true);
           break;
