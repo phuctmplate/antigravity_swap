@@ -301,6 +301,35 @@ export class StorageService {
     }, 600);
   }
 
+  public getWeeklyQuotaProtectionThreshold(): number {
+    const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+    const configVal = config.get<number>(CONFIG_KEYS.WEEKLY_QUOTA_PROTECTION_THRESHOLD)
+      ?? config.get<number>('weeklyQuotaThresholdPercent')
+      ?? config.get<number>('autoSwitchWeeklyThresholdPercent');
+    if (typeof configVal === 'number' && !isNaN(configVal) && configVal >= 0 && configVal <= 100) {
+      return Math.round(configVal);
+    }
+    const stateVal = this.context.globalState.get<number>(STORAGE_KEYS.WEEKLY_QUOTA_PROTECTION_THRESHOLD);
+    if (typeof stateVal === 'number' && !isNaN(stateVal) && stateVal >= 0 && stateVal <= 100) {
+      return Math.round(stateVal);
+    }
+    return EXTENSION_DEFAULTS.DEFAULT_WEEKLY_QUOTA_PROTECTION_THRESHOLD_PERCENT;
+  }
+
+  public async setWeeklyQuotaProtectionThreshold(threshold: number): Promise<void> {
+    const num = typeof threshold === 'number' && !isNaN(threshold) && isFinite(threshold)
+      ? threshold
+      : EXTENSION_DEFAULTS.DEFAULT_WEEKLY_QUOTA_PROTECTION_THRESHOLD_PERCENT;
+    const clamped = Math.max(0, Math.min(100, Math.round(num)));
+    await this.context.globalState.update(STORAGE_KEYS.WEEKLY_QUOTA_PROTECTION_THRESHOLD, clamped);
+    try {
+      const config = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
+      await config.update(CONFIG_KEYS.WEEKLY_QUOTA_PROTECTION_THRESHOLD, clamped, vscode.ConfigurationTarget.Global);
+    } catch {
+      // Ignore if config update fails
+    }
+  }
+
   public async getAccountTokens(email: string): Promise<OAuthTokens | null> {
     const raw = await this.secrets.get(`antigravitySwap.tokens.${email}`);
     if (!raw) return null;

@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.1.1 (2026-10-07)
+## 1.2.0 (2026-10-08)
+- Weekly Quota Protection: Automatically switches accounts before weekly model quota runs out to prevent lockout even if 5-hour rolling quota is still available.
+- Smarter Candidate Ranking: Prioritizes healthy accounts with both sufficient rolling window and weekly quota reserves.
 - Fixed auto-switch threshold input flickering.
 - Optimized background quota refresh.
 - Improved account cards.

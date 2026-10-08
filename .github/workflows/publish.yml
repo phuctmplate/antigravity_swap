@@ -7,11 +7,18 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag or version name to release (e.g. v1.2.0)'
+        required: false
+        type: string
 
 jobs:
   build-and-publish:
-    name: Build, Package & Publish to Open VSX
+    name: Build, Package, Release & Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -19,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install Dependencies
@@ -37,15 +44,48 @@ jobs:
           name: antigravity-swap-vsix
           path: '*.vsix'
 
+      - name: Extract Release Notes from CHANGELOG
+        id: changelog
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tag = ("${{ inputs.tag_name || github.ref_name }}").replace(/^v/, "");
+            let notes = "";
+            if (fs.existsSync("CHANGELOG.md") && tag) {
+              const lines = fs.readFileSync("CHANGELOG.md", "utf8").split(/\r?\n/);
+              let capturing = false;
+              const result = [];
+              for (const line of lines) {
+                if (line.startsWith("## ")) {
+                  if (line.includes(tag)) {
+                    capturing = true;
+                    continue;
+                  } else if (capturing) {
+                    break;
+                  }
+                }
+                if (capturing) {
+                  result.push(line);
+                }
+              }
+              notes = result.join("\n").trim();
+            }
+            fs.writeFileSync("RELEASE_NOTES.md", notes);
+          '
+
+      - name: Release VSIX to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: Release ${{ inputs.tag_name || github.ref_name }}
+          files: '*.vsix'
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
+
       - name: Publish to Open VSX
         if: env.OVSX_PAT != ''
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
           npx ovsx publish *.vsix -p "$OVSX_PAT"
-
-      - name: Attach VSIX to GitHub Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: '*.vsix'

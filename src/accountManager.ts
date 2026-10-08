@@ -230,6 +230,15 @@ export class AccountManager {
     this._onDidChangeState.fire();
   }
 
+  public getWeeklyQuotaProtectionThreshold(): number {
+    return this.storage.getWeeklyQuotaProtectionThreshold();
+  }
+
+  public async setWeeklyQuotaProtectionThreshold(threshold: number): Promise<void> {
+    await this.storage.setWeeklyQuotaProtectionThreshold(threshold);
+    this._onDidChangeState.fire();
+  }
+
   /**
    * Switches to the given account and relaunches Antigravity IDE with the new account loaded into memory.
    * @param email Target account email.
@@ -944,8 +953,51 @@ export class AccountManager {
   }
 
   /**
+   * Resolves the protection quota percentage for an account based on selected target:
+   * - 'total': returns the account's total quota percentage (averageQuotaPercentage).
+   * - 'gemini': returns the account's weekly Gemini quota percentage (if tracked).
+   * - 'claude': returns the account's weekly Claude & GPT quota percentage (if tracked).
+   * Returns undefined if no relevant quota is tracked.
+   */
+  public getAccountProtectionQuota(account: AccountInfo, target: AutoSwitchTarget = 'total'): number | undefined {
+    if (target === 'total') {
+      return account.averageQuotaPercentage ?? 0;
+    }
+
+    const quotas = account.quotas || [];
+    const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
+
+    if (target === 'gemini') {
+      const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+      const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
+      if (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) {
+        return geminiWeekly.percentage;
+      }
+      if (account.weeklyQuotaPercentage !== undefined && !account.claudeGptGroup?.weekly) {
+        return account.weeklyQuotaPercentage;
+      }
+      return undefined;
+    }
+
+    if (target === 'claude') {
+      const claudeGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+      const claudeWeekly = claudeGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+      if (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) {
+        return claudeWeekly.percentage;
+      }
+      if (account.weeklyQuotaPercentage !== undefined && !account.geminiGroup?.weekly) {
+        return account.weeklyQuotaPercentage;
+      }
+      return undefined;
+    }
+
+    return undefined;
+  }
+
+  /**
    * Auto-switches to next account with healthy quota if current account is exhausted or unusable.
    * If autoSwitch is turned OFF, it NEVER auto-switches under any circumstance.
+   * Includes protection layer: triggers switch if target model weekly quota (or total quota) drops to or below protectionThreshold.
    */
   public async checkAutoSwitch(): Promise<void> {
     const autoSwitch = this.storage.getAutoSwitchEnabled();
@@ -966,34 +1018,63 @@ export class AccountManager {
 
     const threshold = this.getAutoSwitchThreshold();
     const target = this.getAutoSwitchTarget();
+    const protectionThreshold = this.getWeeklyQuotaProtectionThreshold();
 
     const activeQuota = this.getAccountTargetQuota(active, target);
     const isDepleted = activeQuota <= threshold;
     const isUnusable = isAuthFailed || isBanned;
 
-    if (isDepleted || isUnusable) {
+    // Protection layer: when weekly quota of target model (or total quota if target === 'total') drops to or below protectionThreshold (default 1%)
+    const activeProtectionQuota = this.getAccountProtectionQuota(active, target);
+    const isProtectionTriggered = activeProtectionQuota !== undefined && activeProtectionQuota <= protectionThreshold;
+
+    if (isDepleted || isProtectionTriggered || isUnusable) {
       const targetLabel = target === 'gemini' ? 'Gemini' : target === 'claude' ? 'Claude & GPT' : 'Total';
+      const protectionMetricName = target === 'total' ? 'total quota' : `weekly ${targetLabel} quota`;
 
-      // Find candidates that have healthy quota for this target
-      const candidates = this.accounts.filter(
-        (a) => a.email !== active.email && !a.isBanned && a.status === 'active' && this.getAccountTargetQuota(a, target) > threshold
-      );
+      // Find candidates that have healthy quota for this target and are not near protection limit
+      const candidates = this.accounts.filter((a) => {
+        if (a.email === active.email || a.isBanned || a.status !== 'active') return false;
+        // Primary target quota must be strictly above threshold
+        if (this.getAccountTargetQuota(a, target) <= threshold) return false;
+        // Protection layer: candidate's protection quota (weekly for gemini/claude, total for total) must also be above protectionThreshold
+        const candProt = this.getAccountProtectionQuota(a, target);
+        if (candProt !== undefined && candProt <= protectionThreshold) return false;
+        return true;
+      });
 
-      // Best candidate: sort descending by that target's quota
-      candidates.sort((a, b) => this.getAccountTargetQuota(b, target) - this.getAccountTargetQuota(a, target));
+      // Best candidate: sort descending by that target's quota, breaking ties with protection quota
+      candidates.sort((a, b) => {
+        const diff = this.getAccountTargetQuota(b, target) - this.getAccountTargetQuota(a, target);
+        if (diff !== 0) return diff;
+        const bProt = this.getAccountProtectionQuota(b, target) ?? 0;
+        const aProt = this.getAccountProtectionQuota(a, target) ?? 0;
+        return bProt - aProt;
+      });
 
       const candidate = candidates[0];
 
       if (candidate) {
         const candidateQuota = this.getAccountTargetQuota(candidate, target);
-        const reason = isAuthFailed
-          ? 'authentication failed (token expired/invalid)'
-          : isBanned
-          ? 'account suspended/banned by Google'
-          : `low ${targetLabel} quota (${activeQuota}%)`;
+        const candidateProtQuota = this.getAccountProtectionQuota(candidate, target);
+
+        let reason: string;
+        if (isAuthFailed) {
+          reason = 'authentication failed (token expired/invalid)';
+        } else if (isBanned) {
+          reason = 'account suspended/banned by Google';
+        } else if (isProtectionTriggered && !isDepleted) {
+          reason = `${protectionMetricName} dropped to ${activeProtectionQuota}% (<= ${protectionThreshold}% protection limit)`;
+        } else {
+          reason = `low ${targetLabel} quota (${activeQuota}%)`;
+        }
+
+        const candidateDetails = (candidateProtQuota !== undefined && target !== 'total')
+          ? `${targetLabel}: ${candidateQuota}%, weekly: ${candidateProtQuota}%`
+          : `${targetLabel}: ${candidateQuota}%`;
 
         vscode.window.showWarningMessage(
-          `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${targetLabel}: ${candidateQuota}% left)...`
+          `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
         );
         await this.switchAccount(candidate.email);
       }
