@@ -1,5 +1,6 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { Button } from './ui/button';
 
 interface Props {
   children: React.ReactNode;
@@ -49,21 +50,14 @@ export class ErrorBoundary extends React.Component<Props, State> {
           }}>
             {this.state.error}
           </div>
-          <button
+          <Button
+            size="sm"
+            variant="secondary"
             onClick={() => this.setState({ hasError: false, error: '' })}
-            style={{
-              marginTop: '12px',
-              padding: '6px 12px',
-              background: '#374151',
-              color: '#f9fafb',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px'
-            }}
+            className="mt-3 text-xs"
           >
             Retry
-          </button>
+          </Button>
         </div>
       );
     }

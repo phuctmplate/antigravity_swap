@@ -236,7 +236,7 @@ export class StatusBarService implements vscode.Disposable {
       } else {
         const email = chosen.description?.split(' — ')[0]?.trim();
         if (email) {
-          await this.accountManager.switchAccount(email);
+          await this.accountManager.switchAccount(email, true);
         }
       }
     });

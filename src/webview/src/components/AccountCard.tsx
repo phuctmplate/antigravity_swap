@@ -5,7 +5,8 @@ import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
-import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, CheckSquare, Square, Gauge } from 'lucide-react';
+import { Checkbox } from './ui/checkbox';
+import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, Gauge } from 'lucide-react';
 import { quotaFillClass, quotaTextClass } from '../lib/quota';
 import { cn } from '../lib/utils';
 
@@ -145,18 +146,19 @@ export const AccountCard: React.FC<AccountCardProps> = ({
       {/* Top-Left Checkbox in Multi-Select Mode */}
       {isMultiSelectMode && (
         <div
-          className="absolute top-2 left-2 z-10 flex h-5 w-5 items-center justify-center rounded bg-card/90 shadow-xs border border-border/80 cursor-pointer hover:border-primary transition-colors"
+          className="absolute top-2.5 left-2.5 z-10 flex items-center justify-center cursor-pointer"
           onClick={(e) => {
             e.stopPropagation();
             onToggleCheck?.(account.email);
           }}
           title={isChecked ? 'Deselect account' : 'Select account'}
         >
-          {isChecked ? (
-            <CheckSquare className="w-4 h-4 text-primary fill-primary/20" />
-          ) : (
-            <Square className="w-4 h-4 text-muted-foreground/60" />
-          )}
+          <Checkbox
+            checked={isChecked}
+            onCheckedChange={() => onToggleCheck?.(account.email)}
+            aria-label={`Select account ${account.name || account.email}`}
+            className="bg-card/90 shadow-xs border-border/80 hover:border-primary"
+          />
         </div>
       )}
 

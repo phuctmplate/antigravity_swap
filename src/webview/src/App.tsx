@@ -4,6 +4,7 @@ import { Header } from './components/Header';
 import { ControllerBar } from './components/ControllerBar';
 import { AccountList } from './components/AccountList';
 import { ModelQuotas } from './components/ModelQuotas';
+import { AutoSwitchBanner } from './components/AutoSwitchBanner';
 import { Toaster } from './components/ui/sonner';
 import { getVsCodeApi } from './vscode';
 import { DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT, DEFAULT_AUTO_SWITCH_TARGET } from './constants';
@@ -103,6 +104,7 @@ export const AppContent: React.FC = () => {
 
   const handleToggleAutoSwitch = (enabled: boolean) => {
     setState((prev) => ({ ...prev, autoSwitchEnabled: enabled }));
+    getVsCodeApi().postMessage({ command: 'setAutoSwitch', enabled });
   };
 
   const handleSelectAutoSwitchTarget = (target: any) => {
@@ -119,38 +121,49 @@ export const AppContent: React.FC = () => {
     state.accounts.find((a) => a.email === selectedEmail) || state.activeAccount || state.accounts[0] || null;
 
   return (
-    <div className="flex flex-col min-h-screen max-w-7xl mx-auto">
-      {/* Header Section */}
-      <Header overall={state.overall} accounts={state.accounts} />
-
-      {/* Controller Action Bar */}
-      <ControllerBar
+    <div className="flex flex-col min-h-screen w-full">
+      {/* Head Banner: Full left-to-right screen width & sticky top */}
+      <AutoSwitchBanner
         autoSwitchEnabled={state.autoSwitchEnabled ?? false}
         onToggleAutoSwitch={handleToggleAutoSwitch}
-        autoSwitchTarget={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
-        onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
-        autoSwitchThreshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
-        onChangeAutoSwitchThreshold={handleChangeAutoSwitchThreshold}
+        target={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
+        threshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
       />
 
-      {/* Main Content Area: Responsive side-by-side on wide screens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[1.1fr_1fr] 2xl:grid-cols-[1.15fr_1fr] gap-4 items-start">
-        {/* Accounts & Fast Switch Section */}
-        <div className="min-w-0">
-          <AccountList
-            accounts={state.accounts}
-            activeAccount={state.activeAccount}
-            selectedEmail={selectedEmail}
-            onSelectAccount={setSelectedEmail}
-          />
-        </div>
+      {/* Main Content Area */}
+      <div className="flex flex-col max-w-7xl mx-auto w-full p-2.5">
+        {/* Header Section */}
+        <Header overall={state.overall} accounts={state.accounts} />
 
-        {/* Model Quotas Section (Sticky on wide screens) */}
-        <div className="min-w-0 lg:sticky lg:top-2">
-          <ModelQuotas
-            selectedAccount={selectedAcc}
-            activeAccount={state.activeAccount}
-          />
+        {/* Controller Action Bar */}
+        <ControllerBar
+          autoSwitchEnabled={state.autoSwitchEnabled ?? false}
+          onToggleAutoSwitch={handleToggleAutoSwitch}
+          autoSwitchTarget={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
+          onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
+          autoSwitchThreshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
+          onChangeAutoSwitchThreshold={handleChangeAutoSwitchThreshold}
+        />
+
+        {/* Main Content Area: Responsive side-by-side on wide screens */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[1.1fr_1fr] 2xl:grid-cols-[1.15fr_1fr] gap-4 items-start">
+          {/* Accounts & Fast Switch Section */}
+          <div className="min-w-0">
+            <AccountList
+              accounts={state.accounts}
+              activeAccount={state.activeAccount}
+              selectedEmail={selectedEmail}
+              onSelectAccount={setSelectedEmail}
+            />
+          </div>
+
+          {/* Model Quotas Section (Sticky on wide screens) */}
+          <div className="min-w-0 lg:sticky lg:top-10">
+            <ModelQuotas
+              selectedAccount={selectedAcc}
+              activeAccount={state.activeAccount}
+            />
+          </div>
         </div>
       </div>
     </div>

@@ -10,7 +10,12 @@ export class AccountManager {
   private activeEmail?: string;
   private isSwitching = false;
   private lastSwitchTime = 0;
-  private static readonly SWITCH_COOLDOWN_MS = 2000;
+  private static readonly SWITCH_COOLDOWN_MS = EXTENSION_DEFAULTS.SWITCH_COOLDOWN_MS;
+  private isImporting = false;
+  private lastImportTime = 0;
+  private static readonly IMPORT_COOLDOWN_MS = EXTENSION_DEFAULTS.IMPORT_COOLDOWN_MS;
+  private lastOAuthTime = 0;
+  private static readonly OAUTH_COOLDOWN_MS = EXTENSION_DEFAULTS.OAUTH_COOLDOWN_MS;
   private readonly _onDidChangeState = new vscode.EventEmitter<void>();
   public readonly onDidChangeState = this._onDidChangeState.event;
 
@@ -72,11 +77,23 @@ export class AccountManager {
       await this.reloadFromStorage();
     });
 
+    // Listen to external OAuth completions (e.g. from other IDE windows/instances)
+    this.storage.onDidExternalOAuthComplete((event) => {
+      if (this.oauthService.isLoginInProgress()) {
+        const activeHint = this.oauthService.getActiveSessionLoginHint();
+        if (!activeHint || activeHint.toLowerCase() === event.email.toLowerCase()) {
+          console.log(`[Antigravity Swap] External OAuth completed for ${event.email}. Cancelling pending local OAuth flow.`);
+          this.oauthService.cancelCurrentLogin('Login cancelled (completed in another window).');
+        }
+      }
+    });
+
     // Listen to IDE window focus to sync external file/state updates & IDE session changes
     vscode.window.onDidChangeWindowState((e) => {
       if (e.focused) {
         this.reloadFromStorage().catch(() => {});
         this.handleIdeSessionChange().catch(() => {});
+        this.storage.checkExternalOAuthEvent();
       }
     });
 
@@ -372,6 +389,12 @@ export class AccountManager {
    * Re-authenticates / reconnects a specific account by launching Google browser login.
    */
   public async reloginAccount(email: string): Promise<boolean> {
+    const now = Date.now();
+    if (now - this.lastOAuthTime < AccountManager.OAUTH_COOLDOWN_MS) {
+      return false;
+    }
+    this.lastOAuthTime = now;
+
     try {
       const result = await vscode.window.withProgress(
         {
@@ -379,7 +402,10 @@ export class AccountManager {
           title: `Antigravity Swap: Opening browser to authenticate ${email}...`,
           cancellable: true
         },
-        async () => {
+        async (progress, token) => {
+          token.onCancellationRequested(() => {
+            this.oauthService.cancelCurrentLogin('User cancelled login.');
+          });
           return await this.oauthService.loginWithGoogle(email);
         }
       );
@@ -420,6 +446,7 @@ export class AccountManager {
       }
 
       await this.storage.saveAccounts(this.accounts);
+      this.storage.broadcastOAuthCompleted(userInfo.email);
       vscode.window.showInformationMessage(`Re-authenticated ${userInfo.email} successfully!`);
       this._onDidChangeState.fire();
 
@@ -431,7 +458,10 @@ export class AccountManager {
 
       return true;
     } catch (err: any) {
-      vscode.window.showErrorMessage(`Re-login error: ${err.message}`);
+      const msg = err.message || '';
+      if (!msg.toLowerCase().includes('cancel') && !msg.toLowerCase().includes('replace')) {
+        vscode.window.showErrorMessage(`Re-login error: ${err.message}`);
+      }
       return false;
     }
   }
@@ -440,80 +470,97 @@ export class AccountManager {
    * Imports or updates the account currently logged into Antigravity IDE.
    */
   public async importCurrentAntigravityAccount(): Promise<AccountInfo | null> {
-    const current = await this.storage.getCurrentAntigravityAccount();
-    if (!current || !current.email || !this.storage.isValidEmail(current.email) || !current.accessToken) {
-      vscode.window.showWarningMessage('No active Antigravity session with valid access token found in IDE.');
+    const now = Date.now();
+    if (this.isImporting || (now - this.lastImportTime < AccountManager.IMPORT_COOLDOWN_MS)) {
       return null;
     }
+    this.isImporting = true;
+    this.lastImportTime = now;
 
-    const existingTokens = await this.storage.getAccountTokens(current.email);
-    const tokens: OAuthTokens = {
-      accessToken: current.accessToken,
-      refreshToken: current.refreshToken || existingTokens?.refreshToken,
-      expiresAt: Date.now() + 3600 * 1000
-    };
+    try {
+      const current = await this.storage.getCurrentAntigravityAccount();
+      if (!current || !current.email || !this.storage.isValidEmail(current.email) || !current.accessToken) {
+        vscode.window.showWarningMessage('No active Antigravity session with valid access token found in IDE.');
+        return null;
+      }
 
-    await this.storage.saveAccountTokens(current.email, tokens);
-
-    const existingIdx = this.accounts.findIndex((a) => a.email === current.email);
-    let account: AccountInfo;
-
-    if (existingIdx >= 0) {
-      account = {
-        ...this.accounts[existingIdx],
-        name: current.name || this.accounts[existingIdx].name,
-        avatarUrl: current.avatarUrl || this.accounts[existingIdx].avatarUrl,
-        status: 'active',
-        isBanned: false,
-        statusMessage: undefined,
-        isActive: true,
-        lastUsedAt: new Date().toISOString()
+      const existingTokens = await this.storage.getAccountTokens(current.email);
+      const tokens: OAuthTokens = {
+        accessToken: current.accessToken,
+        refreshToken: current.refreshToken || existingTokens?.refreshToken,
+        expiresAt: Date.now() + 3600 * 1000
       };
-      this.accounts[existingIdx] = account;
-    } else {
-      account = {
-        id: Buffer.from(current.email).toString('base64').substring(0, 16),
-        email: current.email,
-        name: current.name,
-        avatarUrl: current.avatarUrl,
-        isActive: true,
-        addedAt: new Date().toISOString(),
-        status: 'active',
-        isBanned: false,
-        statusMessage: undefined,
-        quotas: [],
-        averageQuotaPercentage: 0,
-        hasWeeklyQuota: false,
-        has5HourQuota: false,
-        accountType: 'Standard Free',
-        tierBadge: 'STANDARD FREE'
-      };
-      this.accounts.push(account);
+
+      await this.storage.saveAccountTokens(current.email, tokens);
+
+      const existingIdx = this.accounts.findIndex((a) => a.email === current.email);
+      let account: AccountInfo;
+
+      if (existingIdx >= 0) {
+        account = {
+          ...this.accounts[existingIdx],
+          name: current.name || this.accounts[existingIdx].name,
+          avatarUrl: current.avatarUrl || this.accounts[existingIdx].avatarUrl,
+          status: 'active',
+          isBanned: false,
+          statusMessage: undefined,
+          isActive: true,
+          lastUsedAt: new Date().toISOString()
+        };
+        this.accounts[existingIdx] = account;
+      } else {
+        account = {
+          id: Buffer.from(current.email).toString('base64').substring(0, 16),
+          email: current.email,
+          name: current.name,
+          avatarUrl: current.avatarUrl,
+          isActive: true,
+          addedAt: new Date().toISOString(),
+          status: 'active',
+          isBanned: false,
+          statusMessage: undefined,
+          quotas: [],
+          averageQuotaPercentage: 0,
+          hasWeeklyQuota: false,
+          has5HourQuota: false,
+          accountType: 'Standard Free',
+          tierBadge: 'STANDARD FREE'
+        };
+        this.accounts.push(account);
+      }
+
+      // Set other accounts isActive = false
+      this.accounts = this.accounts.map((a) => ({
+        ...a,
+        isActive: a.email === current.email
+      }));
+      this.activeEmail = current.email;
+
+      await this.storage.saveAccounts(this.accounts);
+      if (existingIdx >= 0) {
+        vscode.window.showInformationMessage(`Account ${current.email} is already in the list.`);
+      } else {
+        vscode.window.showInformationMessage(`Successfully imported new account ${current.email} from Antigravity IDE!`);
+      }
+      this._onDidChangeState.fire();
+
+      this.refreshAccountQuota(current.email).catch(() => {});
+      return account;
+    } finally {
+      this.isImporting = false;
     }
-
-    // Set other accounts isActive = false
-    this.accounts = this.accounts.map((a) => ({
-      ...a,
-      isActive: a.email === current.email
-    }));
-    this.activeEmail = current.email;
-
-    await this.storage.saveAccounts(this.accounts);
-    if (existingIdx >= 0) {
-      console.log(`[Antigravity Swap] Updated credentials and quota for ${current.email} from IDE session.`);
-    } else {
-      vscode.window.showInformationMessage(`Successfully imported new account ${current.email} from Antigravity IDE!`);
-    }
-    this._onDidChangeState.fire();
-
-    this.refreshAccountQuota(current.email).catch(() => {});
-    return account;
   }
 
   /**
    * Adds an account via Google OAuth web authorization.
    */
   public async addAccountViaOAuth(): Promise<AccountInfo | null> {
+    const now = Date.now();
+    if (now - this.lastOAuthTime < AccountManager.OAUTH_COOLDOWN_MS) {
+      return null;
+    }
+    this.lastOAuthTime = now;
+
     try {
       const result = await vscode.window.withProgress(
         {
@@ -521,7 +568,10 @@ export class AccountManager {
           title: 'Antigravity Swap: Opening browser to authenticate with Google...',
           cancellable: true
         },
-        async () => {
+        async (progress, token) => {
+          token.onCancellationRequested(() => {
+            this.oauthService.cancelCurrentLogin('User cancelled login.');
+          });
           return await this.oauthService.loginWithGoogle();
         }
       );
@@ -563,6 +613,7 @@ export class AccountManager {
       }
 
       await this.storage.saveAccounts(this.accounts);
+      this.storage.broadcastOAuthCompleted(userInfo.email);
       if (account.isActive) {
         await this.switchAccount(account.email);
       }
@@ -573,7 +624,10 @@ export class AccountManager {
       this.refreshAccountQuota(account.email, true).catch(() => {});
       return account;
     } catch (err: any) {
-      vscode.window.showErrorMessage(`Login failed: ${err.message}`);
+      const msg = err.message || '';
+      if (!msg.toLowerCase().includes('cancel') && !msg.toLowerCase().includes('replace')) {
+        vscode.window.showErrorMessage(`Login failed: ${err.message}`);
+      }
       return null;
     }
   }
@@ -1024,7 +1078,7 @@ export class AccountManager {
     const isDepleted = activeQuota <= threshold;
     const isUnusable = isAuthFailed || isBanned;
 
-    // Protection layer: when weekly quota of target model (or total quota if target === 'total') drops to or below protectionThreshold (default 1%)
+    // Protection layer: when weekly quota of target model (or total quota if target === 'total') drops to or below protectionThreshold
     const activeProtectionQuota = this.getAccountProtectionQuota(active, target);
     const isProtectionTriggered = activeProtectionQuota !== undefined && activeProtectionQuota <= protectionThreshold;
 

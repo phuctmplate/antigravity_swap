@@ -176,7 +176,7 @@
     @apply bg-background text-foreground;
     user-select: none;
     margin: 0;
-    padding: 10px;
+    padding: 0;
     font-size: 11px;
     line-height: 1.4;
     overflow-x: hidden;
@@ -195,5 +195,3 @@ body,
 ::view-transition {
   animation-delay: 500ms;
 }
-
-

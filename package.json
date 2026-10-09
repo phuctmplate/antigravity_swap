@@ -2,7 +2,7 @@
   "name": "antigravity-swap",
   "displayName": "Antigravity Swap",
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "phuctmplate",
   "license": "MIT",
   "repository": {
@@ -162,10 +162,10 @@
         },
         "antigravitySwap.weeklyQuotaProtectionThresholdPercent": {
           "type": "number",
-          "default": 1,
+          "default": 2,
           "minimum": 0,
           "maximum": 100,
-          "description": "Protection layer threshold percentage (0-100%, default 1%). Triggers automatic account switching when the active account's weekly quota for the target model type (or total quota if target is Total) drops to or below this percentage, even if 5-hour rolling quota remains healthy."
+          "description": "Protection layer threshold percentage (0-100%, default 2%). Triggers automatic account switching when the active account's weekly quota for the target model type (or total quota if target is Total) drops to or below this percentage, even if 5-hour rolling quota remains healthy."
         },
         "antigravitySwap.autoSwitchTarget": {
           "type": "string",
@@ -209,16 +209,13 @@
     "vite-plugin-singlefile": "^2.3.3"
   },
   "dependencies": {
-    "@radix-ui/react-dialog": "^1.1.23",
-    "@radix-ui/react-slot": "^1.3.3",
-    "@radix-ui/react-switch": "^1.3.7",
     "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
+    "cn": "^0.4.0",
     "lucide-react": "^1.51.0",
     "next-themes": "^0.4.6",
+    "radix-ui": "^1.7.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "sonner": "^2.0.8",
-    "tailwind-merge": "^3.7.0"
+    "sonner": "^2.0.8"
   }
 }

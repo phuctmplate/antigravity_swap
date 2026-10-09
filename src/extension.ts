@@ -122,7 +122,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('antigravitySwap.switchAccount', async (emailArg?: string) => {
       if (emailArg && typeof emailArg === 'string') {
-        await accountManager.switchAccount(emailArg);
+        await accountManager.switchAccount(emailArg, true);
         return;
       }
 
@@ -156,7 +156,7 @@ export async function activate(context: vscode.ExtensionContext) {
       });
 
       if (pick) {
-        await accountManager.switchAccount(pick.email);
+        await accountManager.switchAccount(pick.email, true);
       }
     }),
 

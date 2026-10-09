@@ -37,16 +37,19 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
   return (
     <div className="flex flex-col gap-2.5 mb-3">
       {/* Title Header */}
-      <div className="flex items-center justify-between px-0.5 pt-0.5">
+      <div className="flex items-center justify-between px-0.5 py-0.5 min-h-6">
         <div className="flex items-center gap-2">
           <LogoIcon className="w-5 h-5 shrink-0 drop-shadow-sm" />
-          <span className="font-bold text-sm tracking-tight text-foreground">
+          <span className="font-bold text-sm tracking-tight text-foreground leading-none">
             Antigravity Swap
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          <Badge variant="outline" className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 h-5">
-            v1.2.0
+          <Badge
+            variant="outline"
+            className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
+          >
+            v1.2.1
           </Badge>
         </div>
       </div>

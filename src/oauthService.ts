@@ -6,7 +6,41 @@ import * as vscode from 'vscode';
 import { OAuthTokens } from './types';
 import { OAUTH_CONFIG, API_ENDPOINTS } from './constants';
 
+interface ActiveOAuthSession {
+  cancel: (reason?: string) => void;
+  server: http.Server;
+  port: number;
+  loginHint?: string;
+}
+
 export class OAuthService {
+  private activeSession: ActiveOAuthSession | null = null;
+
+  /**
+   * Cancels any currently pending OAuth server flow and releases the port.
+   */
+  public cancelCurrentLogin(reason = 'Login cancelled.'): void {
+    if (this.activeSession) {
+      const session = this.activeSession;
+      this.activeSession = null;
+      session.cancel(reason);
+    }
+  }
+
+  /**
+   * Checks if an OAuth login flow is currently in-flight.
+   */
+  public isLoginInProgress(): boolean {
+    return this.activeSession !== null;
+  }
+
+  /**
+   * Returns the target loginHint (email) for the active OAuth session, if any was specified.
+   */
+  public getActiveSessionLoginHint(): string | undefined {
+    return this.activeSession?.loginHint;
+  }
+
   /**
    * Signs in a Google account via browser OAuth flow.
    */
@@ -16,8 +50,12 @@ export class OAuthService {
 
   /**
    * Starts local HTTP callback server on first available port and initiates Google OAuth in browser.
+   * Cancels any previous dangling OAuth session before starting a new one.
    */
   private async startOAuthServerFlow(loginHint?: string): Promise<{ tokens: OAuthTokens; userInfo: { email: string; name: string; avatarUrl?: string } }> {
+    // Abort and cleanly close any previous in-flight OAuth server so ports and listeners don't accumulate
+    this.cancelCurrentLogin('Previous login cancelled in favor of a new request.');
+
     const { server, port } = await this.bindAvailableServer(OAUTH_CONFIG.PORTS, 0);
     const redirectUri = `http://127.0.0.1:${port}${OAUTH_CONFIG.REDIRECT_PATH}`;
     const state = crypto.randomBytes(16).toString('hex');
@@ -35,20 +73,43 @@ export class OAuthService {
     }
 
     return new Promise((resolve, reject) => {
+      let isSettled = false;
       let activeServer: http.Server | null = server;
-      const timeoutId = setTimeout(() => {
-        if (activeServer) {
-          activeServer.close();
-          activeServer = null;
-        }
-        reject(new Error('Google login timed out after 3 minutes.'));
-      }, 180000);
 
       const cleanup = () => {
         clearTimeout(timeoutId);
         if (activeServer) {
-          activeServer.close();
+          try {
+            if (typeof (activeServer as any).closeAllConnections === 'function') {
+              (activeServer as any).closeAllConnections();
+            }
+            activeServer.close();
+          } catch {}
           activeServer = null;
+        }
+        if (this.activeSession?.server === server) {
+          this.activeSession = null;
+        }
+      };
+
+      const timeoutId = setTimeout(() => {
+        if (!isSettled) {
+          isSettled = true;
+          cleanup();
+          reject(new Error('Google login timed out after 10 minutes.'));
+        }
+      }, OAUTH_CONFIG.TIMEOUT_MS);
+
+      this.activeSession = {
+        server,
+        port,
+        loginHint,
+        cancel: (reason?: string) => {
+          if (!isSettled) {
+            isSettled = true;
+            cleanup();
+            reject(new Error(reason || 'Login cancelled.'));
+          }
         }
       };
 
@@ -64,7 +125,10 @@ export class OAuthService {
               res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
               res.end(this.getHtmlResponse('Authentication Failed', error, false));
               cleanup();
-              reject(new Error(`OAuth Error: ${error}`));
+              if (!isSettled) {
+                isSettled = true;
+                reject(new Error(`OAuth Error: ${error}`));
+              }
               return;
             }
 
@@ -72,7 +136,10 @@ export class OAuthService {
               res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
               res.end(this.getHtmlResponse('Invalid State', 'OAuth state verification failed.', false));
               cleanup();
-              reject(new Error('Invalid OAuth state parameter'));
+              if (!isSettled) {
+                isSettled = true;
+                reject(new Error('Invalid OAuth state parameter'));
+              }
               return;
             }
 
@@ -83,9 +150,15 @@ export class OAuthService {
             try {
               const tokens = await this.exchangeCodeForTokens(code, redirectUri);
               const userInfo = await this.fetchUserInfo(tokens.accessToken);
-              resolve({ tokens, userInfo });
+              if (!isSettled) {
+                isSettled = true;
+                resolve({ tokens, userInfo });
+              }
             } catch (exchangeErr: any) {
-              reject(exchangeErr);
+              if (!isSettled) {
+                isSettled = true;
+                reject(exchangeErr);
+              }
             }
           } else {
             res.writeHead(404);
@@ -93,7 +166,10 @@ export class OAuthService {
           }
         } catch (e) {
           cleanup();
-          reject(e);
+          if (!isSettled) {
+            isSettled = true;
+            reject(e);
+          }
         }
       });
 

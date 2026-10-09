@@ -16,14 +16,62 @@ export interface DiscoveredAccount {
 
 export class StorageService {
   private lastLocalSaveTime = 0;
+  private lastProcessedOAuthTimestamp = 0;
   private fileWatcher?: fs.FSWatcher;
   private readonly _onDidAccountsChange = new vscode.EventEmitter<void>();
   public readonly onDidAccountsChange = this._onDidAccountsChange.event;
+  private readonly _onDidExternalOAuthComplete = new vscode.EventEmitter<{ email: string; timestamp: number }>();
+  public readonly onDidExternalOAuthComplete = this._onDidExternalOAuthComplete.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly secrets: vscode.SecretStorage
   ) {}
+
+  public getOAuthEventFilePath(): string {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, '.oauth-event.json');
+  }
+
+  /**
+   * Broadcasts to other IDE windows/instances that an OAuth login completed.
+   */
+  public broadcastOAuthCompleted(email: string): void {
+    try {
+      const eventFile = this.getOAuthEventFilePath();
+      const payload = {
+        email,
+        pid: process.pid,
+        timestamp: Date.now()
+      };
+      fs.writeFileSync(eventFile, JSON.stringify(payload), 'utf-8');
+    } catch (e) {
+      console.warn('[StorageService] Failed to broadcast OAuth event:', e);
+    }
+  }
+
+  /**
+   * Checks if an external IDE instance recently completed an OAuth login.
+   */
+  public checkExternalOAuthEvent(): void {
+    try {
+      const eventFile = this.getOAuthEventFilePath();
+      if (!fs.existsSync(eventFile)) return;
+      const raw = fs.readFileSync(eventFile, 'utf-8');
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object' && data.timestamp && data.email) {
+        if (data.pid !== process.pid && data.timestamp > this.lastProcessedOAuthTimestamp && Date.now() - data.timestamp < 15000) {
+          this.lastProcessedOAuthTimestamp = data.timestamp;
+          this._onDidExternalOAuthComplete.fire({ email: data.email, timestamp: data.timestamp });
+        }
+      }
+    } catch {}
+  }
 
   public getAccountsFilePath(): string {
     const dir = path.join(os.homedir(), '.antigravity-swap');
@@ -90,7 +138,12 @@ export class StorageService {
         fs.mkdirSync(dir, { recursive: true });
       }
       this.fileWatcher = fs.watch(dir, (eventType, filename) => {
-        if (filename && (filename === 'accounts.json' || filename.includes('accounts'))) {
+        if (filename && filename.includes('oauth-event')) {
+          this.checkExternalOAuthEvent();
+          return;
+        }
+
+        if (!filename || filename === 'accounts.json' || filename.includes('accounts')) {
           if (Date.now() - this.lastLocalSaveTime < 800) {
             // Ignored: change caused by our own local save
             return;

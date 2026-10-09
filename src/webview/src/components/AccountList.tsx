@@ -1,18 +1,18 @@
-import React, { useState, useRef } from 'react';
-import { Account } from '../types';
-import { AccountCard } from './AccountCard';
-import { getVsCodeApi } from '../vscode';
-import { Button } from './ui/button';
-import { Card, CardContent } from './ui/card';
-import { Badge } from './ui/badge';
-import { ConfirmDialog } from './ConfirmDialog';
-import { toast } from 'sonner';
+import React, { useState, useRef } from "react";
+import { Account } from "../types";
+import { AccountCard } from "./AccountCard";
+import { getVsCodeApi } from "../vscode";
+import { Button } from "./ui/button";
+import { Card, CardContent } from "./ui/card";
+import { Badge } from "./ui/badge";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { Checkbox } from "./ui/checkbox";
+import { toast } from "sonner";
 import {
   Zap,
   Plus,
   Filter,
   CheckSquare,
-  Square,
   RotateCw,
   Trash2,
   X,
@@ -20,10 +20,23 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsRight,
-  ArrowUpDown
-} from 'lucide-react';
-import { cn } from '../lib/utils';
-import { ACCOUNT_REFRESH_COOLDOWN_MS } from '../constants';
+  ArrowUpDown,
+  ChevronDown,
+} from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "./ui/dropdown-menu";
+import { cn } from "../lib/utils";
+import {
+  ACCOUNT_REFRESH_COOLDOWN_MS,
+  OAUTH_COOLDOWN_MS,
+  IMPORT_COOLDOWN_MS,
+} from "../constants";
 
 interface AccountListProps {
   accounts: Account[];
@@ -36,15 +49,19 @@ export const AccountList: React.FC<AccountListProps> = ({
   accounts,
   activeAccount,
   selectedEmail,
-  onSelectAccount
+  onSelectAccount,
 }) => {
-  const [filterType, setFilterType] = useState<string>('all');
-  const [sortMode, setSortMode] = useState<'tier' | 'tier-asc' | 'name-asc' | 'name-desc'>('tier');
+  const [filterType, setFilterType] = useState<string>("all");
+  const [sortMode, setSortMode] = useState<
+    "tier" | "tier-asc" | "name-asc" | "name-desc"
+  >("tier");
   const [pageSize, setPageSize] = useState<number>(10);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [checkedEmails, setCheckedEmails] = useState<Set<string>>(new Set());
-  const [refreshingEmails, setRefreshingEmails] = useState<Set<string>>(new Set());
+  const [refreshingEmails, setRefreshingEmails] = useState<Set<string>>(
+    new Set(),
+  );
   const [isBulkRefreshing, setIsBulkRefreshing] = useState(false);
 
   // Dialog state
@@ -53,76 +70,134 @@ export const AccountList: React.FC<AccountListProps> = ({
     emails: string[];
   }>({
     isOpen: false,
-    emails: []
+    emails: [],
   });
 
   const lastRefreshMap = useRef<Map<string, number>>(new Map());
   const vscode = getVsCodeApi();
 
+  const lastImportRef = useRef<number>(0);
   const handleImport = () => {
-    vscode.postMessage({ command: 'importCurrentAntigravity' });
+    const now = Date.now();
+    if (now - lastImportRef.current < IMPORT_COOLDOWN_MS) {
+      return;
+    }
+    lastImportRef.current = now;
+    vscode.postMessage({ command: "importCurrentAntigravity" });
   };
 
+  const lastSignInRef = useRef<number>(0);
   const handleSignIn = () => {
-    vscode.postMessage({ command: 'addOAuth' });
+    const now = Date.now();
+    if (now - lastSignInRef.current < OAUTH_COOLDOWN_MS) {
+      return;
+    }
+    lastSignInRef.current = now;
+    vscode.postMessage({ command: "addOAuth" });
   };
 
   const getAccountCategory = (acc: Account): string => {
-    const badge = (acc.tierBadge || '').toUpperCase();
-    const type = (acc.accountType || '').toLowerCase();
-    if (badge === 'ENTERPRISE' || type.includes('enterprise')) return 'enterprise';
-    if (badge === 'ULTRA' || type.includes('ultra')) return 'ultra';
-    if (badge === 'AI PREMIUM' || type.includes('premium')) return 'premium';
-    if (badge === 'PRO' || type.includes('pro')) return 'pro';
-    return 'free';
+    const badge = (acc.tierBadge || "").toUpperCase();
+    const type = (acc.accountType || "").toLowerCase();
+    if (badge === "ENTERPRISE" || type.includes("enterprise"))
+      return "enterprise";
+    if (badge === "ULTRA" || type.includes("ultra")) return "ultra";
+    if (badge === "AI PREMIUM" || type.includes("premium")) return "premium";
+    if (badge === "PRO" || type.includes("pro")) return "pro";
+    return "free";
   };
 
   const counts = {
     all: accounts.length,
-    free: accounts.filter((a) => getAccountCategory(a) === 'free').length,
-    pro: accounts.filter((a) => getAccountCategory(a) === 'pro').length,
-    ultra: accounts.filter((a) => getAccountCategory(a) === 'ultra').length,
-    premium: accounts.filter((a) => getAccountCategory(a) === 'premium').length,
-    enterprise: accounts.filter((a) => getAccountCategory(a) === 'enterprise').length
+    free: accounts.filter((a) => getAccountCategory(a) === "free").length,
+    pro: accounts.filter((a) => getAccountCategory(a) === "pro").length,
+    ultra: accounts.filter((a) => getAccountCategory(a) === "ultra").length,
+    premium: accounts.filter((a) => getAccountCategory(a) === "premium").length,
+    enterprise: accounts.filter((a) => getAccountCategory(a) === "enterprise")
+      .length,
   };
 
   const filterBadges = [
-    { id: 'all', label: 'All', count: counts.all, activeClass: 'bg-primary text-primary-foreground border-primary' },
-    { id: 'free', label: 'Free', count: counts.free, activeClass: 'bg-slate-700 text-slate-100 border-slate-500 dark:bg-slate-700 dark:text-slate-100' },
-    { id: 'pro', label: 'Pro', count: counts.pro, activeClass: 'bg-purple-600/90 text-white border-purple-400' },
-    { id: 'ultra', label: 'Ultra', count: counts.ultra, activeClass: 'bg-fuchsia-600/90 text-white border-fuchsia-400' },
-    { id: 'premium', label: 'AI Premium', count: counts.premium, activeClass: 'bg-sky-600/90 text-white border-sky-400' },
-    { id: 'enterprise', label: 'Enterprise', count: counts.enterprise, activeClass: 'bg-emerald-600/90 text-white border-emerald-400' }
-  ].filter((b) => b.id === 'all' || b.id === 'free' || b.id === 'pro' || b.id === 'ultra' || b.count > 0);
+    {
+      id: "all",
+      label: "All",
+      count: counts.all,
+      activeClass: "bg-primary text-primary-foreground border-primary",
+    },
+    {
+      id: "free",
+      label: "Free",
+      count: counts.free,
+      activeClass:
+        "bg-slate-700 text-slate-100 border-slate-500 dark:bg-slate-700 dark:text-slate-100",
+    },
+    {
+      id: "pro",
+      label: "Pro",
+      count: counts.pro,
+      activeClass: "bg-purple-600/90 text-white border-purple-400",
+    },
+    {
+      id: "ultra",
+      label: "Ultra",
+      count: counts.ultra,
+      activeClass: "bg-fuchsia-600/90 text-white border-fuchsia-400",
+    },
+    {
+      id: "premium",
+      label: "AI Premium",
+      count: counts.premium,
+      activeClass: "bg-sky-600/90 text-white border-sky-400",
+    },
+    {
+      id: "enterprise",
+      label: "Enterprise",
+      count: counts.enterprise,
+      activeClass: "bg-emerald-600/90 text-white border-emerald-400",
+    },
+  ].filter(
+    (b) =>
+      b.id === "all" ||
+      b.id === "free" ||
+      b.id === "pro" ||
+      b.id === "ultra" ||
+      b.count > 0,
+  );
 
   const getTierRank = (acc: Account): number => {
-    const badge = (acc.tierBadge || '').toUpperCase();
-    const type = (acc.accountType || '').toLowerCase();
-    if (badge === 'ENTERPRISE' || type.includes('enterprise')) return 1;
-    if (badge === 'ULTRA' || type.includes('ultra')) return 2;
-    if (badge === 'AI PREMIUM' || type.includes('premium')) return 3;
-    if (badge === 'PRO' || type.includes('pro')) return 4;
+    const badge = (acc.tierBadge || "").toUpperCase();
+    const type = (acc.accountType || "").toLowerCase();
+    if (badge === "ENTERPRISE" || type.includes("enterprise")) return 1;
+    if (badge === "ULTRA" || type.includes("ultra")) return 2;
+    if (badge === "AI PREMIUM" || type.includes("premium")) return 3;
+    if (badge === "PRO" || type.includes("pro")) return 4;
     return 5; // Free
   };
 
   const filteredAccounts = accounts.filter((acc) => {
-    if (filterType === 'all') return true;
+    if (filterType === "all") return true;
     return getAccountCategory(acc) === filterType;
   });
 
   const sortedAccounts = [...filteredAccounts].sort((a, b) => {
-    if (sortMode === 'name-asc') {
+    if (sortMode === "name-asc") {
       const nameA = a.name || a.email;
       const nameB = b.name || b.email;
-      return nameA.localeCompare(nameB, undefined, { sensitivity: 'base', numeric: true });
+      return nameA.localeCompare(nameB, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
     }
-    if (sortMode === 'name-desc') {
+    if (sortMode === "name-desc") {
       const nameA = a.name || a.email;
       const nameB = b.name || b.email;
-      return nameB.localeCompare(nameA, undefined, { sensitivity: 'base', numeric: true });
+      return nameB.localeCompare(nameA, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
     }
 
-    if (sortMode === 'tier-asc') {
+    if (sortMode === "tier-asc") {
       // Free first, then Pro, then Ultra/Enterprise
       const rankA = getTierRank(a);
       const rankB = getTierRank(b);
@@ -131,7 +206,10 @@ export const AccountList: React.FC<AccountListProps> = ({
       }
       const nameA = a.name || a.email;
       const nameB = b.name || b.email;
-      return nameA.localeCompare(nameB, undefined, { sensitivity: 'base', numeric: true });
+      return nameA.localeCompare(nameB, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
     }
 
     // Default 'tier' (tier-desc): Ultra/Enterprise first, then Pro, then Free.
@@ -143,7 +221,10 @@ export const AccountList: React.FC<AccountListProps> = ({
     }
     const nameA = a.name || a.email;
     const nameB = b.name || b.email;
-    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base', numeric: true });
+    return nameA.localeCompare(nameB, undefined, {
+      sensitivity: "base",
+      numeric: true,
+    });
   });
 
   const handleFilterChange = (newFilter: string) => {
@@ -183,7 +264,9 @@ export const AccountList: React.FC<AccountListProps> = ({
   // Select all or deselect all
   const handleToggleSelectAll = () => {
     const allFilteredEmails = sortedAccounts.map((a) => a.email);
-    const areAllSelected = allFilteredEmails.every((email) => checkedEmails.has(email));
+    const areAllSelected = allFilteredEmails.every((email) =>
+      checkedEmails.has(email),
+    );
 
     if (areAllSelected) {
       setCheckedEmails((prev) => {
@@ -211,9 +294,11 @@ export const AccountList: React.FC<AccountListProps> = ({
     const elapsed = now - last;
 
     if (elapsed < ACCOUNT_REFRESH_COOLDOWN_MS) {
-      const remainingSec = Math.ceil((ACCOUNT_REFRESH_COOLDOWN_MS - elapsed) / 1000);
+      const remainingSec = Math.ceil(
+        (ACCOUNT_REFRESH_COOLDOWN_MS - elapsed) / 1000,
+      );
       toast.warning(
-        `Please wait ${remainingSec}s before refreshing ${email} again to avoid rate limits.`
+        `Please wait ${remainingSec}s before refreshing ${email} again to avoid rate limits.`,
       );
       return;
     }
@@ -221,7 +306,7 @@ export const AccountList: React.FC<AccountListProps> = ({
     lastRefreshMap.current.set(email, now);
     setRefreshingEmails((prev) => new Set(prev).add(email));
 
-    vscode.postMessage({ command: 'refreshAccount', email });
+    vscode.postMessage({ command: "refreshAccount", email });
     toast.info(`Refreshing quota for ${email}...`);
 
     setTimeout(() => {
@@ -257,7 +342,7 @@ export const AccountList: React.FC<AccountListProps> = ({
     if (emailsReady.length === 0) {
       const remSec = Math.ceil(minRemaining / 1000);
       toast.warning(
-        `Please wait ${remSec}s before refreshing selected accounts again to avoid rate limits.`
+        `Please wait ${remSec}s before refreshing selected accounts again to avoid rate limits.`,
       );
       return;
     }
@@ -271,7 +356,10 @@ export const AccountList: React.FC<AccountListProps> = ({
       return next;
     });
 
-    vscode.postMessage({ command: 'refreshMultipleAccounts', emails: emailsReady });
+    vscode.postMessage({
+      command: "refreshMultipleAccounts",
+      emails: emailsReady,
+    });
     toast.info(`Refreshing ${emailsReady.length} account(s)...`);
 
     setTimeout(() => {
@@ -290,7 +378,7 @@ export const AccountList: React.FC<AccountListProps> = ({
   const handleDeleteSingleRequest = (email: string) => {
     setDeleteDialog({
       isOpen: true,
-      emails: [email]
+      emails: [email],
     });
   };
 
@@ -299,7 +387,7 @@ export const AccountList: React.FC<AccountListProps> = ({
     if (checkedEmails.size === 0) return;
     setDeleteDialog({
       isOpen: true,
-      emails: Array.from(checkedEmails)
+      emails: Array.from(checkedEmails),
     });
   };
 
@@ -307,10 +395,14 @@ export const AccountList: React.FC<AccountListProps> = ({
   const handleConfirmDelete = () => {
     const { emails } = deleteDialog;
     if (emails.length === 1) {
-      vscode.postMessage({ command: 'removeAccount', email: emails[0], confirmed: true });
+      vscode.postMessage({
+        command: "removeAccount",
+        email: emails[0],
+        confirmed: true,
+      });
       toast.success(`Removed account ${emails[0]}`);
     } else if (emails.length > 1) {
-      vscode.postMessage({ command: 'removeMultipleAccounts', emails });
+      vscode.postMessage({ command: "removeMultipleAccounts", emails });
       toast.success(`Successfully removed ${emails.length} accounts`);
     }
 
@@ -335,14 +427,22 @@ export const AccountList: React.FC<AccountListProps> = ({
       {/* Delete Confirmation Modal Dialog */}
       <ConfirmDialog
         isOpen={deleteDialog.isOpen}
-        title={deleteDialog.emails.length > 1 ? 'Confirm Bulk Account Removal' : 'Confirm Account Removal'}
+        title={
+          deleteDialog.emails.length > 1
+            ? "Confirm Bulk Account Removal"
+            : "Confirm Account Removal"
+        }
         description={
           deleteDialog.emails.length > 1
             ? `Are you sure you want to remove ${deleteDialog.emails.length} selected accounts? Stored tokens will be deleted and this action cannot be undone.`
             : `Are you sure you want to remove account ${deleteDialog.emails[0]}? This action cannot be undone.`
         }
         items={deleteDialog.emails}
-        confirmText={deleteDialog.emails.length > 1 ? `Remove ${deleteDialog.emails.length} Accounts` : 'Remove Account'}
+        confirmText={
+          deleteDialog.emails.length > 1
+            ? `Remove ${deleteDialog.emails.length} Accounts`
+            : "Remove Account"
+        }
         cancelText="Cancel"
         isDestructive={true}
         onConfirm={handleConfirmDelete}
@@ -354,7 +454,7 @@ export const AccountList: React.FC<AccountListProps> = ({
         <div className="flex items-center gap-1.5">
           <span>Accounts & Fast Switch</span>
           <span className="text-[10px] font-semibold text-foreground/80 normal-case">
-            ({accounts.length} {accounts.length === 1 ? 'account' : 'accounts'})
+            ({accounts.length} {accounts.length === 1 ? "account" : "accounts"})
           </span>
         </div>
 
@@ -363,12 +463,16 @@ export const AccountList: React.FC<AccountListProps> = ({
             <Button
               onClick={toggleMultiSelectMode}
               size="xs"
-              variant={isMultiSelectMode ? 'default' : 'outline'}
-              title={isMultiSelectMode ? 'Exit selection mode' : 'Select multiple accounts for bulk actions'}
+              variant={isMultiSelectMode ? "default" : "outline"}
+              title={
+                isMultiSelectMode
+                  ? "Exit selection mode"
+                  : "Select multiple accounts for bulk actions"
+              }
               className="gap-1 text-[10px]"
             >
               <CheckSquare className="w-3 h-3" />
-              <span>{isMultiSelectMode ? 'Done' : 'Select'}</span>
+              <span>{isMultiSelectMode ? "Done" : "Select"}</span>
             </Button>
           )}
         </div>
@@ -378,19 +482,31 @@ export const AccountList: React.FC<AccountListProps> = ({
       {isMultiSelectMode && accounts.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/40 bg-primary/10 p-2 text-xs shadow-md animate-in fade-in slide-in-from-top-1">
           <div className="flex items-center gap-2">
-            <button
+            <div
               onClick={handleToggleSelectAll}
-              className="flex items-center gap-1.5 text-xs font-semibold text-foreground hover:text-primary transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 text-xs font-semibold text-foreground hover:text-primary transition-colors cursor-pointer select-none"
             >
-              {areAllFilteredSelected ? (
-                <CheckSquare className="w-4 h-4 text-primary" />
-              ) : (
-                <Square className="w-4 h-4 text-muted-foreground" />
-              )}
-              <span>{areAllFilteredSelected ? 'Deselect All' : 'Select All'}</span>
-            </button>
-            <Badge variant="secondary" className="font-mono text-[10px] px-1.5 py-0 bg-card">
-              Selected: <span className="font-bold text-primary ml-1">{checkedEmails.size}</span>/{accounts.length}
+              <Checkbox
+                checked={areAllFilteredSelected}
+                onCheckedChange={handleToggleSelectAll}
+                aria-label={
+                  areAllFilteredSelected ? "Deselect All" : "Select All"
+                }
+                className="bg-card shadow-xs"
+              />
+              <span>
+                {areAllFilteredSelected ? "Deselect All" : "Select All"}
+              </span>
+            </div>
+            <Badge
+              variant="secondary"
+              className="font-mono text-[10px] px-1.5 py-0 bg-card"
+            >
+              Selected:{" "}
+              <span className="font-bold text-primary ml-1">
+                {checkedEmails.size}
+              </span>
+              /{accounts.length}
             </Badge>
           </div>
 
@@ -403,7 +519,12 @@ export const AccountList: React.FC<AccountListProps> = ({
               title="Refresh quota for selected accounts"
               className="gap-1 bg-card hover:bg-accent"
             >
-              <RotateCw className={cn("w-3 h-3", isBulkRefreshing && "animate-spin text-primary")} />
+              <RotateCw
+                className={cn(
+                  "w-3 h-3",
+                  isBulkRefreshing && "animate-spin text-primary",
+                )}
+              />
               <span>Refresh ({checkedEmails.size})</span>
             </Button>
 
@@ -436,8 +557,9 @@ export const AccountList: React.FC<AccountListProps> = ({
 
       {/* Fast Type Filter Badges & Sort Selector Bar */}
       {accounts.length > 0 && !isMultiSelectMode && (
-        <div className="flex flex-wrap items-center justify-between gap-1.5 py-0.5">
-          <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex items-center justify-between gap-1.5 py-1 w-full">
+          {/* Wide Screen: Full Pill Badges */}
+          <div className="hidden min-[480px]:flex items-center gap-1.5">
             <div className="flex items-center gap-1 text-[10px] text-muted-foreground mr-0.5">
               <Filter className="w-3 h-3" />
               <span>Filter:</span>
@@ -445,51 +567,188 @@ export const AccountList: React.FC<AccountListProps> = ({
             {filterBadges.map((badge) => {
               const isSelected = filterType === badge.id;
               return (
-                <button
+                <Button
                   key={badge.id}
                   type="button"
+                  size="sm"
+                  variant={isSelected ? "default" : "ghost"}
                   onClick={() => handleFilterChange(badge.id)}
                   className={cn(
-                    'flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border shadow-xs select-none',
+                    "h-6 gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border shadow-xs select-none",
                     isSelected
                       ? `${badge.activeClass} shadow-sm ring-1 ring-white/20`
-                      : 'bg-card/70 text-muted-foreground border-border/70 hover:text-foreground hover:bg-accent/50'
+                      : "bg-card/70 text-muted-foreground border-border/70 hover:text-foreground hover:bg-accent/50",
                   )}
                   title={`Show ${badge.label} accounts (${badge.count})`}
                 >
                   <span>{badge.label}</span>
                   <span
                     className={cn(
-                      'text-[9px] px-1 py-0 rounded font-mono font-bold',
+                      "text-[9px] px-1 py-0 rounded font-mono font-bold",
                       isSelected
-                        ? 'bg-black/25 text-white dark:bg-white/20'
-                        : 'bg-muted/70 text-muted-foreground'
+                        ? "bg-black/25 text-white dark:bg-white/20"
+                        : "bg-muted/70 text-muted-foreground",
                     )}
                   >
                     {badge.count}
                   </span>
-                </button>
+                </Button>
               );
             })}
           </div>
 
-          {/* Sort Selector Dropdown */}
-          <div className="flex items-center gap-1 text-[10px] text-muted-foreground ml-auto">
-            <ArrowUpDown className="w-3 h-3 text-muted-foreground" />
-            <select
-              value={sortMode}
-              onChange={(e) => {
-                setSortMode(e.target.value as any);
-                setCurrentPage(1);
-              }}
-              className="h-5.5 rounded border border-border bg-card px-1.5 text-[10px] font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
-              title="Sort accounts"
-            >
-              <option value="tier">Sort: Tier (Ultra → Pro → Free)</option>
-              <option value="tier-asc">Sort: Tier (Free → Pro → Ultra)</option>
-              <option value="name-asc">Sort: Name (A → Z)</option>
-              <option value="name-desc">Sort: Name (Z → A)</option>
-            </select>
+          {/* Small Screen: Compact Filter Dropdown Menu */}
+          <div className="flex min-[480px]:hidden items-center">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 gap-1.5 px-2 py-1 rounded-md text-[10px] font-semibold border border-border/80 bg-card/80 hover:bg-accent/60 transition-colors shadow-2xs cursor-pointer select-none"
+                  title="Filter accounts by tier"
+                >
+                  <Filter className="w-3 h-3 text-muted-foreground" />
+                  <span className="text-muted-foreground font-normal">
+                    Filter:
+                  </span>
+                  <span className="font-bold text-foreground">
+                    {filterBadges.find((b) => b.id === filterType)?.label ||
+                      "All"}
+                  </span>
+                  <span className="text-[9px] px-1 rounded font-mono font-bold bg-muted text-muted-foreground">
+                    {filterBadges.find((b) => b.id === filterType)?.count ??
+                      counts.all}
+                  </span>
+                  <ChevronDown className="w-3 h-3 text-muted-foreground/70" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-35">
+                <DropdownMenuLabel className="text-[10px] text-muted-foreground py-1 px-2 font-medium">
+                  Filter by Tier
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {filterBadges.map((badge) => {
+                  const isSelected = filterType === badge.id;
+                  return (
+                    <DropdownMenuItem
+                      key={badge.id}
+                      onClick={() => handleFilterChange(badge.id)}
+                      className={cn(
+                        "flex items-center justify-between text-xs py-1.5 px-2 cursor-pointer font-medium rounded-sm",
+                        isSelected
+                          ? "bg-primary text-primary-foreground font-bold focus:bg-primary/90 focus:text-primary-foreground"
+                          : "text-foreground hover:bg-accent",
+                      )}
+                    >
+                      <span>{badge.label}</span>
+                      <span
+                        className={cn(
+                          "text-[10px] font-mono font-bold px-1.5 py-0.2 rounded",
+                          isSelected
+                            ? "bg-primary-foreground/20 text-primary-foreground"
+                            : "bg-muted text-muted-foreground",
+                        )}
+                      >
+                        {badge.count}
+                      </span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Sort Selector Dropdown using Shadcn DropdownMenu */}
+          <div className="flex items-center shrink-0 ml-auto">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 gap-1.5 px-2 py-1 rounded-md text-[10px] font-semibold border border-border/80 bg-card/80 hover:bg-accent/60 transition-colors shadow-2xs cursor-pointer select-none"
+                  title="Sort accounts"
+                >
+                  <ArrowUpDown className="w-3 h-3 text-muted-foreground" />
+                  <span className="text-muted-foreground font-normal">
+                    Sort:
+                  </span>
+                  <span className="font-bold text-foreground">
+                    {sortMode === "tier"
+                      ? "Tier (↓)"
+                      : sortMode === "tier-asc"
+                        ? "Tier (↑)"
+                        : sortMode === "name-asc"
+                          ? "Name (A→Z)"
+                          : "Name (Z→A)"}
+                  </span>
+                  <ChevronDown className="w-3 h-3 text-muted-foreground/70" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-42.5">
+                <DropdownMenuLabel className="text-[10px] text-muted-foreground py-1 px-2 font-medium">
+                  Sort Order
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSortMode("tier");
+                    setCurrentPage(1);
+                  }}
+                  className={cn(
+                    "text-xs py-1.5 px-2 cursor-pointer font-medium rounded-sm",
+                    sortMode === "tier"
+                      ? "bg-primary text-primary-foreground font-bold focus:bg-primary/90 focus:text-primary-foreground"
+                      : "text-foreground hover:bg-accent",
+                  )}
+                >
+                  Tier (Ultra → Pro → Free)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSortMode("tier-asc");
+                    setCurrentPage(1);
+                  }}
+                  className={cn(
+                    "text-xs py-1.5 px-2 cursor-pointer font-medium rounded-sm",
+                    sortMode === "tier-asc"
+                      ? "bg-primary text-primary-foreground font-bold focus:bg-primary/90 focus:text-primary-foreground"
+                      : "text-foreground hover:bg-accent",
+                  )}
+                >
+                  Tier (Free → Pro → Ultra)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSortMode("name-asc");
+                    setCurrentPage(1);
+                  }}
+                  className={cn(
+                    "text-xs py-1.5 px-2 cursor-pointer font-medium rounded-sm",
+                    sortMode === "name-asc"
+                      ? "bg-primary text-primary-foreground font-bold focus:bg-primary/90 focus:text-primary-foreground"
+                      : "text-foreground hover:bg-accent",
+                  )}
+                >
+                  Name (A → Z)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSortMode("name-desc");
+                    setCurrentPage(1);
+                  }}
+                  className={cn(
+                    "text-xs py-1.5 px-2 cursor-pointer font-medium rounded-sm",
+                    sortMode === "name-desc"
+                      ? "bg-primary text-primary-foreground font-bold focus:bg-primary/90 focus:text-primary-foreground"
+                      : "text-foreground hover:bg-accent",
+                  )}
+                >
+                  Name (Z → A)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       )}
@@ -531,10 +790,14 @@ export const AccountList: React.FC<AccountListProps> = ({
         <Card className="border-dashed bg-card/30">
           <CardContent className="flex flex-col items-center justify-center p-4 text-center">
             <div className="text-xs text-muted-foreground mb-2">
-              No <span className="font-semibold text-foreground uppercase">{filterType}</span> accounts found.
+              No{" "}
+              <span className="font-semibold text-foreground uppercase">
+                {filterType}
+              </span>{" "}
+              accounts found.
             </div>
             <Button
-              onClick={() => handleFilterChange('all')}
+              onClick={() => handleFilterChange("all")}
               size="xs"
               variant="outline"
             >
@@ -567,7 +830,14 @@ export const AccountList: React.FC<AccountListProps> = ({
             {/* Left side: Range counter & Items per page */}
             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
               <span>
-                Showing <span className="font-semibold text-foreground">{sortedAccounts.length === 0 ? 0 : startIndex + 1}–{endIndex}</span> of <span className="font-semibold text-foreground">{sortedAccounts.length}</span>
+                Showing{" "}
+                <span className="font-semibold text-foreground">
+                  {sortedAccounts.length === 0 ? 0 : startIndex + 1}–{endIndex}
+                </span>{" "}
+                of{" "}
+                <span className="font-semibold text-foreground">
+                  {sortedAccounts.length}
+                </span>
               </span>
               <div className="flex items-center gap-1.5 ml-1 border-l border-border/60 pl-2">
                 <span className="text-[10px]">Per page:</span>
@@ -591,7 +861,14 @@ export const AccountList: React.FC<AccountListProps> = ({
             {/* Bottom Right: Page Status & Navigation Buttons */}
             <div className="flex items-center gap-2 ml-auto">
               <span className="text-[11px] text-muted-foreground">
-                Page <span className="font-semibold text-foreground">{validCurrentPage}</span> / <span className="font-semibold text-foreground">{totalPages}</span>
+                Page{" "}
+                <span className="font-semibold text-foreground">
+                  {validCurrentPage}
+                </span>{" "}
+                /{" "}
+                <span className="font-semibold text-foreground">
+                  {totalPages}
+                </span>
               </span>
               <div className="flex items-center gap-0.5">
                 <Button
@@ -617,7 +894,9 @@ export const AccountList: React.FC<AccountListProps> = ({
                 <Button
                   size="iconXs"
                   variant="outline"
-                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  onClick={() =>
+                    setCurrentPage((p) => Math.min(totalPages, p + 1))
+                  }
                   disabled={validCurrentPage >= totalPages}
                   title="Next page"
                   className="h-6 w-6"
