@@ -22,6 +22,7 @@ import {
   ChevronsRight,
   ArrowUpDown,
   ChevronDown,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -43,6 +44,7 @@ interface AccountListProps {
   activeAccount: Account | null;
   selectedEmail: string | null;
   onSelectAccount: (email: string) => void;
+  isBackgroundRefreshing?: boolean;
 }
 
 export const AccountList: React.FC<AccountListProps> = ({
@@ -50,6 +52,7 @@ export const AccountList: React.FC<AccountListProps> = ({
   activeAccount,
   selectedEmail,
   onSelectAccount,
+  isBackgroundRefreshing = false,
 }) => {
   const [filterType, setFilterType] = useState<string>("all");
   const [sortMode, setSortMode] = useState<
@@ -456,6 +459,15 @@ export const AccountList: React.FC<AccountListProps> = ({
           <span className="text-[10px] font-semibold text-foreground/80 normal-case">
             ({accounts.length} {accounts.length === 1 ? "account" : "accounts"})
           </span>
+          {isBackgroundRefreshing && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground normal-case ml-1.5 select-none"
+              title="Updating quotas across accounts..."
+            >
+              <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+              <span>syncing</span>
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5">

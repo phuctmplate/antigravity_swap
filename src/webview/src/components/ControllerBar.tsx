@@ -222,8 +222,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
           </span>
         </div>
 
-        {autoSwitchEnabled && (
-          <div className="flex items-center border-l border-border/80 pl-1.5 ml-0.5 pr-1 gap-1">
+        <div className="flex items-center border-l border-border/80 pl-1.5 ml-0.5 pr-1 gap-1">
             {/* Wide Screen: Individual Pill Buttons (shown on >= 680px) */}
             <div className="hidden min-[680px]:flex items-center gap-1">
               <Button
@@ -391,7 +390,6 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
               </span>
             </div>
           </div>
-        )}
       </div>
     </div>
   );

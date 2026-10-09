@@ -16,6 +16,8 @@ export class AccountManager {
   private static readonly IMPORT_COOLDOWN_MS = EXTENSION_DEFAULTS.IMPORT_COOLDOWN_MS;
   private lastOAuthTime = 0;
   private static readonly OAUTH_COOLDOWN_MS = EXTENSION_DEFAULTS.OAUTH_COOLDOWN_MS;
+  private lastNotifiedDepletionKey?: string;
+  private isBackgroundRefreshing = false;
   private readonly _onDidChangeState = new vscode.EventEmitter<void>();
   public readonly onDidChangeState = this._onDidChangeState.event;
 
@@ -156,30 +158,34 @@ export class AccountManager {
     const existingAcc = this.accounts.find((a) => a.email.toLowerCase() === email);
 
     if (existingAcc) {
-      // Update tokens
       const existingTokens = await this.storage.getAccountTokens(existingAcc.email);
-      const tokens: OAuthTokens = {
-        accessToken: currentSession.accessToken,
-        refreshToken: currentSession.refreshToken || existingTokens?.refreshToken,
-        expiresAt: Date.now() + 3600 * 1000
-      };
-      await this.storage.saveAccountTokens(existingAcc.email, tokens);
+      const isTokenDifferent = !existingTokens || (currentSession.accessToken && currentSession.accessToken !== existingTokens.accessToken);
+      const isAlreadyActive = this.activeEmail?.toLowerCase() === email && existingAcc.isActive;
 
-      // Set active
-      this.activeEmail = existingAcc.email;
-      this.accounts = this.accounts.map((a) => ({
-        ...a,
-        isActive: a.email.toLowerCase() === email,
-        status: a.email.toLowerCase() === email ? 'active' : a.status,
-        statusMessage: a.email.toLowerCase() === email ? undefined : a.statusMessage,
-        name: (a.email.toLowerCase() === email && currentSession.name) ? currentSession.name : a.name,
-        avatarUrl: (a.email.toLowerCase() === email && currentSession.avatarUrl) ? currentSession.avatarUrl : a.avatarUrl
-      }));
-      await this.storage.setActiveAccountEmail(existingAcc.email);
-      await this.storage.saveAccounts(this.accounts);
-      this._onDidChangeState.fire();
-      this.refreshAccountQuota(existingAcc.email).catch(() => {});
-      console.log(`[Antigravity Swap] Synchronized active account to ${existingAcc.email} following IDE login.`);
+      if (!isAlreadyActive || isTokenDifferent) {
+        // Update tokens
+        const tokens: OAuthTokens = {
+          accessToken: currentSession.accessToken,
+          refreshToken: currentSession.refreshToken || existingTokens?.refreshToken,
+          expiresAt: Date.now() + 3600 * 1000
+        };
+        await this.storage.saveAccountTokens(existingAcc.email, tokens);
+
+        // Set active
+        this.activeEmail = existingAcc.email;
+        this.accounts = this.accounts.map((a) => ({
+          ...a,
+          isActive: a.email.toLowerCase() === email,
+          status: a.email.toLowerCase() === email ? 'healthy' : a.status,
+          statusMessage: a.email.toLowerCase() === email ? undefined : a.statusMessage,
+          name: (a.email.toLowerCase() === email && currentSession.name) ? currentSession.name : a.name,
+          avatarUrl: (a.email.toLowerCase() === email && currentSession.avatarUrl) ? currentSession.avatarUrl : a.avatarUrl
+        }));
+        await this.storage.setActiveAccountEmail(existingAcc.email);
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
+        console.log(`[Antigravity Swap] Synchronized active account to ${existingAcc.email} following IDE login.`);
+      }
     } else {
       // Current IDE session is not in extension: clear active flag on extension accounts
       if (this.activeEmail !== undefined) {
@@ -226,6 +232,9 @@ export class AccountManager {
 
   public async setAutoSwitchEnabled(enabled: boolean): Promise<void> {
     await this.storage.setAutoSwitchEnabled(enabled);
+    if (!enabled) {
+      this.lastNotifiedDepletionKey = undefined;
+    }
     this._onDidChangeState.fire();
   }
 
@@ -260,8 +269,9 @@ export class AccountManager {
    * Switches to the given account and relaunches Antigravity IDE with the new account loaded into memory.
    * @param email Target account email.
    * @param isManual Set to true when the user explicitly pressed "Switch" — this disables auto-switch.
+   * @param isSilent Set to true when called from Webview UI to suppress native VS Code notifications.
    */
-  public async switchAccount(email: string, isManual = false): Promise<boolean> {
+  public async switchAccount(email: string, isManual = false, isSilent = false): Promise<boolean> {
     const now = Date.now();
     if (this.isSwitching || now - this.lastSwitchTime < AccountManager.SWITCH_COOLDOWN_MS) {
       console.log('[Antigravity Swap] Switch rate-limited / cooldown active. Ignored.');
@@ -278,12 +288,16 @@ export class AccountManager {
     try {
       const target = this.accounts.find((a) => a.email === email);
       if (!target) {
-        vscode.window.showErrorMessage(`Account ${email} not found in Antigravity Swap.`);
+        if (!isSilent) {
+          vscode.window.showErrorMessage(`Account ${email} not found in Antigravity Swap.`);
+        }
         return false;
       }
 
       if (target.isBanned || target.status === 'banned') {
-        vscode.window.showErrorMessage(`Cannot switch: Account ${email} is banned or suspended by Google Terms of Service.`);
+        if (!isSilent) {
+          vscode.window.showErrorMessage(`Cannot switch: Account ${email} is banned or suspended by Google Terms of Service.`);
+        }
         return false;
       }
 
@@ -378,7 +392,9 @@ export class AccountManager {
       this._onDidChangeState.fire();
       this.refreshAccountQuota(email).catch(() => {});
 
-      vscode.window.showInformationMessage(`Switched to: ${target.name || email}!`);
+      if (!isSilent) {
+        vscode.window.showInformationMessage(`Switched to: ${target.name || email}!`);
+      }
       return true;
     } finally {
       this.isSwitching = false;
@@ -420,7 +436,7 @@ export class AccountManager {
           email: userInfo.email,
           name: userInfo.name || this.accounts[existingIdx].name,
           avatarUrl: userInfo.avatarUrl || this.accounts[existingIdx].avatarUrl,
-          status: 'active',
+          status: 'healthy',
           isBanned: false,
           banReason: undefined,
           statusMessage: undefined,
@@ -434,7 +450,7 @@ export class AccountManager {
           avatarUrl: userInfo.avatarUrl,
           isActive: false,
           addedAt: new Date().toISOString(),
-          status: 'active',
+          status: 'healthy',
           isBanned: false,
           quotas: [],
           averageQuotaPercentage: 0,
@@ -450,7 +466,7 @@ export class AccountManager {
       vscode.window.showInformationMessage(`Re-authenticated ${userInfo.email} successfully!`);
       this._onDidChangeState.fire();
 
-      await this.refreshAccountQuota(userInfo.email).catch(() => {});
+      await this.refreshAccountQuota(userInfo.email, true).catch(() => {});
 
       if (this.activeEmail === userInfo.email || this.activeEmail === email) {
         await this.switchAccount(userInfo.email);
@@ -501,7 +517,7 @@ export class AccountManager {
           ...this.accounts[existingIdx],
           name: current.name || this.accounts[existingIdx].name,
           avatarUrl: current.avatarUrl || this.accounts[existingIdx].avatarUrl,
-          status: 'active',
+          status: 'healthy',
           isBanned: false,
           statusMessage: undefined,
           isActive: true,
@@ -516,7 +532,7 @@ export class AccountManager {
           avatarUrl: current.avatarUrl,
           isActive: true,
           addedAt: new Date().toISOString(),
-          status: 'active',
+          status: 'healthy',
           isBanned: false,
           statusMessage: undefined,
           quotas: [],
@@ -544,7 +560,7 @@ export class AccountManager {
       }
       this._onDidChangeState.fire();
 
-      this.refreshAccountQuota(current.email).catch(() => {});
+      await this.refreshAccountQuota(current.email, true).catch(() => {});
       return account;
     } finally {
       this.isImporting = false;
@@ -587,7 +603,7 @@ export class AccountManager {
           ...this.accounts[existingIdx],
           name: userInfo.name || this.accounts[existingIdx].name,
           avatarUrl: userInfo.avatarUrl || this.accounts[existingIdx].avatarUrl,
-          status: 'active',
+          status: 'healthy',
           isBanned: false,
           lastUsedAt: new Date().toISOString()
         };
@@ -600,7 +616,7 @@ export class AccountManager {
           avatarUrl: userInfo.avatarUrl,
           isActive: this.accounts.length === 0,
           addedAt: new Date().toISOString(),
-          status: 'active',
+          status: 'healthy',
           isBanned: false,
           quotas: [],
           averageQuotaPercentage: 0,
@@ -621,7 +637,7 @@ export class AccountManager {
       vscode.window.showInformationMessage(`Added account ${userInfo.email} to Antigravity Swap!`);
       this._onDidChangeState.fire();
 
-      this.refreshAccountQuota(account.email, true).catch(() => {});
+      await this.refreshAccountQuota(account.email, true).catch(() => {});
       return account;
     } catch (err: any) {
       const msg = err.message || '';
@@ -652,7 +668,7 @@ export class AccountManager {
     const existingIdx = this.accounts.findIndex((a) => a.email === email);
     if (existingIdx >= 0) {
       this.accounts[existingIdx].name = name || this.accounts[existingIdx].name;
-      this.accounts[existingIdx].status = 'active';
+      this.accounts[existingIdx].status = 'healthy';
       this.accounts[existingIdx].isBanned = false;
       this.accounts[existingIdx].statusMessage = undefined;
     } else {
@@ -662,7 +678,7 @@ export class AccountManager {
         name: name || email.split('@')[0],
         isActive: this.accounts.length === 0,
         addedAt: new Date().toISOString(),
-        status: 'active',
+        status: 'healthy',
         isBanned: false,
         quotas: [],
         averageQuotaPercentage: 0,
@@ -676,22 +692,22 @@ export class AccountManager {
     await this.storage.saveAccounts(this.accounts);
     vscode.window.showInformationMessage(`Account ${email} saved successfully!`);
     this._onDidChangeState.fire();
-    this.refreshAccountQuota(email, true).catch(() => {});
+    await this.refreshAccountQuota(email, true).catch(() => {});
     return true;
   }
 
   /**
    * Removes an account.
    */
-  public async removeAccount(email: string): Promise<void> {
+  public async removeAccount(email: string, isSilent = false): Promise<void> {
     const isCurrentActive = this.activeEmail === email;
     this.accounts = this.accounts.filter((a) => a.email !== email);
     await this.storage.saveAccounts(this.accounts);
     await this.storage.removeAccountTokens(email);
 
     if (isCurrentActive && this.accounts.length > 0) {
-      const nextHealthy = this.accounts.find((a) => !a.isBanned && a.status === 'active') || this.accounts[0];
-      if (nextHealthy && nextHealthy.status === 'active') {
+      const nextHealthy = this.accounts.find((a) => !a.isBanned && (a.status === 'healthy' || a.status === 'active')) || this.accounts[0];
+      if (nextHealthy && (nextHealthy.status === 'healthy' || nextHealthy.status === 'active')) {
         await this.switchAccount(nextHealthy.email);
       } else {
         this.activeEmail = undefined;
@@ -702,14 +718,16 @@ export class AccountManager {
       await this.storage.setActiveAccountEmail(undefined);
     }
 
-    vscode.window.showInformationMessage(`Account ${email} removed.`);
+    if (!isSilent) {
+      vscode.window.showInformationMessage(`Account ${email} removed.`);
+    }
     this._onDidChangeState.fire();
   }
 
   /**
    * Removes multiple accounts simultaneously.
    */
-  public async removeMultipleAccounts(emails: string[]): Promise<void> {
+  public async removeMultipleAccounts(emails: string[], isSilent = false): Promise<void> {
     if (!emails || emails.length === 0) return;
     const emailSet = new Set(emails);
     const wasActiveRemoved = this.activeEmail && emailSet.has(this.activeEmail);
@@ -722,8 +740,8 @@ export class AccountManager {
     }
 
     if (wasActiveRemoved && this.accounts.length > 0) {
-      const nextHealthy = this.accounts.find((a) => !a.isBanned && a.status === 'active') || this.accounts[0];
-      if (nextHealthy && nextHealthy.status === 'active') {
+      const nextHealthy = this.accounts.find((a) => !a.isBanned && (a.status === 'healthy' || a.status === 'active')) || this.accounts[0];
+      if (nextHealthy && (nextHealthy.status === 'healthy' || nextHealthy.status === 'active')) {
         await this.switchAccount(nextHealthy.email);
       } else {
         this.activeEmail = undefined;
@@ -734,7 +752,9 @@ export class AccountManager {
       await this.storage.setActiveAccountEmail(undefined);
     }
 
-    vscode.window.showInformationMessage(`Removed ${emails.length} account(s).`);
+    if (!isSilent) {
+      vscode.window.showInformationMessage(`Removed ${emails.length} account(s).`);
+    }
     this._onDidChangeState.fire();
   }
 
@@ -748,32 +768,39 @@ export class AccountManager {
     const total = emails.length;
     let completedCount = 0;
 
-    for (let i = 0; i < total; i += batchSize) {
-      const chunk = emails.slice(i, i + batchSize);
-      await Promise.all(
-        chunk.map(async (email) => {
-          try {
-            await this.refreshAccountQuota(email);
-          } catch (err) {
-            console.warn(`[Antigravity Swap] Failed to refresh account ${email}:`, err);
-          } finally {
-            completedCount++;
-            if (onProgress) {
-              onProgress(completedCount, total, email);
-            }
-          }
-        })
-      );
-
-      this.storage.renewRefreshLease();
-
-      if (i + batchSize < total && pacingDelayMs > 0) {
-        await new Promise((r) => setTimeout(r, pacingDelayMs));
-      }
-    }
-
-    await this.checkAutoSwitch();
+    this.isBackgroundRefreshing = true;
     this._onDidChangeState.fire();
+
+    try {
+      for (let i = 0; i < total; i += batchSize) {
+        const chunk = emails.slice(i, i + batchSize);
+        await Promise.all(
+          chunk.map(async (email) => {
+            try {
+              await this.refreshAccountQuota(email);
+            } catch (err) {
+              console.warn(`[Antigravity Swap] Failed to refresh account ${email}:`, err);
+            } finally {
+              completedCount++;
+              if (onProgress) {
+                onProgress(completedCount, total, email);
+              }
+            }
+          })
+        );
+
+        this.storage.renewRefreshLease();
+
+        if (i + batchSize < total && pacingDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, pacingDelayMs));
+        }
+      }
+
+      await this.checkAutoSwitch();
+    } finally {
+      this.isBackgroundRefreshing = false;
+      this._onDidChangeState.fire();
+    }
   }
 
   /**
@@ -790,6 +817,9 @@ export class AccountManager {
 
     const batchSize = EXTENSION_DEFAULTS.REFRESH_BATCH_SIZE;
     const pacingDelayMs = EXTENSION_DEFAULTS.BATCH_PACING_DELAY_MS;
+
+    this.isBackgroundRefreshing = true;
+    this._onDidChangeState.fire();
 
     try {
       const active = this.getActiveAccount();
@@ -828,9 +858,10 @@ export class AccountManager {
       }
 
       await this.checkAutoSwitch();
-      this._onDidChangeState.fire();
     } finally {
+      this.isBackgroundRefreshing = false;
       this.storage.releaseRefreshLease();
+      this._onDidChangeState.fire();
     }
   }
 
@@ -897,8 +928,12 @@ export class AccountManager {
     }
   }
 
+  public isBackgroundRefreshingState(): boolean {
+    return this.isBackgroundRefreshing;
+  }
+
   /**
-   * Heartbeat execution: polls active account quota and checks background account status.
+   * Heartbeat execution: polls active account quota and checks background accounts in small batches.
    * Checks the distributed lease so multiple instances do not spam Google APIs simultaneously.
    */
   public async runHeartbeatTick(): Promise<void> {
@@ -913,69 +948,122 @@ export class AccountManager {
       return;
     }
 
+    this.isBackgroundRefreshing = true;
+    this._onDidChangeState.fire();
+
     try {
-      // Find candidate accounts eligible for background refresh (exclude banned or auth failed accounts)
-      const candidateAccounts = this.accounts.filter(
+      const active = this.getActiveAccount();
+      const eligibleAccounts = this.accounts.filter(
         (a) => !a.isBanned && a.status !== 'banned' && a.status !== 'auth_failed'
       );
 
-      if (candidateAccounts.length > 0) {
-        // Pick the single account that has gone the longest without a refresh (oldest lastRefreshedAt or never refreshed)
-        const sorted = [...candidateAccounts].sort((a, b) => {
-          const tA = a.lastRefreshedAt ? new Date(a.lastRefreshedAt).getTime() : 0;
-          const tB = b.lastRefreshedAt ? new Date(b.lastRefreshedAt).getTime() : 0;
-          return tA - tB;
-        });
+      const accountsToRefresh: AccountInfo[] = [];
 
-        const target = sorted[0];
-        if (target) {
-          await this.refreshAccountQuota(target.email);
-        }
+      // 1. ALWAYS refresh the active account first (if healthy)
+      if (active && !active.isBanned && active.status !== 'banned' && active.status !== 'auth_failed') {
+        accountsToRefresh.push(active);
+      }
+
+      // 2. Select background accounts in batch (oldest lastRefreshedAt first)
+      const backgroundBatchSize = EXTENSION_DEFAULTS.BACKGROUND_REFRESH_BATCH_SIZE;
+      const otherEligible = eligibleAccounts.filter((a) => a.email !== active?.email);
+
+      otherEligible.sort((a, b) => {
+        const tA = a.lastRefreshedAt ? new Date(a.lastRefreshedAt).getTime() : 0;
+        const tB = b.lastRefreshedAt ? new Date(b.lastRefreshedAt).getTime() : 0;
+        return tA - tB;
+      });
+
+      const backgroundChunk = otherEligible.slice(0, backgroundBatchSize);
+      accountsToRefresh.push(...backgroundChunk);
+
+      // 3. Batch execute refresh concurrently
+      if (accountsToRefresh.length > 0) {
+        await Promise.all(
+          accountsToRefresh.map(async (target) => {
+            try {
+              await this.refreshAccountQuota(target.email, true);
+            } catch (err) {
+              console.warn(`[Antigravity Swap] Background refresh error for ${target.email}:`, err);
+            }
+          })
+        );
       }
 
       await this.checkAutoSwitch();
     } finally {
+      this.isBackgroundRefreshing = false;
       this.storage.releaseRefreshLease();
+      this._onDidChangeState.fire();
     }
   }
 
   /**
-   * Resolves the quota percentage for an account based on selected target:
-   * - 'total': uses averageQuotaPercentage.
-   * - 'gemini': uses Weekly quota for Free accounts, or 5-Hour window for Pro/Ultra accounts.
-   * - 'claude': uses Weekly quota for Free accounts, or 5-Hour window for Pro/Ultra accounts.
+   * Resolves the effective target quota for an account based on the selected target:
+   * - 'total':
+   *   - Free tier: weeklyQuotaPercentage (overall capacity).
+   *   - Pro/Ultra: Math.min(fiveHourQuotaPercentage, weeklyQuotaPercentage) because usable instant
+   *     quota is constrained by both the 5h window limit AND weekly plan capacity.
+   * - 'gemini':
+   *   - Free tier: Gemini group weekly quota only.
+   *   - Pro/Ultra: Math.min(Gemini 5h window, Gemini weekly quota) to avoid switching to accounts with full 5h window but exhausted weekly quota.
+   * - 'claude':
+   *   - Free tier: Claude & GPT group weekly quota only.
+   *   - Pro/Ultra: Math.min(Claude 5h window, Claude weekly quota) to avoid switching to accounts with full 5h window but exhausted weekly quota.
    */
   public getAccountTargetQuota(account: AccountInfo, target: AutoSwitchTarget = 'total'): number {
-    if (target === 'total') {
-      return account.averageQuotaPercentage ?? 0;
-    }
-
     const isFree = !account.tierBadge || account.tierBadge === 'STANDARD FREE' || account.accountType?.toLowerCase().includes('free') === true;
     const quotas = account.quotas || [];
-    const fiveHourQuotas = quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
     const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
+    // 5h quotas only relevant for paid tiers
+    const fiveHourQuotas = isFree ? [] : quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
+
+    if (target === 'total') {
+      const pWk = account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+      if (isFree) {
+        return pWk;
+      }
+      const p5h = account.fiveHourQuotaPercentage;
+      if (p5h !== undefined) {
+        return Math.min(p5h, pWk);
+      }
+      return pWk;
+    }
 
     if (target === 'gemini') {
       const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
       const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
       const gemini5h = geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash'));
 
+      if (!geminiGroup && !geminiWeekly && !gemini5h) {
+        // No Gemini-specific quota data — cannot determine Gemini quota
+        return 0;
+      }
+
       if (isFree) {
+        // Free: only weekly quota exists for Gemini group
         if (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) {
           return geminiWeekly.percentage;
         }
-        if (gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0) {
-          return gemini5h.percentage;
+        if (geminiGroup?.buckets?.[0]?.percentage !== undefined) {
+          return geminiGroup.buckets[0].percentage;
         }
-        return account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+        return 0;
       } else {
-        if (gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0) {
-          return gemini5h.percentage;
+        // Pro/Ultra: Instant usable capacity is constrained by BOTH 5h rolling window AND weekly quota!
+        // If 5h is 100% but weekly is near 0%, user will immediately hit weekly depletion after 1 prompt.
+        const p5h = (gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0) ? gemini5h.percentage : undefined;
+        const pWk = (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) ? geminiWeekly.percentage : undefined;
+
+        if (p5h !== undefined && pWk !== undefined) {
+          return Math.min(p5h, pWk);
         }
-        if (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) {
-          return geminiWeekly.percentage;
+        if (p5h !== undefined) return p5h;
+        if (pWk !== undefined) return pWk;
+        if (geminiGroup?.buckets?.[0]?.percentage !== undefined) {
+          return geminiGroup.buckets[0].percentage;
         }
-        return account.fiveHourQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+        return 0;
       }
     }
 
@@ -984,22 +1072,35 @@ export class AccountManager {
       const claudeWeekly = claudeGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
       const claude5h = claudeGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
 
+      if (!claudeGroup && !claudeWeekly && !claude5h) {
+        // No Claude/GPT-specific quota data — cannot determine Claude quota
+        return 0;
+      }
+
       if (isFree) {
+        // Free: only weekly quota exists for Claude & GPT group
         if (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) {
           return claudeWeekly.percentage;
         }
-        if (claude5h && !claude5h.disabled && claude5h.percentage >= 0) {
-          return claude5h.percentage;
+        if (claudeGroup?.buckets?.[0]?.percentage !== undefined) {
+          return claudeGroup.buckets[0].percentage;
         }
-        return account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+        return 0;
       } else {
-        if (claude5h && !claude5h.disabled && claude5h.percentage >= 0) {
-          return claude5h.percentage;
+        // Pro/Ultra: Instant usable capacity is constrained by BOTH 5h rolling window AND weekly quota!
+        // If 5h is 100% but weekly is near 0%, user will immediately hit weekly depletion after 1 prompt.
+        const p5h = (claude5h && !claude5h.disabled && claude5h.percentage >= 0) ? claude5h.percentage : undefined;
+        const pWk = (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) ? claudeWeekly.percentage : undefined;
+
+        if (p5h !== undefined && pWk !== undefined) {
+          return Math.min(p5h, pWk);
         }
-        if (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) {
-          return claudeWeekly.percentage;
+        if (p5h !== undefined) return p5h;
+        if (pWk !== undefined) return pWk;
+        if (claudeGroup?.buckets?.[0]?.percentage !== undefined) {
+          return claudeGroup.buckets[0].percentage;
         }
-        return account.fiveHourQuotaPercentage ?? account.averageQuotaPercentage ?? 0;
+        return 0;
       }
     }
 
@@ -1007,11 +1108,14 @@ export class AccountManager {
   }
 
   /**
-   * Resolves the protection quota percentage for an account based on selected target:
-   * - 'total': returns the account's total quota percentage (averageQuotaPercentage).
-   * - 'gemini': returns the account's weekly Gemini quota percentage (if tracked).
-   * - 'claude': returns the account's weekly Claude & GPT quota percentage (if tracked).
-   * Returns undefined if no relevant quota is tracked.
+   * Resolves the PROTECTION quota (always weekly-based) for an account:
+   * - 'total': total averageQuotaPercentage.
+   * - 'gemini': Gemini group weekly quota only (never combined totals).
+   * - 'claude': Claude & GPT group weekly quota only (never combined totals).
+   * Returns undefined when no group-specific weekly data is available (protection check skipped).
+   *
+   * For free tier: protection quota == primary quota (both are weekly).
+   * For Pro/Ultra: primary = 5h (checked separately), protection = weekly (long-term capacity).
    */
   public getAccountProtectionQuota(account: AccountInfo, target: AutoSwitchTarget = 'total'): number | undefined {
     if (target === 'total') {
@@ -1027,9 +1131,7 @@ export class AccountManager {
       if (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) {
         return geminiWeekly.percentage;
       }
-      if (account.weeklyQuotaPercentage !== undefined && !account.claudeGptGroup?.weekly) {
-        return account.weeklyQuotaPercentage;
-      }
+      // Do NOT fall back to combined weeklyQuotaPercentage — it mixes Gemini + Claude
       return undefined;
     }
 
@@ -1039,9 +1141,7 @@ export class AccountManager {
       if (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) {
         return claudeWeekly.percentage;
       }
-      if (account.weeklyQuotaPercentage !== undefined && !account.geminiGroup?.weekly) {
-        return account.weeklyQuotaPercentage;
-      }
+      // Do NOT fall back to combined weeklyQuotaPercentage — it mixes Gemini + Claude
       return undefined;
     }
 
@@ -1088,7 +1188,7 @@ export class AccountManager {
 
       // Find candidates that have healthy quota for this target and are not near protection limit
       const candidates = this.accounts.filter((a) => {
-        if (a.email === active.email || a.isBanned || a.status !== 'active') return false;
+        if (a.email === active.email || a.isBanned || (a.status !== 'healthy' && a.status !== 'active')) return false;
         // Primary target quota must be strictly above threshold
         if (this.getAccountTargetQuota(a, target) <= threshold) return false;
         // Protection layer: candidate's protection quota (weekly for gemini/claude, total for total) must also be above protectionThreshold
@@ -1130,8 +1230,27 @@ export class AccountManager {
         vscode.window.showWarningMessage(
           `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
         );
+        this.lastNotifiedDepletionKey = undefined;
         await this.switchAccount(candidate.email);
+      } else if (this.accounts.length > 1) {
+        // More than 1 account exists but none have available quota / healthy credentials
+        const depletionKey = `${active.email}:${target}:${isAuthFailed ? 'auth' : isBanned ? 'banned' : isProtectionTriggered ? 'prot' : 'depleted'}`;
+        if (this.lastNotifiedDepletionKey !== depletionKey) {
+          this.lastNotifiedDepletionKey = depletionKey;
+          const msg = `[Antigravity Swap] Auto-Switch: No healthy standby accounts available for ${targetLabel}.`;
+
+          vscode.window.showErrorMessage(msg, 'Add Account', 'Open Dashboard').then(async (selection) => {
+            if (selection === 'Add Account') {
+              await this.addAccountViaOAuth();
+            } else if (selection === 'Open Dashboard') {
+              await vscode.commands.executeCommand('antigravitySwap.openDashboard');
+            }
+          });
+        }
       }
+    } else {
+      // Account is healthy and within quota limits: reset depletion notification key
+      this.lastNotifiedDepletionKey = undefined;
     }
   }
 
@@ -1157,7 +1276,7 @@ export class AccountManager {
           avatarUrl: disc.avatarUrl,
           isActive: isCurrentSession,
           addedAt: new Date().toISOString(),
-          status: hasToken ? 'active' : 'auth_failed',
+          status: hasToken ? 'healthy' : 'auth_failed',
           statusMessage: hasToken ? 'Discovered' : 'Click Re-login to authenticate',
           isBanned: false,
           quotas: [],

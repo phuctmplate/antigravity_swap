@@ -108,9 +108,13 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             vscode.env.openExternal(vscode.Uri.parse(data.url));
           }
           break;
-        case 'switchAccount':
-          await this.accountManager.switchAccount(data.email, data.isManual === true);
+        case 'switchAccount': {
+          const ok = await this.accountManager.switchAccount(data.email, data.isManual === true, true);
+          if (ok) {
+            this.showToast(`Switched to: ${data.email}!`, 'success');
+          }
           break;
+        }
         case 'relogin':
         case 'reloginAccount':
           await this.accountManager.reloginAccount(data.email);
@@ -119,7 +123,12 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
           break;
         case 'refreshAccount':
-          await this.accountManager.refreshAccountQuota(data.email);
+          await this.accountManager.refreshAccountQuota(data.email, true);
+          this.showToast(`Refreshed quota for ${data.email}.`, 'success');
+          // Re-evaluate auto-switch immediately with the fresh quota data
+          if (this.accountManager.isAutoSwitchEnabled()) {
+            await this.accountManager.checkAutoSwitch();
+          }
           break;
         case 'addOAuth':
           await vscode.commands.executeCommand('antigravitySwap.addAccount');
@@ -149,19 +158,22 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
                     increment: increment > 0 ? increment : undefined
                   });
                 });
-                vscode.window.showInformationMessage('⚡ Selected account quotas refreshed successfully!');
               }
             );
+            this.showToast('Selected account quotas refreshed successfully!', 'success');
           }
           break;
         case 'removeMultipleAccounts':
           if (Array.isArray(data.emails) && data.emails.length > 0) {
-            await this.accountManager.removeMultipleAccounts(data.emails);
+            const count = data.emails.length;
+            await this.accountManager.removeMultipleAccounts(data.emails, true);
+            this.showToast(`Removed ${count} account${count > 1 ? 's' : ''}.`, 'info');
           }
           break;
         case 'removeAccount':
           if (data.confirmed) {
-            await this.accountManager.removeAccount(data.email);
+            await this.accountManager.removeAccount(data.email, true);
+            this.showToast(`Account ${data.email} removed.`, 'info');
           } else {
             const confirm = await vscode.window.showWarningMessage(
               `Remove account ${data.email} from Antigravity Swap?`,
@@ -169,7 +181,8 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
               'Remove'
             );
             if (confirm === 'Remove') {
-              await this.accountManager.removeAccount(data.email);
+              await this.accountManager.removeAccount(data.email, true);
+              this.showToast(`Account ${data.email} removed.`, 'info');
             }
           }
           break;
@@ -190,7 +203,21 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       }
     } catch (err: any) {
       console.error('[Antigravity Swap] Webview command error:', err);
-      vscode.window.showErrorMessage(`Action failed: ${err.message}`);
+      this.showToast(`Action failed: ${err.message}`, 'error');
+    }
+  }
+
+  public showToast(message: string, level: 'info' | 'success' | 'warning' | 'error' = 'info'): void {
+    const toastMessage = {
+      type: 'toast',
+      message,
+      level
+    };
+    if (this._view) {
+      this._view.webview.postMessage(toastMessage);
+    }
+    if (this._panel) {
+      this._panel.webview.postMessage(toastMessage);
     }
   }
 
@@ -210,6 +237,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       activeAccount,
       overall,
       heartbeat,
+      isBackgroundRefreshing: this.accountManager.isBackgroundRefreshingState(),
       autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
       autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
       autoSwitchThreshold: this.accountManager.getAutoSwitchThreshold(),

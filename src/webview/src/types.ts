@@ -48,7 +48,7 @@ export interface Account {
   lastHeartbeatAt?: string;
   accountType?: string;
   tierBadge?: string;
-  status: 'active' | 'low_balance' | 'auth_failed' | 'banned';
+  status: 'healthy' | 'active' | 'low_balance' | 'auth_failed' | 'banned';
   isBanned?: boolean;
   banReason?: string;
   statusMessage?: string;
@@ -100,6 +100,7 @@ export interface WebviewState {
     lastHeartbeat: string;
     intervalSeconds: number;
   };
+  isBackgroundRefreshing?: boolean;
   autoSwitchEnabled?: boolean;
   autoSwitchTarget?: AutoSwitchTarget;
   autoSwitchThreshold?: number;

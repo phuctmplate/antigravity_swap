@@ -49,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             variant="outline"
             className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
           >
-            v1.2.1
+            v1.2.2
           </Badge>
         </div>
       </div>
@@ -62,7 +62,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             {/* 1. Instant Quota Gauge */}
             <div
               className="flex flex-col items-center gap-1.5 min-w-24 shrink-0 cursor-help"
-              title={`Instant Quota (${instantPct}%): Usable quota available right now across all healthy accounts (combines 5h window and free-tier weekly quotas).`}
+              title={`Instant Quota (${instantPct}%): Usable quota in the current session across all accounts (5-Hour rolling window, modulated by remaining weekly capacity).`}
             >
               <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
                 <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 80 80">
@@ -92,7 +92,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
                   <span className="text-base font-bold text-foreground tracking-tight">{instantPct}%</span>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center">
+              <div className="flex flex-col items-center text-center gap-1 mt-0.5">
                 <span className="text-xs font-bold text-foreground tracking-tight">Instant</span>
                 <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">Available Right Now</span>
               </div>
@@ -134,7 +134,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
                   <span className="text-base font-bold text-foreground tracking-tight">{overallPct}%</span>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center">
+              <div className="flex flex-col items-center text-center gap-1 mt-0.5">
                 <span className="text-xs font-bold text-foreground tracking-tight">Overall</span>
                 <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">Total Weekly Capacity</span>
               </div>

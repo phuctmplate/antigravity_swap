@@ -5,7 +5,7 @@ import { ControllerBar } from './components/ControllerBar';
 import { AccountList } from './components/AccountList';
 import { ModelQuotas } from './components/ModelQuotas';
 import { AutoSwitchBanner } from './components/AutoSwitchBanner';
-import { Toaster } from './components/ui/sonner';
+import { Toaster, toast } from './components/ui/sonner';
 import { getVsCodeApi } from './vscode';
 import { DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT, DEFAULT_AUTO_SWITCH_TARGET } from './constants';
 
@@ -70,6 +70,20 @@ export const AppContent: React.FC = () => {
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = event.data;
+        if (data && data.type === 'toast') {
+          const msg = data.message || '';
+          if (data.level === 'success') {
+            toast.success(msg);
+          } else if (data.level === 'warning') {
+            toast.warning(msg);
+          } else if (data.level === 'error') {
+            toast.error(msg);
+          } else {
+            toast.info(msg);
+          }
+          return;
+        }
+
         if (data && data.type === 'stateUpdate') {
           const accounts = data.accounts || [];
           const activeAccount = data.activeAccount || null;
@@ -86,6 +100,7 @@ export const AppContent: React.FC = () => {
             activeAccount,
             overall: data.overall,
             heartbeat: data.heartbeat,
+            isBackgroundRefreshing: data.isBackgroundRefreshing === true,
             autoSwitchEnabled: data.autoSwitchEnabled === true,
             autoSwitchTarget: data.autoSwitchTarget || DEFAULT_AUTO_SWITCH_TARGET,
             autoSwitchThreshold: typeof data.autoSwitchThreshold === 'number' ? data.autoSwitchThreshold : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
@@ -154,6 +169,7 @@ export const AppContent: React.FC = () => {
               activeAccount={state.activeAccount}
               selectedEmail={selectedEmail}
               onSelectAccount={setSelectedEmail}
+              isBackgroundRefreshing={state.isBackgroundRefreshing}
             />
           </div>
 

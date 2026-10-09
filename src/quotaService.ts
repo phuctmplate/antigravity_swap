@@ -11,7 +11,7 @@ import {
   QuotaGroup
 } from './types';
 import { OAuthService } from './oauthService';
-import { API_ENDPOINTS, TIER_WEIGHTS, MODEL_WEIGHTS } from './constants';
+import { API_ENDPOINTS, TIER_WEIGHTS, MODEL_WEIGHTS, EXTENSION_DEFAULTS } from './constants';
 
 export interface QuotaFetchResult {
   quotas: ModelQuota[];
@@ -77,7 +77,24 @@ export class QuotaService {
     }
 
     try {
-      const quotaData = await this.fetchLiveQuotaData(currentTokens.accessToken);
+      let quotaData = await this.fetchLiveQuotaData(currentTokens.accessToken);
+
+      const hasGroups = (quotaData?.response?.groups || quotaData?.groups || []).length > 0;
+      const hasModels = Object.keys(quotaData?.models || {}).length > 0;
+      const hasTierData = !!(quotaData?.paidTier || quotaData?.userTier || quotaData?.currentTier || quotaData?.cloudaicompanionProject);
+
+      // If initial fetch returned empty (e.g. freshly issued OAuth token propagating on Google backend), retry once with safe backoff
+      if (!hasGroups && !hasModels && !hasTierData) {
+        const retryDelayMs = EXTENSION_DEFAULTS.TOKEN_PROPAGATION_RETRY_DELAY_MS;
+        console.log(`[QuotaService] First quota probe returned empty for ${account.email}, retrying after ${retryDelayMs}ms...`);
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+        try {
+          const retryData = await this.fetchLiveQuotaData(currentTokens.accessToken);
+          if ((retryData?.groups || retryData?.response?.groups || []).length > 0 || Object.keys(retryData?.models || {}).length > 0) {
+            quotaData = retryData;
+          }
+        } catch {}
+      }
 
       // Debug: log top-level keys and tier fields so we can diagnose misdetection
       console.log(`[QuotaService] Raw response keys for ${account.email}: ${Object.keys(quotaData || {}).join(', ')}`);
@@ -130,7 +147,7 @@ export class QuotaService {
             has5HourQuota: account.has5HourQuota ?? false,
             accountType: account.accountType || 'Google Account',
             tierBadge: account.tierBadge || 'STANDARD FREE',
-            status: isAuthExpired ? 'auth_failed' : (account.status || 'active'),
+            status: isAuthExpired ? 'auth_failed' : (account.status || 'healthy'),
             isBanned: false,
             statusMessage: isAuthExpired ? 'Credentials expired. Re-login required.' : retryErr.message
           };
@@ -153,7 +170,7 @@ export class QuotaService {
         hasWeeklyQuota: account.hasWeeklyQuota ?? false,
         accountType: account.accountType || 'Google Account',
         tierBadge: account.tierBadge || 'STANDARD FREE',
-        status: errMsg.includes('401') ? 'auth_failed' : (account.status || 'active'),
+        status: errMsg.includes('401') ? 'auth_failed' : (account.status || 'healthy'),
         isBanned: false,
         statusMessage: errMsg.includes('401') ? 'Credentials expired. Re-login required.' : 'Unable to fetch latest metrics from Google API (temporary).'
       };
@@ -189,7 +206,7 @@ export class QuotaService {
         hasWeeklyQuota: account.hasWeeklyQuota ?? false,
         accountType: account.accountType || 'Google Account',
         tierBadge: account.tierBadge || 'STANDARD FREE',
-        status: account.status || 'active',
+        status: account.status || 'healthy',
         isBanned: account.isBanned || false,
         statusMessage: 'Unable to fetch latest metrics from Google API (temporary).'
       };
@@ -452,7 +469,7 @@ export class QuotaService {
     const geminiAvailable = (geminiWk ?? 0) > 0 && (gemini5h === undefined || gemini5h > 0);
     const claudeAvailable = (claudeWk ?? 0) > 0 && (claude5h === undefined || claude5h > 0);
 
-    let status: AccountStatus = 'active';
+    let status: AccountStatus = 'healthy';
     let statusMessage: string | undefined;
 
     if (!geminiAvailable && !claudeAvailable) {
@@ -1314,17 +1331,24 @@ export class QuotaService {
       sumOverallWeighted += pWeekly * weight;
       totalOverallWeight += weight;
 
-      // 2. Instant quota: 5-hour rolling window for paid/pro accounts, weekly for free tier
+      // 2. Instant quota: usable burst quota in current session.
+      // - For Free accounts: Weekly plan quota is the only available window.
+      // - For Paid accounts: 5-Hour rolling window is modulated by safe weekly capacity.
+      //   Above 40% weekly (safe burst boundary), 5h is 100% usable (HealthFactor = 1.0).
+      //   Below 40% weekly, weekly fuel attenuates 5h via smooth square-root decay (Math.sqrt(Weekly / 40)).
       let pInstant = pWeekly;
       if (!isFree) {
-        if (acc.fiveHourQuotaPercentage !== undefined) {
-          pInstant = acc.fiveHourQuotaPercentage;
-        } else if (acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled && acc.geminiGroup.fiveHour.percentage >= 0) {
+        let p5h: number | undefined = acc.fiveHourQuotaPercentage;
+        if (p5h === undefined && acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled && acc.geminiGroup.fiveHour.percentage >= 0) {
           const g5h = acc.geminiGroup.fiveHour.percentage;
           const c5h = (acc.claudeGptGroup?.fiveHour && !acc.claudeGptGroup.fiveHour.disabled && acc.claudeGptGroup.fiveHour.percentage >= 0)
             ? acc.claudeGptGroup.fiveHour.percentage
             : undefined;
-          pInstant = c5h !== undefined ? Math.round((g5h * MODEL_WEIGHTS.GEMINI + c5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE)) : g5h;
+          p5h = c5h !== undefined ? Math.round((g5h * MODEL_WEIGHTS.GEMINI + c5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE)) : g5h;
+        }
+        if (p5h !== undefined) {
+          const healthFactor = pWeekly >= 40 ? 1.0 : Math.sqrt(Math.max(0, pWeekly) / 40);
+          pInstant = Math.round(p5h * healthFactor);
         }
       }
       sumInstantWeighted += pInstant * weight;

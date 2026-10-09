@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 (2026-10-10)
+
+- Improved instant quota calculation logic for better accuracy and responsiveness.
+- Refined notification delivery and in-app feedback behavior.
+- Enhanced header overview gauges, layout spacing, and tooltip descriptions for clearer status visibility.
+
 ## 1.2.1 (2026-10-10)
 
 - Optimized OAuth session lifecycle and multi-instance authentication handling.

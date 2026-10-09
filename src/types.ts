@@ -38,7 +38,7 @@ export interface ModelQuota {
   refreshText?: string;
 }
 
-export type AccountStatus = 'active' | 'low_balance' | 'auth_failed' | 'banned' | 'expired' | 'error';
+export type AccountStatus = 'healthy' | 'active' | 'low_balance' | 'auth_failed' | 'banned' | 'expired' | 'error';
 export type AccountTierType = 'ULTRA' | 'PRO' | 'ENTERPRISE' | 'AI PREMIUM' | 'STANDARD FREE' | 'CUSTOM';
 
 export interface AccountInfo {
@@ -121,6 +121,7 @@ export interface WebviewStateMessage {
   overall: OverallQuotaSummary;
   activeAccount?: AccountInfo;
   isLoading: boolean;
+  isBackgroundRefreshing?: boolean;
   autoSwitchEnabled: boolean;
   autoSwitchTarget?: AutoSwitchTarget;
   autoSwitchThreshold?: number;
