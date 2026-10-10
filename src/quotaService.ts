@@ -13,6 +13,7 @@ import {
 import { OAuthService } from './oauthService';
 import { API_ENDPOINTS, TIER_WEIGHTS, MODEL_WEIGHTS, EXTENSION_DEFAULTS } from './constants';
 
+
 export interface QuotaFetchResult {
   quotas: ModelQuota[];
   quotaGroups?: QuotaGroup[];
@@ -32,6 +33,24 @@ export interface QuotaFetchResult {
   status: AccountStatus;
   isBanned: boolean;
   statusMessage?: string;
+}
+
+/**
+ * Calculates the usable instant burst quota for a rolling window (5h)
+ * modulated by remaining weekly fuel capacity.
+ * - Above 40% weekly (safe burst boundary): rolling window is 100% usable (HealthFactor = 1.0).
+ * - Below 40% weekly: weekly fuel attenuates 5h via smooth square-root decay (Math.sqrt(Weekly / 40)).
+ */
+export function calculateModulatedInstantQuota(p5h: number, pWeekly?: number): number {
+  if (pWeekly === undefined) {
+    return p5h;
+  }
+  const SAFE_WEEKLY_THRESHOLD = 40;
+  const healthFactor =
+    pWeekly >= SAFE_WEEKLY_THRESHOLD
+      ? 1.0
+      : Math.sqrt(Math.max(0, pWeekly) / SAFE_WEEKLY_THRESHOLD);
+  return Math.round(p5h * healthFactor);
 }
 
 export class QuotaService {
@@ -1316,6 +1335,20 @@ export class QuotaService {
         continue;
       }
 
+      // Skip accounts that have no quota data yet (e.g. newly added, first fetch pending)
+      const hasQuotaData =
+        (Array.isArray(acc.quotas) && acc.quotas.length > 0) ||
+        acc.geminiGroup != null ||
+        acc.claudeGptGroup != null ||
+        (Array.isArray(acc.quotaGroups) && acc.quotaGroups.length > 0) ||
+        acc.weeklyQuotaPercentage !== undefined ||
+        acc.fiveHourQuotaPercentage !== undefined ||
+        (acc.lastRefreshedAt !== undefined && acc.averageQuotaPercentage !== undefined);
+
+      if (!hasQuotaData) {
+        continue;
+      }
+
       healthyCount++;
 
       // Weekly / Capacity percentage of this account (Gemini 70% + Claude 30%)
@@ -1347,8 +1380,7 @@ export class QuotaService {
           p5h = c5h !== undefined ? Math.round((g5h * MODEL_WEIGHTS.GEMINI + c5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE)) : g5h;
         }
         if (p5h !== undefined) {
-          const healthFactor = pWeekly >= 40 ? 1.0 : Math.sqrt(Math.max(0, pWeekly) / 40);
-          pInstant = Math.round(p5h * healthFactor);
+          pInstant = calculateModulatedInstantQuota(p5h, pWeekly);
         }
       }
       sumInstantWeighted += pInstant * weight;

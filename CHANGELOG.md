@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.3 (2026-10-10)
+
+- Refined status bar tooltip with a clearer layout and more accurate session quota details.
+- Fixed newly added accounts displaying 0% Total Quota before metrics are fetched, preventing uninitialized accounts from skewing Instant and Overall pool gauges.
+
 ## 1.2.2 (2026-10-10)
 
 - Improved instant quota calculation logic for better accuracy and responsiveness.

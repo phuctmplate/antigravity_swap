@@ -47,7 +47,7 @@ export class HeartbeatService implements vscode.Disposable {
     let health: 'healthy' | 'warning' | 'error' = 'healthy';
     if (!active || active.isBanned || active.status === 'auth_failed' || active.status === 'banned') {
       health = 'error';
-    } else if (active.status === 'low_balance' || active.averageQuotaPercentage < 15) {
+    } else if (active.status === 'low_balance' || (active.averageQuotaPercentage !== undefined && active.averageQuotaPercentage < 15)) {
       health = 'warning';
     }
 
@@ -64,7 +64,7 @@ export class HeartbeatService implements vscode.Disposable {
     let health: 'healthy' | 'warning' | 'error' = 'healthy';
     if (!active || active.isBanned || active.status === 'auth_failed' || active.status === 'banned') {
       health = 'error';
-    } else if (active.status === 'low_balance' || active.averageQuotaPercentage < 15) {
+    } else if (active.status === 'low_balance' || (active.averageQuotaPercentage !== undefined && active.averageQuotaPercentage < 15)) {
       health = 'warning';
     }
 

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AccountInfo, OAuthTokens, OverallQuotaSummary, AutoSwitchTarget } from './types';
 import { StorageService } from './storage';
 import { OAuthService } from './oauthService';
-import { QuotaService } from './quotaService';
+import { QuotaService, calculateModulatedInstantQuota } from './quotaService';
 import { CONFIG_KEYS, EXTENSION_DEFAULTS } from './constants';
 
 export class AccountManager {
@@ -18,6 +18,7 @@ export class AccountManager {
   private static readonly OAUTH_COOLDOWN_MS = EXTENSION_DEFAULTS.OAUTH_COOLDOWN_MS;
   private lastNotifiedDepletionKey?: string;
   private isBackgroundRefreshing = false;
+  private readonly refreshingEmails = new Set<string>();
   private readonly _onDidChangeState = new vscode.EventEmitter<void>();
   public readonly onDidChangeState = this._onDidChangeState.event;
 
@@ -453,7 +454,7 @@ export class AccountManager {
           status: 'healthy',
           isBanned: false,
           quotas: [],
-          averageQuotaPercentage: 0,
+          averageQuotaPercentage: undefined,
           hasWeeklyQuota: false,
           has5HourQuota: false,
           accountType: 'Standard Free',
@@ -536,7 +537,7 @@ export class AccountManager {
           isBanned: false,
           statusMessage: undefined,
           quotas: [],
-          averageQuotaPercentage: 0,
+          averageQuotaPercentage: undefined,
           hasWeeklyQuota: false,
           has5HourQuota: false,
           accountType: 'Standard Free',
@@ -619,7 +620,7 @@ export class AccountManager {
           status: 'healthy',
           isBanned: false,
           quotas: [],
-          averageQuotaPercentage: 0,
+          averageQuotaPercentage: undefined,
           hasWeeklyQuota: false,
           has5HourQuota: false,
           accountType: 'Standard Free',
@@ -681,7 +682,7 @@ export class AccountManager {
         status: 'healthy',
         isBanned: false,
         quotas: [],
-        averageQuotaPercentage: 0,
+        averageQuotaPercentage: undefined,
         hasWeeklyQuota: false,
         has5HourQuota: false,
         accountType: 'Standard Free',
@@ -878,23 +879,25 @@ export class AccountManager {
       }
     }
 
-    // Set early in-flight timestamp to prevent concurrent double-triggers
-    acc.lastRefreshedAt = new Date().toISOString();
-
-    const tokens = await this.storage.getAccountTokens(email);
-    if (!tokens || !tokens.accessToken) {
-      acc.status = 'auth_failed';
-      acc.statusMessage = 'Credentials missing. Re-login required.';
-      acc.quotas = [];
-      acc.averageQuotaPercentage = 0;
-      acc.fiveHourQuotaPercentage = undefined;
-      acc.weeklyQuotaPercentage = undefined;
-      await this.storage.saveAccounts(this.accounts);
-      this._onDidChangeState.fire();
+    if (this.refreshingEmails.has(email)) {
       return;
     }
+    this.refreshingEmails.add(email);
 
     try {
+      const tokens = await this.storage.getAccountTokens(email);
+      if (!tokens || !tokens.accessToken) {
+        acc.status = 'auth_failed';
+        acc.statusMessage = 'Credentials missing. Re-login required.';
+        acc.quotas = [];
+        acc.averageQuotaPercentage = 0;
+        acc.fiveHourQuotaPercentage = undefined;
+        acc.weeklyQuotaPercentage = undefined;
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
+        return;
+      }
+
       const res = await this.quotaService.fetchAccountQuotas(acc, tokens, async (newTokens) => {
         await this.storage.saveAccountTokens(email, newTokens);
       });
@@ -925,6 +928,8 @@ export class AccountManager {
       this._onDidChangeState.fire();
     } catch (err) {
       console.warn(`[Antigravity Swap] Error refreshing quota for ${email}:`, err);
+    } finally {
+      this.refreshingEmails.delete(email);
     }
   }
 
@@ -999,17 +1004,16 @@ export class AccountManager {
   }
 
   /**
-   * Resolves the effective target quota for an account based on the selected target:
+   * Resolves the effective instant target quota for an account based on the selected target:
    * - 'total':
    *   - Free tier: weeklyQuotaPercentage (overall capacity).
-   *   - Pro/Ultra: Math.min(fiveHourQuotaPercentage, weeklyQuotaPercentage) because usable instant
-   *     quota is constrained by both the 5h window limit AND weekly plan capacity.
+   *   - Pro/Ultra: 5-Hour rolling window modulated by weekly capacity (smooth square-root decay below 40% safe boundary).
    * - 'gemini':
    *   - Free tier: Gemini group weekly quota only.
-   *   - Pro/Ultra: Math.min(Gemini 5h window, Gemini weekly quota) to avoid switching to accounts with full 5h window but exhausted weekly quota.
+   *   - Pro/Ultra: Gemini 5-Hour rolling window modulated by Gemini weekly capacity.
    * - 'claude':
    *   - Free tier: Claude & GPT group weekly quota only.
-   *   - Pro/Ultra: Math.min(Claude 5h window, Claude weekly quota) to avoid switching to accounts with full 5h window but exhausted weekly quota.
+   *   - Pro/Ultra: Claude 5-Hour rolling window modulated by Claude weekly capacity.
    */
   public getAccountTargetQuota(account: AccountInfo, target: AutoSwitchTarget = 'total'): number {
     const isFree = !account.tierBadge || account.tierBadge === 'STANDARD FREE' || account.accountType?.toLowerCase().includes('free') === true;
@@ -1025,7 +1029,7 @@ export class AccountManager {
       }
       const p5h = account.fiveHourQuotaPercentage;
       if (p5h !== undefined) {
-        return Math.min(p5h, pWk);
+        return calculateModulatedInstantQuota(p5h, pWk);
       }
       return pWk;
     }
@@ -1050,13 +1054,12 @@ export class AccountManager {
         }
         return 0;
       } else {
-        // Pro/Ultra: Instant usable capacity is constrained by BOTH 5h rolling window AND weekly quota!
-        // If 5h is 100% but weekly is near 0%, user will immediately hit weekly depletion after 1 prompt.
+        // Pro/Ultra: Instant usable capacity is 5h rolling window modulated by remaining weekly fuel capacity!
         const p5h = (gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0) ? gemini5h.percentage : undefined;
         const pWk = (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) ? geminiWeekly.percentage : undefined;
 
         if (p5h !== undefined && pWk !== undefined) {
-          return Math.min(p5h, pWk);
+          return calculateModulatedInstantQuota(p5h, pWk);
         }
         if (p5h !== undefined) return p5h;
         if (pWk !== undefined) return pWk;
@@ -1087,13 +1090,12 @@ export class AccountManager {
         }
         return 0;
       } else {
-        // Pro/Ultra: Instant usable capacity is constrained by BOTH 5h rolling window AND weekly quota!
-        // If 5h is 100% but weekly is near 0%, user will immediately hit weekly depletion after 1 prompt.
+        // Pro/Ultra: Instant usable capacity is 5h rolling window modulated by remaining weekly fuel capacity!
         const p5h = (claude5h && !claude5h.disabled && claude5h.percentage >= 0) ? claude5h.percentage : undefined;
         const pWk = (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) ? claudeWeekly.percentage : undefined;
 
         if (p5h !== undefined && pWk !== undefined) {
-          return Math.min(p5h, pWk);
+          return calculateModulatedInstantQuota(p5h, pWk);
         }
         if (p5h !== undefined) return p5h;
         if (pWk !== undefined) return pWk;
@@ -1280,7 +1282,7 @@ export class AccountManager {
           statusMessage: hasToken ? 'Discovered' : 'Click Re-login to authenticate',
           isBanned: false,
           quotas: [],
-          averageQuotaPercentage: 0,
+          averageQuotaPercentage: undefined,
           hasWeeklyQuota: false,
           has5HourQuota: false,
           accountType: 'Standard Free',

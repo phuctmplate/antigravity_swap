@@ -62,6 +62,15 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const claudeWeekly = claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
   const claude5h = claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
 
+  const hasQuotaData =
+    (quotas.length > 0 ||
+      geminiGroup != null ||
+      claudeGptGroup != null ||
+      account.weeklyQuotaPercentage != null ||
+      account.fiveHourQuotaPercentage != null ||
+      account.lastRefreshedAt != null) &&
+    account.averageQuotaPercentage != null;
+
   const getFillClass = quotaFillClass;
   const getTextColor = quotaTextClass;
 
@@ -376,13 +385,13 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 <Gauge className="w-3 h-3 text-muted-foreground/80 shrink-0" />
                 <span className="text-foreground/90 font-semibold">Total Quota Left</span>
               </span>
-              <span className={cn("font-bold font-mono text-[10px]", account.averageQuotaPercentage != null ? getTextColor(account.averageQuotaPercentage) : "text-muted-foreground")}>
-                {account.averageQuotaPercentage != null ? `${account.averageQuotaPercentage}%` : '—'}
+              <span className={cn("font-bold font-mono text-[10px]", hasQuotaData ? getTextColor(account.averageQuotaPercentage!) : "text-muted-foreground")}>
+                {hasQuotaData ? `${account.averageQuotaPercentage}%` : '—'}
               </span>
             </div>
             <Progress
-              value={account.averageQuotaPercentage ?? 0}
-              indicatorClassName={getFillClass(account.averageQuotaPercentage ?? 0)}
+              value={hasQuotaData ? (account.averageQuotaPercentage ?? 0) : 0}
+              indicatorClassName={hasQuotaData ? getFillClass(account.averageQuotaPercentage ?? 0) : "bg-transparent"}
               className="h-1.5 w-full"
             />
           </div>

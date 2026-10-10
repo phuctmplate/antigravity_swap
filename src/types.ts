@@ -63,7 +63,7 @@ export interface AccountInfo {
   geminiGroup?: QuotaGroup;
   claudeGptGroup?: QuotaGroup;
 
-  averageQuotaPercentage: number;
+  averageQuotaPercentage?: number;
   fiveHourQuotaPercentage?: number;
   weeklyQuotaPercentage?: number;
   fiveHourResetTime?: string;

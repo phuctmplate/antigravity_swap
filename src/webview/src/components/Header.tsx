@@ -49,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             variant="outline"
             className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
           >
-            v1.2.2
+            v1.2.3
           </Badge>
         </div>
       </div>
