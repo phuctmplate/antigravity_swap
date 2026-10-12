@@ -1,42 +1,47 @@
 # Changelog
 
+## 1.3.0 (2026-10-13)
+
+- **Instant Quota Concept**: Introduced the Instant Quota architecture representing immediately usable burst capacity right now, combining the 5-hour rolling burst window with weekly capacity modulation to prevent lockout.
+- **UI Rebalancing**: Refined twin half-circle gauges, chart contrast, softened active card colors, and updated shadow opacity.
+
 ## 1.2.3 (2026-10-10)
 
-- Refined status bar tooltip with a clearer layout and more accurate session quota details.
-- Fixed newly added accounts displaying 0% Total Quota before metrics are fetched, preventing uninitialized accounts from skewing Instant and Overall pool gauges.
+- **Status Bar Tooltip**: Refined layout and displayed more accurate session quota details.
+- **Account Initialization**: Fixed newly added accounts displaying 0% Total Quota before metrics are fetched, preventing uninitialized accounts from skewing pool gauges.
 
 ## 1.2.2 (2026-10-10)
 
-- Improved instant quota calculation logic for better accuracy and responsiveness.
-- Refined notification delivery and in-app feedback behavior.
-- Enhanced header overview gauges, layout spacing, and tooltip descriptions for clearer status visibility.
+- **Instant Quota Logic**: Improved calculation accuracy and responsiveness for session quotas.
+- **Notification Behavior**: Refined notification delivery and in-app feedback interactions.
+- **Overview Gauges**: Enhanced layout spacing, gauge scaling, and status tooltips.
 
 ## 1.2.1 (2026-10-10)
 
-- Optimized OAuth session lifecycle and multi-instance authentication handling.
-- Improved responsive layout for narrow sidebar widths.
-- UI/UX refinements and polished component styling.
-- Enhanced account import feedback and stability.
+- **OAuth Lifecycle**: Optimized token management and multi-instance authentication handling.
+- **Responsive Layout**: Improved sidebar adaptability for narrow viewport widths.
+- **UI/UX Polishing**: Refined component styling, borders, and interaction states.
+- **Account Import**: Enhanced detection feedback and stability during batch imports.
 
 ## 1.2.0 (2026-10-08)
 
-- Weekly Quota Protection: Automatically switches accounts before weekly model quota runs out to prevent lockout even if 5-hour rolling quota is still available.
-- Smarter Candidate Ranking: Prioritizes healthy accounts with both sufficient rolling window and weekly quota reserves.
-- Fixed auto-switch threshold input flickering.
-- Optimized background quota refresh.
-- Improved account cards.
+- **Weekly Quota Protection**: Automatically switches accounts before weekly quota runs out to prevent lockout even if 5-hour rolling quota remains.
+- **Candidate Ranking**: Prioritizes healthy accounts with both sufficient rolling window and weekly reserves.
+- **Threshold Input**: Fixed auto-switch percentage input flickering.
+- **Background Refresh**: Optimized periodic quota heartbeat polling.
+- **Account Cards**: Refined card visuals, status indicators, and badges.
 
 ## 1.1.0 (2026-10-05)
 
-- Real-time multi-instance state synchronization across open IDE windows.
-- Introduce Instant Quota (5-hour window) and Overall Quota (weekly plan) dual circular gauges.
-- Bidirectional settings synchronization with VS Code configuration.
-- Set default auto-switch target to Gemini and threshold to 2%.
-- UI/UX refinements and improved dashboard layout.
+- **State Synchronization**: Enabled real-time multi-instance state syncing across open IDE windows.
+- **Dual Gauges**: Introduced dual circular gauges for Instant Quota (5-hour window) and Overall Quota (weekly plan).
+- **Settings Sync**: Added bidirectional synchronization with VS Code workspace configuration.
+- **Auto-Switch Defaults**: Set default auto-switch target to Gemini and threshold to 2%.
+- **Dashboard Refinements**: Polished layout spacing, action buttons, and component styling.
 
 ## 1.0.0 (2026-10-03)
 
-- Multi-account management with zero-reload switching.
-- Real-time per-model quota tracking and countdown reset timers.
-- Google OAuth login and manual token authentication.
-- Customizable auto-switching on quota depletion.
+- **Zero-Reload Switching**: Seamless multi-account management without reloading the IDE window.
+- **Quota Tracking**: Real-time per-model quota tracking and countdown reset timers.
+- **Authentication**: Added Google OAuth login and manual token authentication support.
+- **Automated Switching**: Customizable auto-switch policies on quota depletion.

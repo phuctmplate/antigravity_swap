@@ -63,8 +63,7 @@ export const STORAGE_KEYS = {
   ACTIVE_ACCOUNT: 'antigravitySwap.activeEmail',
   AUTO_SWITCH: 'antigravitySwap.autoSwitch',
   AUTO_SWITCH_TARGET: 'antigravitySwap.autoSwitchTarget',
-  LOW_QUOTA_THRESHOLD: 'antigravitySwap.lowQuotaThreshold',
-  WEEKLY_QUOTA_PROTECTION_THRESHOLD: 'antigravitySwap.weeklyQuotaProtectionThreshold'
+  LOW_QUOTA_THRESHOLD: 'antigravitySwap.lowQuotaThreshold'
 } as const;
 
 /**
@@ -76,8 +75,7 @@ export const CONFIG_KEYS = {
   AUTO_SWITCH_WHEN_LOW: 'autoSwitchWhenQuotaLow',
   LOW_QUOTA_THRESHOLD: 'lowQuotaThresholdPercent',
   ENABLE_IDE_PATCH: 'enableIdeExtensionPatch',
-  AUTO_SWITCH_TARGET: 'autoSwitchTarget',
-  WEEKLY_QUOTA_PROTECTION_THRESHOLD: 'weeklyQuotaProtectionThresholdPercent'
+  AUTO_SWITCH_TARGET: 'autoSwitchTarget'
 } as const;
 
 /**
@@ -86,8 +84,7 @@ export const CONFIG_KEYS = {
 export const EXTENSION_DEFAULTS = {
   DEFAULT_HEARTBEAT_SECONDS: 30,
   DEFAULT_AUTO_SWITCH_ENABLED: false,
-  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 2,
-  DEFAULT_WEEKLY_QUOTA_PROTECTION_THRESHOLD_PERCENT: 2,
+  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 5,
   DEFAULT_AUTO_SWITCH_TARGET: 'gemini',
   ACCOUNT_REFRESH_COOLDOWN_MS: 15000,
   GLOBAL_REFRESH_COOLDOWN_MS: 15000,

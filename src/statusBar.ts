@@ -41,7 +41,7 @@ export class StatusBarService implements vscode.Disposable {
       : active.email.split("@")[0];
 
     if (active.status === "auth_failed") {
-      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | Instant: ${instantPct}% | Overall: ${overallPct}%`;
+      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | Pool Instant Quota: ${instantPct}%`;
       this.statusBarItem.tooltip = `Antigravity Swap: Authentication failed for ${active.email}. Click to re-login or switch.`;
       this.statusBarItem.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.warningBackground",
@@ -56,6 +56,10 @@ export class StatusBarService implements vscode.Disposable {
     const claudePct = this.accountManager.getAccountTargetQuota(
       active,
       "claude",
+    );
+    const accountInstantPct = this.accountManager.getAccountTargetQuota(
+      active,
+      "instant",
     );
     const activePct = active.averageQuotaPercentage ?? 0;
 
@@ -77,7 +81,7 @@ export class StatusBarService implements vscode.Disposable {
       this.statusBarItem.backgroundColor = undefined;
     }
 
-    this.statusBarItem.text = `${icon} ${displayName} (Gemini: ${geminiPct}%, C&G: ${claudePct}%) | Instant: ${instantPct}% | Overall: ${overallPct}%`;
+    this.statusBarItem.text = `${icon} ${displayName} (Instant Gemini: ${geminiPct}%, Instant C&G: ${claudePct}%) | Pool Instant Quota: ${instantPct}%`;
 
     // Build a clean, readable MarkdownString tooltip
     const md = new vscode.MarkdownString("", true);
@@ -90,10 +94,7 @@ export class StatusBarService implements vscode.Disposable {
     // All accounts pool summary line (at top)
     const allAccIcon = overallPct < 20 ? "$(warning)" : "$(account)";
     md.appendMarkdown(
-      `${allAccIcon} **All ${overall.totalAccounts} account(s):** **Instant:** ${instantPct}% · **Overall:** ${overallPct}%\n\n`,
-    );
-    md.appendMarkdown(
-      `*$(info) 'Instant' calculates the true usable quota based on both the 5h (if available) and weekly limits.*\n\n`,
+      `${allAccIcon} **All ${overall.totalAccounts} account(s):** **All Accounts Instant Quota:** ${instantPct}% · **Total Quota:** ${overallPct}%\n\n`,
     );
 
     md.appendMarkdown(`---\n\n`);
@@ -109,7 +110,7 @@ export class StatusBarService implements vscode.Disposable {
       active.name && active.name !== active.email
         ? `**${active.name}** (${emailCode})`
         : emailCode;
-    md.appendMarkdown(`**Active:** ${accountHealthIcon} ${nameDisplay}\n\n`);
+    md.appendMarkdown(`**Active:** ${nameDisplay} ${accountHealthIcon}\n\n`);
 
     // Model quotas section - concise and grouped by model family
     const isFree =
@@ -183,23 +184,26 @@ export class StatusBarService implements vscode.Disposable {
     };
     if (geminiWeekly || gemini5h || claudeWeekly || claude5h) {
       md.appendMarkdown(
-        `**$(zap) Account Instant:** Gemini: **${geminiPct}%** · C&G: **${claudePct}%** *(Plan Total: ${activePct}%)*\n\n`,
+        `**$(zap) Account Instant Quota:** **${accountInstantPct}%** (Gemini Instant Quota: **${geminiPct}%** · Claude & GPT Instant Quota: **${claudePct}%**)\n\n`,
+      );
+      md.appendMarkdown(
+        `**$(dashboard) Account Total Quota:** **${activePct}%**\n\n`,
       );
 
       // If either model is attenuated by low weekly fuel (< 40%), add a subtle note
       const isAttenuated =
         !isFree &&
         ((geminiWeekly &&
-          geminiWeekly.percentage < 40 &&
+          geminiWeekly.percentage < 30 &&
           gemini5h &&
           gemini5h.percentage > geminiPct) ||
           (claudeWeekly &&
-            claudeWeekly.percentage < 40 &&
+            claudeWeekly.percentage < 30 &&
             claude5h &&
             claude5h.percentage > claudePct));
       if (isAttenuated) {
         md.appendMarkdown(
-          `*$(warning) Account instant capacity is currently modulated due to low remaining weekly fuel (< 40%).*\n\n`,
+          `*$(warning) Account Instant Quota is currently modulated due to low remaining weekly fuel (< 30%).*\n\n`,
         );
       }
 
@@ -240,7 +244,10 @@ export class StatusBarService implements vscode.Disposable {
       }
     } else if (quotas.length > 0) {
       md.appendMarkdown(
-        `**$(zap) Account Instant:** Gemini: **${geminiPct}%** · C&G: **${claudePct}%** *(Plan Total: ${activePct}%)*\n\n`,
+        `**$(zap) Account Instant Quota:** **${accountInstantPct}%** (Gemini Instant Quota: **${geminiPct}%** · Claude & GPT Instant Quota: **${claudePct}%**)\n\n`,
+      );
+      md.appendMarkdown(
+        `**$(dashboard) Account Total Quota:** **${activePct}%**\n\n`,
       );
       md.appendMarkdown(`**$(pulse) Model Quotas**\n\n`);
       for (const q of quotas) {
@@ -282,9 +289,10 @@ export class StatusBarService implements vscode.Disposable {
 
     const items: vscode.QuickPickItem[] = [];
 
+    const activeAccountInstantPct = active ? this.accountManager.getAccountTargetQuota(active, "instant") : 0;
     items.push({
-      label: `Instant: ${instantPct}% · Overall: ${overallPct}% across ${overall.totalAccounts} account(s)`,
-      description: `Active: ${active ? active.email : "None"} (${active ? active.averageQuotaPercentage : 0}%)`,
+      label: `All Accounts Instant Quota: ${instantPct}% · Total Quota: ${overallPct}% across ${overall.totalAccounts} account(s)`,
+      description: `Active: ${active ? active.email : "None"} (Account Instant Quota: ${activeAccountInstantPct}%, Total Quota: ${active ? active.averageQuotaPercentage : 0}%)`,
       kind: vscode.QuickPickItemKind.Separator,
     });
 
@@ -309,9 +317,10 @@ export class StatusBarService implements vscode.Disposable {
             ? "CURRENTLY ACTIVE"
             : "Click to switch without reloading";
 
+      const accInstant = this.accountManager.getAccountTargetQuota(acc, "instant");
       items.push({
         label: `${statusIcon} ${acc.name || acc.email}${statusExtra}`,
-        description: `${acc.email} — ${acc.isBanned ? "0%" : quotaPct + "%"} quota left`,
+        description: `${acc.email} — Account Instant Quota: ${acc.isBanned ? "0%" : accInstant + "%"} · Total: ${acc.isBanned ? "0%" : quotaPct + "%"}`,
         detail: detailText,
         buttons: [
           ...(acc.isBanned || acc.status === "auth_failed"

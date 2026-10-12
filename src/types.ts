@@ -83,8 +83,10 @@ export interface OverallQuotaSummary {
   overallPercentage: number; // Combined weekly plan % across all healthy accounts
   
   // Separated Group Aggregate Percentages
+  geminiInstantPercentage?: number;
   gemini5HourPercentage?: number;
   geminiWeeklyPercentage?: number;
+  claudeInstantPercentage?: number;
   claude5HourPercentage?: number;
   claudeWeeklyPercentage?: number;
 
@@ -113,7 +115,7 @@ export interface HeartbeatInfo {
   activeAccountHealth: 'healthy' | 'warning' | 'error';
 }
 
-export type AutoSwitchTarget = 'total' | 'gemini' | 'claude';
+export type AutoSwitchTarget = 'instant' | 'gemini' | 'claude';
 
 export interface WebviewStateMessage {
   type: 'stateUpdate';

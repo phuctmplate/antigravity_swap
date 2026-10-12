@@ -453,24 +453,24 @@ export const AccountList: React.FC<AccountListProps> = ({
       />
 
       {/* Section Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-        <div className="flex items-center gap-1.5">
-          <span>Accounts & Fast Switch</span>
-          <span className="text-[10px] font-semibold text-foreground/80 normal-case">
+      <div className="flex flex-nowrap items-center justify-between gap-2 min-w-0 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-1.5 min-w-0 shrink overflow-hidden">
+          <span className="shrink-0 whitespace-nowrap">Accounts & Fast Switch</span>
+          <span className="shrink-0 whitespace-nowrap text-[10px] font-semibold text-foreground/80 normal-case">
             ({accounts.length} {accounts.length === 1 ? "account" : "accounts"})
           </span>
           {isBackgroundRefreshing && (
             <span
-              className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground normal-case ml-1.5 select-none"
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground normal-case ml-1.5 select-none min-w-0 shrink overflow-hidden"
               title="Updating quotas across accounts..."
             >
               <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-              <span>syncing</span>
+              <span className="min-w-0 truncate">syncing</span>
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 shrink-0">
           {accounts.length > 0 && (
             <Button
               onClick={toggleMultiSelectMode}
@@ -481,9 +481,9 @@ export const AccountList: React.FC<AccountListProps> = ({
                   ? "Exit selection mode"
                   : "Select multiple accounts for bulk actions"
               }
-              className="gap-1 text-[10px]"
+              className="gap-1 text-[10px] shrink-0 whitespace-nowrap"
             >
-              <CheckSquare className="w-3 h-3" />
+              <CheckSquare className="w-3 h-3 shrink-0" />
               <span>{isMultiSelectMode ? "Done" : "Select"}</span>
             </Button>
           )}
@@ -569,11 +569,11 @@ export const AccountList: React.FC<AccountListProps> = ({
 
       {/* Fast Type Filter Badges & Sort Selector Bar */}
       {accounts.length > 0 && !isMultiSelectMode && (
-        <div className="flex items-center justify-between gap-1.5 py-1 w-full">
+        <div className="flex flex-nowrap items-center justify-between gap-1.5 py-1 w-full min-w-0">
           {/* Wide Screen: Full Pill Badges */}
-          <div className="hidden min-[480px]:flex items-center gap-1.5">
-            <div className="flex items-center gap-1 text-[10px] text-muted-foreground mr-0.5">
-              <Filter className="w-3 h-3" />
+          <div className="hidden min-[480px]:flex items-center gap-1.5 min-w-0 shrink overflow-hidden">
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground mr-0.5 shrink-0 whitespace-nowrap">
+              <Filter className="w-3 h-3 shrink-0" />
               <span>Filter:</span>
             </div>
             {filterBadges.map((badge) => {
@@ -586,7 +586,7 @@ export const AccountList: React.FC<AccountListProps> = ({
                   variant={isSelected ? "default" : "ghost"}
                   onClick={() => handleFilterChange(badge.id)}
                   className={cn(
-                    "h-6 gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border shadow-xs select-none",
+                    "h-6 gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer border shadow-xs select-none shrink-0 whitespace-nowrap",
                     isSelected
                       ? `${badge.activeClass} shadow-sm ring-1 ring-white/20`
                       : "bg-card/70 text-muted-foreground border-border/70 hover:text-foreground hover:bg-accent/50",
@@ -610,29 +610,29 @@ export const AccountList: React.FC<AccountListProps> = ({
           </div>
 
           {/* Small Screen: Compact Filter Dropdown Menu */}
-          <div className="flex min-[480px]:hidden items-center">
+          <div className="flex min-[480px]:hidden items-center shrink-0">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-6 gap-1.5 px-2 py-1 rounded-md text-[10px] font-semibold border border-border/80 bg-card/80 hover:bg-accent/60 transition-colors shadow-2xs cursor-pointer select-none"
+                  className="h-6 gap-1.5 px-2 py-1 rounded-md text-[10px] font-semibold border border-border/80 bg-card/80 hover:bg-accent/60 transition-colors shadow-2xs cursor-pointer select-none shrink-0 whitespace-nowrap"
                   title="Filter accounts by tier"
                 >
-                  <Filter className="w-3 h-3 text-muted-foreground" />
-                  <span className="text-muted-foreground font-normal">
+                  <Filter className="w-3 h-3 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground font-normal shrink-0">
                     Filter:
                   </span>
-                  <span className="font-bold text-foreground">
+                  <span className="font-bold text-foreground shrink-0">
                     {filterBadges.find((b) => b.id === filterType)?.label ||
                       "All"}
                   </span>
-                  <span className="text-[9px] px-1 rounded font-mono font-bold bg-muted text-muted-foreground">
+                  <span className="text-[9px] px-1 rounded font-mono font-bold bg-muted text-muted-foreground shrink-0">
                     {filterBadges.find((b) => b.id === filterType)?.count ??
                       counts.all}
                   </span>
-                  <ChevronDown className="w-3 h-3 text-muted-foreground/70" />
+                  <ChevronDown className="w-3 h-3 text-muted-foreground/70 shrink-0" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-35">
@@ -672,21 +672,21 @@ export const AccountList: React.FC<AccountListProps> = ({
           </div>
 
           {/* Sort Selector Dropdown using Shadcn DropdownMenu */}
-          <div className="flex items-center shrink-0 ml-auto">
+          <div className="flex items-center shrink-0 ml-auto whitespace-nowrap">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  className="h-6 gap-1.5 px-2 py-1 rounded-md text-[10px] font-semibold border border-border/80 bg-card/80 hover:bg-accent/60 transition-colors shadow-2xs cursor-pointer select-none"
+                  className="h-6 gap-1.5 px-2 py-1 rounded-md text-[10px] font-semibold border border-border/80 bg-card/80 hover:bg-accent/60 transition-colors shadow-2xs cursor-pointer select-none shrink-0 whitespace-nowrap"
                   title="Sort accounts"
                 >
-                  <ArrowUpDown className="w-3 h-3 text-muted-foreground" />
-                  <span className="text-muted-foreground font-normal">
+                  <ArrowUpDown className="w-3 h-3 text-muted-foreground shrink-0" />
+                  <span className="text-muted-foreground font-normal shrink-0">
                     Sort:
                   </span>
-                  <span className="font-bold text-foreground">
+                  <span className="font-bold text-foreground shrink-0">
                     {sortMode === "tier"
                       ? "Tier (↓)"
                       : sortMode === "tier-asc"
@@ -695,7 +695,7 @@ export const AccountList: React.FC<AccountListProps> = ({
                           ? "Name (A→Z)"
                           : "Name (Z→A)"}
                   </span>
-                  <ChevronDown className="w-3 h-3 text-muted-foreground/70" />
+                  <ChevronDown className="w-3 h-3 text-muted-foreground/70 shrink-0" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-42.5">

@@ -223,26 +223,22 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
         </div>
 
         <div className="flex items-center border-l border-border/80 pl-1.5 ml-0.5 pr-1 gap-1">
-            {/* Wide Screen: Individual Pill Buttons (shown on >= 680px) */}
-            <div className="hidden min-[680px]:flex items-center gap-1">
+            {/* Wide Screen: Individual Pill Buttons (shown on >= 820px) */}
+            <div className="hidden min-[820px]:flex items-center gap-1">
               <Button
                 type="button"
                 size="sm"
-                variant={
-                  (autoSwitchTarget || "total") === "total"
-                    ? "default"
-                    : "ghost"
-                }
-                onClick={() => onSelectAutoSwitchTarget?.("total")}
+                variant={autoSwitchTarget === "instant" ? "default" : "ghost"}
+                onClick={() => onSelectAutoSwitchTarget?.("instant")}
                 className={cn(
                   "h-5 px-1.5 rounded text-[10px] font-medium transition-colors cursor-pointer",
-                  (autoSwitchTarget || "total") === "total"
+                  autoSwitchTarget === "instant"
                     ? "font-bold shadow-2xs"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
-                title={`Auto-switch when Total Quota <= ${autoSwitchThreshold}%`}
+                title={`Auto-switch when Account Instant Quota <= ${autoSwitchThreshold}%`}
               >
-                Total
+                Account Instant Quota
               </Button>
               <Button
                 type="button"
@@ -255,9 +251,9 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                     ? "bg-sky-500 text-white font-bold shadow-2xs hover:bg-sky-600 hover:text-white dark:bg-sky-600 dark:hover:bg-sky-500"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
-                title={`Auto-switch when Gemini Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
+                title={`Auto-switch when Gemini Instant Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
               >
-                Gemini
+                Gemini Instant Quota
               </Button>
               <Button
                 type="button"
@@ -270,14 +266,14 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                     ? "bg-amber-500 text-white font-bold shadow-2xs hover:bg-amber-600 hover:text-white dark:bg-amber-600 dark:hover:bg-amber-500"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
-                title={`Auto-switch when Claude & GPT Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
+                title={`Auto-switch when Claude & GPT Instant Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
               >
-                Claude
+                Claude & GPT Instant Quota
               </Button>
             </div>
 
-            {/* Compact Screen: DropdownMenu Trigger (shown on < 680px) */}
-            <div className="flex min-[680px]:hidden items-center">
+            {/* Compact Screen: DropdownMenu Trigger (shown on < 820px) */}
+            <div className="flex min-[820px]:hidden items-center">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -295,25 +291,25 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                   >
                     <span>
                       {autoSwitchTarget === "gemini"
-                        ? "Gemini"
+                        ? "Gemini Instant Quota"
                         : autoSwitchTarget === "claude"
-                          ? "Claude"
-                          : "Total"}
+                          ? "Claude & GPT Instant Quota"
+                          : "Account Instant Quota"}
                     </span>
                     <ChevronDown className="w-3 h-3 opacity-80" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="min-w-30">
+                <DropdownMenuContent align="start" className="min-w-48">
                   <DropdownMenuItem
-                    onClick={() => onSelectAutoSwitchTarget?.("total")}
+                    onClick={() => onSelectAutoSwitchTarget?.("instant")}
                     className={cn(
                       "text-xs cursor-pointer font-medium py-1.5 px-2 rounded-sm",
-                      (autoSwitchTarget || "total") === "total"
+                      autoSwitchTarget === "instant"
                         ? "bg-primary text-primary-foreground font-bold focus:bg-primary/90 focus:text-primary-foreground"
                         : "text-foreground hover:bg-accent",
                     )}
                   >
-                    Total
+                    Account Instant Quota
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => onSelectAutoSwitchTarget?.("gemini")}
@@ -324,7 +320,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                         : "text-foreground hover:bg-accent",
                     )}
                   >
-                    Gemini
+                    Gemini Instant Quota
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => onSelectAutoSwitchTarget?.("claude")}
@@ -335,7 +331,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                         : "text-foreground hover:bg-accent",
                     )}
                   >
-                    Claude & GPT
+                    Claude & GPT Instant Quota
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

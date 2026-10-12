@@ -2,6 +2,7 @@ import React from 'react';
 import { Switch } from './ui/switch';
 import { AutoSwitchTarget } from '../types';
 import { cn } from '../lib/utils';
+import { DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT } from '../constants';
 
 interface AutoSwitchBannerProps {
   autoSwitchEnabled: boolean;
@@ -14,10 +15,14 @@ export const AutoSwitchBanner: React.FC<AutoSwitchBannerProps> = ({
   autoSwitchEnabled,
   onToggleAutoSwitch,
   target = 'gemini',
-  threshold = 2
+  threshold = DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
 }) => {
   const targetLabel =
-    target === 'gemini' ? 'Gemini' : target === 'claude' ? 'Claude & GPT' : 'Total Quota';
+    target === 'gemini'
+      ? 'Gemini Instant Quota'
+      : target === 'claude'
+        ? 'Claude & GPT Instant Quota'
+        : 'Account Instant Quota';
 
   return (
     <div

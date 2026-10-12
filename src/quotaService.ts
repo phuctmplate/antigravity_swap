@@ -38,18 +38,18 @@ export interface QuotaFetchResult {
 /**
  * Calculates the usable instant burst quota for a rolling window (5h)
  * modulated by remaining weekly fuel capacity.
- * - Above 40% weekly (safe burst boundary): rolling window is 100% usable (HealthFactor = 1.0).
- * - Below 40% weekly: weekly fuel attenuates 5h via smooth square-root decay (Math.sqrt(Weekly / 40)).
+ * - Above 30% weekly (safe burst boundary): rolling window is 100% usable (HealthFactor = 1.0).
+ * - Below 30% weekly: weekly fuel attenuates 5h via smooth linear decay (Weekly / 30).
  */
 export function calculateModulatedInstantQuota(p5h: number, pWeekly?: number): number {
   if (pWeekly === undefined) {
     return p5h;
   }
-  const SAFE_WEEKLY_THRESHOLD = 40;
+  const SAFE_WEEKLY_THRESHOLD = 30;
   const healthFactor =
     pWeekly >= SAFE_WEEKLY_THRESHOLD
       ? 1.0
-      : Math.sqrt(Math.max(0, pWeekly) / SAFE_WEEKLY_THRESHOLD);
+      : Math.max(0, pWeekly) / SAFE_WEEKLY_THRESHOLD;
   return Math.round(p5h * healthFactor);
 }
 
@@ -1272,6 +1272,12 @@ export class QuotaService {
         totalAccounts: 0,
         instantPercentage: 0,
         overallPercentage: 0,
+        geminiInstantPercentage: 0,
+        gemini5HourPercentage: undefined,
+        geminiWeeklyPercentage: undefined,
+        claudeInstantPercentage: 0,
+        claude5HourPercentage: undefined,
+        claudeWeeklyPercentage: undefined,
         overall5HourPercentage: 0,
         overallWeeklyPercentage: 0,
         averageActiveAccountPercentage: 0,
@@ -1313,8 +1319,10 @@ export class QuotaService {
     let sumWeeklyWeighted = 0;
     let totalWeeklyWeight = 0;
 
+    let sumGeminiInstant = 0, totalGeminiInstantWeight = 0;
     let sumGemini5h = 0, totalGemini5hWeight = 0;
     let sumGeminiWeekly = 0, totalGeminiWeeklyWeight = 0;
+    let sumClaudeInstant = 0, totalClaudeInstantWeight = 0;
     let sumClaude5h = 0, totalClaude5hWeight = 0;
     let sumClaudeWeekly = 0, totalClaudeWeeklyWeight = 0;
 
@@ -1404,26 +1412,58 @@ export class QuotaService {
 
       // Gemini Separated Aggregates
       const g5h = acc.geminiGroup?.fiveHour;
-      if (g5h && !g5h.disabled && g5h.percentage >= 0) {
+      const validG5h = g5h && !g5h.disabled && g5h.percentage >= 0;
+      if (validG5h) {
         sumGemini5h += g5h.percentage * weight;
         totalGemini5hWeight += weight;
       }
       const gWk = acc.geminiGroup?.weekly;
-      if (gWk && !gWk.disabled && gWk.percentage >= 0) {
+      const validGWk = gWk && !gWk.disabled && gWk.percentage >= 0;
+      if (validGWk) {
         sumGeminiWeekly += gWk.percentage * weight;
         totalGeminiWeeklyWeight += weight;
       }
 
+      // Gemini Instant Aggregate
+      if (validG5h || validGWk) {
+        let gInstant = validGWk ? gWk.percentage : 0;
+        if (!isFree) {
+          if (validG5h && validGWk) {
+            gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage);
+          } else if (validG5h) {
+            gInstant = g5h.percentage;
+          }
+        }
+        sumGeminiInstant += gInstant * weight;
+        totalGeminiInstantWeight += weight;
+      }
+
       // Claude & GPT Separated Aggregates
       const c5h = acc.claudeGptGroup?.fiveHour;
-      if (c5h && !c5h.disabled && c5h.percentage >= 0) {
+      const validC5h = c5h && !c5h.disabled && c5h.percentage >= 0;
+      if (validC5h) {
         sumClaude5h += c5h.percentage * weight;
         totalClaude5hWeight += weight;
       }
       const cWk = acc.claudeGptGroup?.weekly;
-      if (cWk && !cWk.disabled && cWk.percentage >= 0) {
+      const validCWk = cWk && !cWk.disabled && cWk.percentage >= 0;
+      if (validCWk) {
         sumClaudeWeekly += cWk.percentage * weight;
         totalClaudeWeeklyWeight += weight;
+      }
+
+      // Claude & GPT Instant Aggregate
+      if (validC5h || validCWk) {
+        let cInstant = validCWk ? cWk.percentage : 0;
+        if (!isFree) {
+          if (validC5h && validCWk) {
+            cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage);
+          } else if (validC5h) {
+            cInstant = c5h.percentage;
+          }
+        }
+        sumClaudeInstant += cInstant * weight;
+        totalClaudeInstantWeight += weight;
       }
     }
 
@@ -1431,8 +1471,10 @@ export class QuotaService {
     const instantPct = totalInstantWeight > 0 ? Math.round(sumInstantWeighted / totalInstantWeight) : 0;
     const overall5hPct = total5hWeight > 0 ? Math.round(sum5hWeighted / total5hWeight) : undefined;
     const overallWeeklyPct = totalWeeklyWeight > 0 ? Math.round(sumWeeklyWeighted / totalWeeklyWeight) : undefined;
+    const geminiInstantPct = totalGeminiInstantWeight > 0 ? Math.round(sumGeminiInstant / totalGeminiInstantWeight) : undefined;
     const gemini5hPct = totalGemini5hWeight > 0 ? Math.round(sumGemini5h / totalGemini5hWeight) : undefined;
     const geminiWkPct = totalGeminiWeeklyWeight > 0 ? Math.round(sumGeminiWeekly / totalGeminiWeeklyWeight) : undefined;
+    const claudeInstantPct = totalClaudeInstantWeight > 0 ? Math.round(sumClaudeInstant / totalClaudeInstantWeight) : undefined;
     const claude5hPct = totalClaude5hWeight > 0 ? Math.round(sumClaude5h / totalClaude5hWeight) : undefined;
     const claudeWkPct = totalClaudeWeeklyWeight > 0 ? Math.round(sumClaudeWeekly / totalClaudeWeeklyWeight) : undefined;
     const activePct = activeAcc ? (activeAcc.averageQuotaPercentage || 0) : 0;
@@ -1442,8 +1484,10 @@ export class QuotaService {
       activeAccountEmail: activeAcc?.email,
       instantPercentage: errorCount === accounts.length ? 0 : instantPct,
       overallPercentage: errorCount === accounts.length ? 0 : overallPct,
+      geminiInstantPercentage: geminiInstantPct,
       gemini5HourPercentage: gemini5hPct,
       geminiWeeklyPercentage: geminiWkPct,
+      claudeInstantPercentage: claudeInstantPct,
       claude5HourPercentage: claude5hPct,
       claudeWeeklyPercentage: claudeWkPct,
       overall5HourPercentage: overall5hPct ?? 0,

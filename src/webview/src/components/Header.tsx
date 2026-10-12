@@ -2,10 +2,11 @@ import React from 'react';
 import { OverallQuotaSummary, Account } from '../types';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
-import { Progress } from './ui/progress';
-import { Clock, Calendar, Users, ShieldCheck, Sparkles } from 'lucide-react';
-import { quotaFillClass, quotaTextClass, quotaStrokeColor } from '../lib/quota';
+import { Progress, DashedProgress } from './ui/progress';
+import { Clock, Calendar, Users, ShieldCheck, Sparkles, Zap, HelpCircle } from 'lucide-react';
+import { quotaFillClass, quotaTextClass, quotaStrokeColor, calculateModulatedInstantQuota } from '../lib/quota';
 import { LogoIcon } from './LogoIcon';
+import { InstantConceptModal } from './InstantConceptModal';
 
 interface HeaderProps {
   overall: OverallQuotaSummary;
@@ -15,10 +16,13 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
   const instantPct = overall.instantPercentage ?? 0;
   const overallPct = overall.overallPercentage ?? 0;
-  const radius = 32;
-  const circumference = 2 * Math.PI * radius;
-  const instantOffset = circumference - (instantPct / 100) * circumference;
-  const overallOffset = circumference - (overallPct / 100) * circumference;
+  // Half-circle gauge metrics (180deg dome arc)
+  const arcRadius = 42;
+  const arcLength = Math.PI * arcRadius; // ~131.947
+  const instantClamped = Math.min(100, Math.max(0, instantPct));
+  const overallClamped = Math.min(100, Math.max(0, overallPct));
+  const instantArcOffset = arcLength * (1 - instantClamped / 100);
+  const overallArcOffset = arcLength * (1 - overallClamped / 100);
 
   const healthyCount = accounts.filter(
     (a) => !a.isBanned && a.status !== 'banned' && a.status !== 'auth_failed'
@@ -34,6 +38,22 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
   const claudeWk = overall.claudeWeeklyPercentage;
   const hasPro = (overall.proAccountsCount || 0) > 0;
 
+  const geminiInstant =
+    overall.geminiInstantPercentage ??
+    (hasPro && gemini5h != null && geminiWk != null
+      ? calculateModulatedInstantQuota(gemini5h, geminiWk)
+      : hasPro && gemini5h != null
+        ? gemini5h
+        : geminiWk);
+
+  const claudeInstant =
+    overall.claudeInstantPercentage ??
+    (hasPro && claude5h != null && claudeWk != null
+      ? calculateModulatedInstantQuota(claude5h, claudeWk)
+      : hasPro && claude5h != null
+        ? claude5h
+        : claudeWk);
+
   return (
     <div className="flex flex-col gap-2.5 mb-3">
       {/* Title Header */}
@@ -45,97 +65,111 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
           </span>
         </div>
         <div className="flex items-center gap-1.5">
+          <InstantConceptModal>
+            <button
+              type="button"
+              className="flex items-center justify-center h-5 w-5 rounded-full text-muted-foreground/80 hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
+              title="Learn about Instant Quota concept"
+              aria-label="Instant Quota explanation"
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
+            </button>
+          </InstantConceptModal>
           <Badge
             variant="outline"
             className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
           >
-            v1.2.3
+            v1.3.0
           </Badge>
         </div>
       </div>
 
       {/* Hero Overview Card with Twin Circular Gauges */}
-      <Card className="relative overflow-hidden border-border/80 bg-card/95 shadow-sm">
+      <Card className="relative overflow-hidden border-border/80 bg-card/70 shadow-sm">
         <CardContent className="flex flex-col gap-2.5 p-3">
-          {/* Twin SVG Gauges Container - Centered near middle on all screen widths */}
-          <div className="flex items-center justify-center gap-6 sm:gap-10 max-w-sm mx-auto w-full px-2 py-1">
+          {/* Twin SVG Half-Circle Gauges Container - Width-constrained for consistent spacing that fluidly scales on smaller viewports */}
+          <div className="flex items-center justify-between max-w-[300px] mx-auto w-full px-2 py-1">
             {/* 1. Instant Quota Gauge */}
             <div
-              className="flex flex-col items-center gap-1.5 min-w-24 shrink-0 cursor-help"
-              title={`Instant Quota (${instantPct}%): Usable quota in the current session across all accounts (5-Hour rolling window, modulated by remaining weekly capacity).`}
+              className="flex flex-col items-center cursor-help"
+              title={`All Accounts Instant Quota (${instantPct}%): Usable pooled quota in the current session across all accounts (5-Hour rolling window, modulated by remaining weekly capacity).`}
             >
-              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
-                <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 80 80">
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r={radius}
+              <div className="relative flex h-[58px] w-[104px] shrink-0 items-center justify-center">
+                <svg className="h-full w-full" viewBox="0 0 104 58" aria-hidden="true">
+                  <path
+                    d="M 10 50 A 42 42 0 0 1 94 50"
                     fill="none"
                     stroke="currentColor"
-                    className="text-muted/60 dark:text-muted/30"
-                    strokeWidth="6"
+                    className="text-black/10 dark:text-white/15"
+                    strokeWidth="7"
+                    strokeLinecap="round"
                   />
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r={radius}
+                  <path
+                    d="M 10 50 A 42 42 0 0 1 94 50"
                     fill="none"
                     stroke={getGaugeColor(instantPct)}
-                    strokeWidth="6"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={instantOffset}
+                    strokeWidth="7"
                     strokeLinecap="round"
-                    style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+                    strokeDasharray={arcLength}
+                    strokeDashoffset={instantArcOffset}
+                    style={{
+                      transition: 'stroke-dashoffset 0.6s ease, opacity 0.3s ease',
+                      opacity: instantClamped > 0 ? 1 : 0,
+                    }}
                   />
                 </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-base font-bold text-foreground tracking-tight">{instantPct}%</span>
+                <div className="absolute inset-x-0 bottom-0.5 flex items-center justify-center pointer-events-none">
+                  <span className="text-lg font-bold text-foreground tracking-tight leading-none">
+                    {instantPct}%
+                  </span>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center gap-1 mt-0.5">
-                <span className="text-xs font-bold text-foreground tracking-tight">Instant</span>
-                <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">Available Right Now</span>
+              <div className="flex flex-col items-center text-center gap-0.5 mt-1">
+                <span className="text-xs font-bold text-foreground tracking-tight">Pool Instant Quota</span>
+                <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">All Accounts Pool</span>
               </div>
             </div>
 
             {/* Subtle Divider */}
-            <div className="h-16 w-px bg-border/80 shrink-0" />
+            <div className="h-12 w-px bg-border/70 shrink-0 self-center mx-1" />
 
-            {/* 2. Overall Quota Gauge */}
+            {/* 2. Total Quota Gauge */}
             <div
-              className="flex flex-col items-center gap-1.5 min-w-24 shrink-0 cursor-help"
-              title={`Overall Quota (${overallPct}%): Total weekly plan capacity across all healthy accounts.`}
+              className="flex flex-col items-center cursor-help"
+              title={`All Accounts Total Quota (${overallPct}%): Total weekly plan capacity across all healthy accounts.`}
             >
-              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
-                <svg className="h-full w-full -rotate-90 transform" viewBox="0 0 80 80">
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r={radius}
+              <div className="relative flex h-[58px] w-[104px] shrink-0 items-center justify-center">
+                <svg className="h-full w-full" viewBox="0 0 104 58" aria-hidden="true">
+                  <path
+                    d="M 10 50 A 42 42 0 0 1 94 50"
                     fill="none"
                     stroke="currentColor"
-                    className="text-muted/60 dark:text-muted/30"
-                    strokeWidth="6"
+                    className="text-black/10 dark:text-white/15"
+                    strokeWidth="7"
+                    strokeLinecap="round"
                   />
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r={radius}
+                  <path
+                    d="M 10 50 A 42 42 0 0 1 94 50"
                     fill="none"
                     stroke={getGaugeColor(overallPct)}
-                    strokeWidth="6"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={overallOffset}
+                    strokeWidth="7"
                     strokeLinecap="round"
-                    style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+                    strokeDasharray={arcLength}
+                    strokeDashoffset={overallArcOffset}
+                    style={{
+                      transition: 'stroke-dashoffset 0.6s ease, opacity 0.3s ease',
+                      opacity: overallClamped > 0 ? 1 : 0,
+                    }}
                   />
                 </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-base font-bold text-foreground tracking-tight">{overallPct}%</span>
+                <div className="absolute inset-x-0 bottom-0.5 flex items-center justify-center pointer-events-none">
+                  <span className="text-lg font-bold text-foreground tracking-tight leading-none">
+                    {overallPct}%
+                  </span>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center gap-1 mt-0.5">
-                <span className="text-xs font-bold text-foreground tracking-tight">Overall</span>
+              <div className="flex flex-col items-center text-center gap-0.5 mt-1">
+                <span className="text-xs font-bold text-foreground tracking-tight">Pool Total Quota</span>
                 <span className="text-[10px] text-muted-foreground font-medium whitespace-nowrap">Total Weekly Capacity</span>
               </div>
             </div>
@@ -173,43 +207,82 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
               </div>
             </div>
 
-            {/* 5h Rolling Window */}
-            {hasPro && (
-              <div className="flex flex-col gap-0.5">
-                <div className="flex justify-between items-center text-[9px]">
-                  <span className="text-muted-foreground flex items-center gap-1">
-                    <Clock className="w-2.5 h-2.5 text-sky-400" />
-                    <span>5h Window</span>
-                  </span>
-                  <span className={`font-bold ${gemini5h != null ? getTextColor(gemini5h) : 'text-muted-foreground'}`}>
-                    {gemini5h != null ? `${gemini5h}%` : '—'}
-                  </span>
-                </div>
-                <Progress
-                  value={gemini5h ?? 0}
-                  indicatorClassName={gemini5h != null ? getProgressIndicator(gemini5h) : 'bg-muted'}
-                  className="h-1.5"
-                />
-              </div>
-            )}
-
-            {/* Weekly Plan Quota */}
-            <div className="flex flex-col gap-0.5">
+            {/* Instant Usable Quota */}
+            <div
+              className="flex flex-col gap-0.5 cursor-help"
+              title={`Gemini Instant Quota (${geminiInstant != null ? `${geminiInstant}%` : '—'}): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
+            >
               <div className="flex justify-between items-center text-[9px]">
-                <span className="text-muted-foreground flex items-center gap-1">
-                  <Calendar className="w-2.5 h-2.5 text-purple-400" />
-                  <span>Weekly</span>
+                <span className="flex items-center gap-1 min-w-0">
+                  <Zap className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                  <span className="text-foreground/90 font-medium">Instant</span>
                 </span>
-                <span className={`font-bold ${geminiWk != null ? getTextColor(geminiWk) : 'text-muted-foreground'}`}>
-                  {geminiWk != null ? `${geminiWk}%` : '—'}
+                <span className={`font-bold font-mono ${geminiInstant != null ? getTextColor(geminiInstant) : 'text-muted-foreground'}`}>
+                  {geminiInstant != null ? `${geminiInstant}%` : '—'}
                 </span>
               </div>
               <Progress
-                value={geminiWk ?? 0}
-                indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-muted'}
-                className="h-1.5"
+                value={geminiInstant ?? 0}
+                indicatorClassName={geminiInstant != null ? getProgressIndicator(geminiInstant) : 'bg-muted'}
+                className="h-1.5 w-full"
               />
             </div>
+
+            {/* Gemini Sub-Windows Breakdown */}
+            {hasPro && gemini5h != null ? (
+              <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`5h: ${gemini5h}%`}>
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
+                      <span className="font-medium text-foreground/80">5h</span>
+                    </span>
+                    <span className={`font-bold font-mono ${getTextColor(gemini5h)}`}>
+                      {gemini5h}%
+                    </span>
+                  </div>
+                  <DashedProgress
+                    value={gemini5h}
+                    indicatorClassName={getProgressIndicator(gemini5h)}
+                    className="h-1.5 w-full"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${geminiWk != null ? geminiWk + '%' : '—'}`}>
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                      <span className="font-medium text-foreground/80">Weekly</span>
+                    </span>
+                    <span className={`font-bold font-mono ${geminiWk != null ? getTextColor(geminiWk) : 'text-muted-foreground'}`}>
+                      {geminiWk != null ? `${geminiWk}%` : '—'}
+                    </span>
+                  </div>
+                  <DashedProgress
+                    value={geminiWk ?? 0}
+                    indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-muted'}
+                    className="h-1.5 w-full"
+                  />
+                </div>
+              </div>
+            ) : (
+              /* Weekly Plan Quota */
+              <div className="flex flex-col gap-0.5 pt-1 border-t border-border/30 mt-0.5">
+                <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${geminiWk != null ? geminiWk + '%' : '—'}`}>
+                  <span className="flex items-center gap-1">
+                    <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                    <span className="font-medium text-foreground/80">Weekly</span>
+                  </span>
+                  <span className={`font-bold font-mono ${geminiWk != null ? getTextColor(geminiWk) : 'text-muted-foreground'}`}>
+                    {geminiWk != null ? `${geminiWk}%` : '—'}
+                  </span>
+                </div>
+                <DashedProgress
+                  value={geminiWk ?? 0}
+                  indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-muted'}
+                  className="h-1.5 w-full"
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -223,43 +296,82 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
               </div>
             </div>
 
-            {/* 5h Rolling Window */}
-            {hasPro && (
-              <div className="flex flex-col gap-0.5">
-                <div className="flex justify-between items-center text-[9px]">
-                  <span className="text-muted-foreground flex items-center gap-1">
-                    <Clock className="w-2.5 h-2.5 text-sky-400" />
-                    <span>5h Window</span>
-                  </span>
-                  <span className={`font-bold ${claude5h != null ? getTextColor(claude5h) : 'text-muted-foreground'}`}>
-                    {claude5h != null ? `${claude5h}%` : '—'}
-                  </span>
-                </div>
-                <Progress
-                  value={claude5h ?? 0}
-                  indicatorClassName={claude5h != null ? getProgressIndicator(claude5h) : 'bg-muted'}
-                  className="h-1.5"
-                />
-              </div>
-            )}
-
-            {/* Weekly Plan Quota */}
-            <div className="flex flex-col gap-0.5">
+            {/* Instant Usable Quota */}
+            <div
+              className="flex flex-col gap-0.5 cursor-help"
+              title={`Claude & GPT Instant Quota (${claudeInstant != null ? `${claudeInstant}%` : '—'}): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
+            >
               <div className="flex justify-between items-center text-[9px]">
-                <span className="text-muted-foreground flex items-center gap-1">
-                  <Calendar className="w-2.5 h-2.5 text-purple-400" />
-                  <span>Weekly</span>
+                <span className="flex items-center gap-1 min-w-0">
+                  <Zap className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                  <span className="text-foreground/90 font-medium">Instant</span>
                 </span>
-                <span className={`font-bold ${claudeWk != null ? getTextColor(claudeWk) : 'text-muted-foreground'}`}>
-                  {claudeWk != null ? `${claudeWk}%` : '—'}
+                <span className={`font-bold font-mono ${claudeInstant != null ? getTextColor(claudeInstant) : 'text-muted-foreground'}`}>
+                  {claudeInstant != null ? `${claudeInstant}%` : '—'}
                 </span>
               </div>
               <Progress
-                value={claudeWk ?? 0}
-                indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-muted'}
-                className="h-1.5"
+                value={claudeInstant ?? 0}
+                indicatorClassName={claudeInstant != null ? getProgressIndicator(claudeInstant) : 'bg-muted'}
+                className="h-1.5 w-full"
               />
             </div>
+
+            {/* Claude Sub-Windows Breakdown */}
+            {hasPro && claude5h != null ? (
+              <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`5h: ${claude5h}%`}>
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
+                      <span className="font-medium text-foreground/80">5h</span>
+                    </span>
+                    <span className={`font-bold font-mono ${getTextColor(claude5h)}`}>
+                      {claude5h}%
+                    </span>
+                  </div>
+                  <DashedProgress
+                    value={claude5h}
+                    indicatorClassName={getProgressIndicator(claude5h)}
+                    className="h-1.5 w-full"
+                  />
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${claudeWk != null ? claudeWk + '%' : '—'}`}>
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                      <span className="font-medium text-foreground/80">Weekly</span>
+                    </span>
+                    <span className={`font-bold font-mono ${claudeWk != null ? getTextColor(claudeWk) : 'text-muted-foreground'}`}>
+                      {claudeWk != null ? `${claudeWk}%` : '—'}
+                    </span>
+                  </div>
+                  <DashedProgress
+                    value={claudeWk ?? 0}
+                    indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-muted'}
+                    className="h-1.5 w-full"
+                  />
+                </div>
+              </div>
+            ) : (
+              /* Weekly Plan Quota */
+              <div className="flex flex-col gap-0.5 pt-1 border-t border-border/30 mt-0.5">
+                <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${claudeWk != null ? claudeWk + '%' : '—'}`}>
+                  <span className="flex items-center gap-1">
+                    <Calendar className="w-2.5 h-2.5 text-purple-400" />
+                    <span className="font-medium text-foreground/80">Weekly</span>
+                  </span>
+                  <span className={`font-bold font-mono ${claudeWk != null ? getTextColor(claudeWk) : 'text-muted-foreground'}`}>
+                    {claudeWk != null ? `${claudeWk}%` : '—'}
+                  </span>
+                </div>
+                <DashedProgress
+                  value={claudeWk ?? 0}
+                  indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-muted'}
+                  className="h-1.5 w-full"
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

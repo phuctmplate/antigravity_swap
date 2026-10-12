@@ -74,8 +74,10 @@ export interface OverallQuotaSummary {
   overallPercentage: number;
   
   // Separated Group Aggregate Percentages
+  geminiInstantPercentage?: number;
   gemini5HourPercentage?: number;
   geminiWeeklyPercentage?: number;
+  claudeInstantPercentage?: number;
   claude5HourPercentage?: number;
   claudeWeeklyPercentage?: number;
 
@@ -90,7 +92,7 @@ export interface OverallQuotaSummary {
   lastUpdated: string;
 }
 
-export type AutoSwitchTarget = 'total' | 'gemini' | 'claude';
+export type AutoSwitchTarget = 'instant' | 'gemini' | 'claude';
 
 export interface WebviewState {
   accounts: Account[];
