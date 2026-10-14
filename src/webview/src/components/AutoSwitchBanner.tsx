@@ -19,10 +19,10 @@ export const AutoSwitchBanner: React.FC<AutoSwitchBannerProps> = ({
 }) => {
   const targetLabel =
     target === 'gemini'
-      ? 'Gemini Instant Quota'
+      ? 'Gemini Instant'
       : target === 'claude'
-        ? 'Claude & GPT Instant Quota'
-        : 'Account Instant Quota';
+        ? 'Claude & GPT Instant'
+        : 'Account Instant';
 
   return (
     <div

@@ -4,7 +4,7 @@ import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Progress, DashedProgress } from './ui/progress';
 import { Clock, Calendar, Users, ShieldCheck, Sparkles, Zap, HelpCircle } from 'lucide-react';
-import { quotaFillClass, quotaTextClass, quotaStrokeColor, calculateModulatedInstantQuota } from '../lib/quota';
+import { quotaFillClass, quotaTextClass, quotaStrokeColor, calculateModulatedInstantQuota, SAFE_WEEKLY_THRESHOLDS } from '../lib/quota';
 import { LogoIcon } from './LogoIcon';
 import { InstantConceptModal } from './InstantConceptModal';
 
@@ -41,7 +41,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
   const geminiInstant =
     overall.geminiInstantPercentage ??
     (hasPro && gemini5h != null && geminiWk != null
-      ? calculateModulatedInstantQuota(gemini5h, geminiWk)
+      ? calculateModulatedInstantQuota(gemini5h, geminiWk, SAFE_WEEKLY_THRESHOLDS.GEMINI)
       : hasPro && gemini5h != null
         ? gemini5h
         : geminiWk);
@@ -49,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
   const claudeInstant =
     overall.claudeInstantPercentage ??
     (hasPro && claude5h != null && claudeWk != null
-      ? calculateModulatedInstantQuota(claude5h, claudeWk)
+      ? calculateModulatedInstantQuota(claude5h, claudeWk, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT)
       : hasPro && claude5h != null
         ? claude5h
         : claudeWk);
@@ -79,7 +79,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             variant="outline"
             className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
           >
-            v1.3.0
+            v1.3.1
           </Badge>
         </div>
       </div>

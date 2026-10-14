@@ -238,7 +238,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                 )}
                 title={`Auto-switch when Account Instant Quota <= ${autoSwitchThreshold}%`}
               >
-                Account Instant Quota
+                Account Instant
               </Button>
               <Button
                 type="button"
@@ -253,7 +253,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                 )}
                 title={`Auto-switch when Gemini Instant Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
               >
-                Gemini Instant Quota
+                Gemini Instant
               </Button>
               <Button
                 type="button"
@@ -268,7 +268,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                 )}
                 title={`Auto-switch when Claude & GPT Instant Quota <= ${autoSwitchThreshold}% (5h Window for Pro/Ultra, Weekly for Free)`}
               >
-                Claude & GPT Instant Quota
+                Claude & GPT Instant
               </Button>
             </div>
 
@@ -291,10 +291,10 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                   >
                     <span>
                       {autoSwitchTarget === "gemini"
-                        ? "Gemini Instant Quota"
+                        ? "Gemini Instant"
                         : autoSwitchTarget === "claude"
-                          ? "Claude & GPT Instant Quota"
-                          : "Account Instant Quota"}
+                          ? "Claude & GPT Instant"
+                          : "Account Instant"}
                     </span>
                     <ChevronDown className="w-3 h-3 opacity-80" />
                   </Button>
@@ -309,7 +309,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                         : "text-foreground hover:bg-accent",
                     )}
                   >
-                    Account Instant Quota
+                    Account Instant
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => onSelectAutoSwitchTarget?.("gemini")}
@@ -320,7 +320,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                         : "text-foreground hover:bg-accent",
                     )}
                   >
-                    Gemini Instant Quota
+                    Gemini Instant
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => onSelectAutoSwitchTarget?.("claude")}
@@ -331,7 +331,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
                         : "text-foreground hover:bg-accent",
                     )}
                   >
-                    Claude & GPT Instant Quota
+                    Claude & GPT Instant
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

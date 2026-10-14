@@ -56,6 +56,19 @@ export const MODEL_WEIGHTS = {
 } as const;
 
 /**
+ * Safe Weekly Quota Thresholds (%) for Instant Quota Modulation
+ * Defines the minimum weekly quota percentage needed so that an account
+ * can burn 100% of its 5-hour rolling burst window without hitting the weekly limit.
+ * - Gemini: ~22.86% measured (set to 25% with safe buffer, ~4.38 burst sessions/week)
+ * - Claude & GPT: 50% measured (burning 100% 5h depletes 50% weekly, ~2 burst sessions/week)
+ */
+export const SAFE_WEEKLY_THRESHOLDS = {
+  GEMINI: 25,
+  CLAUDE_GPT: 50,
+  DEFAULT: 25
+} as const;
+
+/**
  * Persistent Global Storage & Secret Keys
  */
 export const STORAGE_KEYS = {

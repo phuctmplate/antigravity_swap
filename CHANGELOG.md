@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1 (2026-10-14)
+
+- **Quota Modulation**: Calibrated model-specific safe weekly thresholds for Gemini and Claude & GPT.
+- **UI**: Fix dialog overflow, simplified pool quota text.
+
 ## 1.3.0 (2026-10-13)
 
 - **Instant Quota Concept**: Introduced the Instant Quota architecture representing immediately usable burst capacity right now, combining the 5-hour rolling burst window with weekly capacity modulation to prevent lockout.

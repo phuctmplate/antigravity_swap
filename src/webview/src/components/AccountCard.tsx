@@ -7,7 +7,7 @@ import { Button } from './ui/button';
 import { Progress, DashedProgress } from './ui/progress';
 import { Checkbox } from './ui/checkbox';
 import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, Gauge, Zap } from 'lucide-react';
-import { quotaFillClass, quotaTextClass, calculateModulatedInstantQuota, MODEL_WEIGHTS } from '../lib/quota';
+import { quotaFillClass, quotaTextClass, calculateModulatedInstantQuota, MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from '../lib/quota';
 import { cn } from '../lib/utils';
 
 interface AccountCardProps {
@@ -76,7 +76,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
     : isFree
       ? (validGeminiWk ? geminiWeekly.percentage : geminiGroup?.buckets?.[0]?.percentage)
       : (validGemini5h && validGeminiWk
-        ? calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage)
+        ? calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI)
         : validGemini5h
           ? gemini5h.percentage
           : validGeminiWk
@@ -89,7 +89,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
     : isFree
       ? (validClaudeWk ? claudeWeekly.percentage : claudeGptGroup?.buckets?.[0]?.percentage)
       : (validClaude5h && validClaudeWk
-        ? calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage)
+        ? calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT)
         : validClaude5h
           ? claude5h.percentage
           : validClaudeWk
@@ -109,14 +109,16 @@ export const AccountCard: React.FC<AccountCardProps> = ({
     ? undefined
     : isFree
       ? (account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? (geminiInstant != null && claudeInstant != null ? Math.round((geminiInstant * MODEL_WEIGHTS.GEMINI) + (claudeInstant * MODEL_WEIGHTS.CLAUDE)) : geminiInstant ?? claudeInstant))
-      : (() => {
-          const p5h = account.fiveHourQuotaPercentage ?? (validGemini5h && validClaude5h ? Math.round((gemini5h.percentage * MODEL_WEIGHTS.GEMINI) + (claude5h.percentage * MODEL_WEIGHTS.CLAUDE)) : validGemini5h ? gemini5h.percentage : validClaude5h ? claude5h.percentage : undefined);
-          const pWk = account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? (geminiInstant != null && claudeInstant != null ? Math.round((geminiInstant * MODEL_WEIGHTS.GEMINI) + (claudeInstant * MODEL_WEIGHTS.CLAUDE)) : geminiInstant ?? claudeInstant);
-          if (p5h !== undefined && pWk !== undefined) {
-            return calculateModulatedInstantQuota(p5h, pWk);
-          }
-          return p5h ?? pWk;
-        })();
+      : (geminiInstant != null && claudeInstant != null
+          ? Math.round((geminiInstant * MODEL_WEIGHTS.GEMINI) + (claudeInstant * MODEL_WEIGHTS.CLAUDE))
+          : geminiInstant ?? claudeInstant ?? (() => {
+              const p5h = account.fiveHourQuotaPercentage ?? (validGemini5h && validClaude5h ? Math.round((gemini5h.percentage * MODEL_WEIGHTS.GEMINI) + (claude5h.percentage * MODEL_WEIGHTS.CLAUDE)) : validGemini5h ? gemini5h.percentage : validClaude5h ? claude5h.percentage : undefined);
+              const pWk = account.weeklyQuotaPercentage ?? account.averageQuotaPercentage;
+              if (p5h !== undefined && pWk !== undefined) {
+                return calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
+              }
+              return p5h ?? pWk;
+            })());
 
   const getFillClass = quotaFillClass;
   const getTextColor = quotaTextClass;

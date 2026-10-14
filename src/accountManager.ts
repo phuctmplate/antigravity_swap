@@ -3,7 +3,7 @@ import { AccountInfo, OAuthTokens, OverallQuotaSummary, AutoSwitchTarget } from 
 import { StorageService } from './storage';
 import { OAuthService } from './oauthService';
 import { QuotaService, calculateModulatedInstantQuota } from './quotaService';
-import { CONFIG_KEYS, EXTENSION_DEFAULTS, MODEL_WEIGHTS } from './constants';
+import { CONFIG_KEYS, EXTENSION_DEFAULTS, MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from './constants';
 
 export class AccountManager {
   private accounts: AccountInfo[] = [];
@@ -1018,14 +1018,32 @@ export class AccountManager {
       if (isFree) {
         return pWk;
       }
+      const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+      const gemini5h = geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash'));
+      const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
+      const claudeGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+      const claude5h = claudeGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+      const claudeWeekly = claudeGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+
+      const validG5h = gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0;
+      const validGWk = geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0;
+      const validC5h = claude5h && !claude5h.disabled && claude5h.percentage >= 0;
+      const validCWk = claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0;
+
+      if (validG5h && validGWk && validC5h && validCWk) {
+        const gInst = calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+        const cInst = calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+        return Math.round((gInst * MODEL_WEIGHTS.GEMINI) + (cInst * MODEL_WEIGHTS.CLAUDE));
+      }
+      if (validG5h && validGWk) {
+        return calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+      }
+      if (validC5h && validCWk) {
+        return calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+      }
+
       let p5h = account.fiveHourQuotaPercentage;
       if (p5h === undefined) {
-        const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
-        const gemini5h = geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash'));
-        const claudeGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
-        const claude5h = claudeGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
-        const validG5h = gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0;
-        const validC5h = claude5h && !claude5h.disabled && claude5h.percentage >= 0;
         if (validG5h && validC5h) {
           p5h = Math.round((gemini5h.percentage * MODEL_WEIGHTS.GEMINI) + (claude5h.percentage * MODEL_WEIGHTS.CLAUDE));
         } else if (validG5h) {
@@ -1035,7 +1053,7 @@ export class AccountManager {
         }
       }
       if (p5h !== undefined) {
-        return calculateModulatedInstantQuota(p5h, pWk);
+        return calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
       }
       return pWk;
     }
@@ -1065,7 +1083,7 @@ export class AccountManager {
         const pWk = (geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0) ? geminiWeekly.percentage : undefined;
 
         if (p5h !== undefined && pWk !== undefined) {
-          return calculateModulatedInstantQuota(p5h, pWk);
+          return calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.GEMINI);
         }
         if (p5h !== undefined) return p5h;
         if (pWk !== undefined) return pWk;
@@ -1101,7 +1119,7 @@ export class AccountManager {
         const pWk = (claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0) ? claudeWeekly.percentage : undefined;
 
         if (p5h !== undefined && pWk !== undefined) {
-          return calculateModulatedInstantQuota(p5h, pWk);
+          return calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
         }
         if (p5h !== undefined) return p5h;
         if (pWk !== undefined) return pWk;
@@ -1144,7 +1162,7 @@ export class AccountManager {
     const isUnusable = isAuthFailed || isBanned;
 
     if (isDepleted || isUnusable) {
-      const targetLabel = target === 'gemini' ? 'Gemini Instant Quota' : target === 'claude' ? 'Claude & GPT Instant Quota' : 'Account Instant Quota';
+      const targetLabel = target === 'gemini' ? 'Gemini Instant' : target === 'claude' ? 'Claude & GPT Instant' : 'Account Instant';
 
       // Find candidates that have healthy quota for this target
       const candidates = this.accounts.filter((a) => {

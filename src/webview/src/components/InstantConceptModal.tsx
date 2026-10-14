@@ -26,8 +26,8 @@ export const InstantConceptModal: React.FC<InstantConceptModalProps> = ({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {children && <DialogTrigger asChild>{children}</DialogTrigger>}
-      <DialogContent className="sm:max-w-md gap-3.5 p-4.5">
-        <DialogHeader className="gap-1">
+      <DialogContent className="sm:max-w-md max-h-[calc(100dvh-2rem)] flex flex-col gap-3 p-4">
+        <DialogHeader className="gap-1 shrink-0 pr-6">
           <div className="flex items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-500/15 text-amber-500 shrink-0">
               <Zap className="w-4 h-4" />
@@ -41,9 +41,9 @@ export const InstantConceptModal: React.FC<InstantConceptModalProps> = ({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-2.5 text-xs text-foreground/90 my-0.5">
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2.5 text-xs text-foreground/90 my-0.5 pr-1.5">
           {/* The Problem */}
-          <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20">
+          <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 shrink-0">
             <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
             <div className="flex flex-col gap-0.5">
               <span className="font-semibold text-rose-600 dark:text-rose-400 text-[11px]">
@@ -56,7 +56,7 @@ export const InstantConceptModal: React.FC<InstantConceptModalProps> = ({
           </div>
 
           {/* The Solution */}
-          <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+          <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 shrink-0">
             <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
             <div className="flex flex-col gap-0.5">
               <span className="font-semibold text-emerald-600 dark:text-emerald-400 text-[11px]">
@@ -69,7 +69,7 @@ export const InstantConceptModal: React.FC<InstantConceptModalProps> = ({
           </div>
 
           {/* Recommended Setting */}
-          <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-sky-500/10 border border-sky-500/20">
+          <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-sky-500/10 border border-sky-500/20 shrink-0">
             <SlidersHorizontal className="w-4 h-4 text-sky-500 shrink-0 mt-0.5" />
             <div className="flex flex-col gap-0.5">
               <span className="font-semibold text-sky-600 dark:text-sky-400 text-[11px]">
@@ -82,7 +82,7 @@ export const InstantConceptModal: React.FC<InstantConceptModalProps> = ({
           </div>
 
           {/* Quick Guide */}
-          <div className="p-2.5 rounded-lg bg-muted/30 border border-border/50 text-[11px] flex flex-col gap-1.5">
+          <div className="p-2.5 rounded-lg bg-muted/30 border border-border/50 text-[11px] flex flex-col gap-1.5 shrink-0">
             <span className="font-semibold text-foreground flex items-center gap-1.5">
               <Layers className="w-3.5 h-3.5 text-amber-500" />
               Quick Guide
@@ -104,7 +104,7 @@ export const InstantConceptModal: React.FC<InstantConceptModalProps> = ({
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0 pt-1">
           <DialogClose asChild>
             <Button
               size="sm"

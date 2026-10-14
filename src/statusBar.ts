@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { AccountManager } from "./accountManager";
+import { SAFE_WEEKLY_THRESHOLDS } from "./constants";
 
 export class StatusBarService implements vscode.Disposable {
   private statusBarItem: vscode.StatusBarItem;
@@ -41,7 +42,7 @@ export class StatusBarService implements vscode.Disposable {
       : active.email.split("@")[0];
 
     if (active.status === "auth_failed") {
-      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | Pool Instant Quota: ${instantPct}%`;
+      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | Pool Instant: ${instantPct}%`;
       this.statusBarItem.tooltip = `Antigravity Swap: Authentication failed for ${active.email}. Click to re-login or switch.`;
       this.statusBarItem.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.warningBackground",
@@ -81,7 +82,7 @@ export class StatusBarService implements vscode.Disposable {
       this.statusBarItem.backgroundColor = undefined;
     }
 
-    this.statusBarItem.text = `${icon} ${displayName} (Instant Gemini: ${geminiPct}%, Instant C&G: ${claudePct}%) | Pool Instant Quota: ${instantPct}%`;
+    this.statusBarItem.text = `${icon} ${displayName} (Gemini Instant: ${geminiPct}%, C&G Instant: ${claudePct}%) | Pool Instant: ${instantPct}%`;
 
     // Build a clean, readable MarkdownString tooltip
     const md = new vscode.MarkdownString("", true);
@@ -190,20 +191,20 @@ export class StatusBarService implements vscode.Disposable {
         `**$(dashboard) Account Total Quota:** **${activePct}%**\n\n`,
       );
 
-      // If either model is attenuated by low weekly fuel (< 40%), add a subtle note
+      // If either model is attenuated by low weekly fuel, add a subtle note
       const isAttenuated =
         !isFree &&
         ((geminiWeekly &&
-          geminiWeekly.percentage < 30 &&
+          geminiWeekly.percentage < SAFE_WEEKLY_THRESHOLDS.GEMINI &&
           gemini5h &&
           gemini5h.percentage > geminiPct) ||
           (claudeWeekly &&
-            claudeWeekly.percentage < 30 &&
+            claudeWeekly.percentage < SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT &&
             claude5h &&
             claude5h.percentage > claudePct));
       if (isAttenuated) {
         md.appendMarkdown(
-          `*$(warning) Account Instant Quota is currently modulated due to low remaining weekly fuel (< 30%).*\n\n`,
+          `*$(warning) Account Instant Quota is currently modulated due to low remaining weekly fuel capacity.*\n\n`,
         );
       }
 

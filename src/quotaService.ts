@@ -11,7 +11,7 @@ import {
   QuotaGroup
 } from './types';
 import { OAuthService } from './oauthService';
-import { API_ENDPOINTS, TIER_WEIGHTS, MODEL_WEIGHTS, EXTENSION_DEFAULTS } from './constants';
+import { API_ENDPOINTS, TIER_WEIGHTS, MODEL_WEIGHTS, EXTENSION_DEFAULTS, SAFE_WEEKLY_THRESHOLDS } from './constants';
 
 
 export interface QuotaFetchResult {
@@ -38,18 +38,21 @@ export interface QuotaFetchResult {
 /**
  * Calculates the usable instant burst quota for a rolling window (5h)
  * modulated by remaining weekly fuel capacity.
- * - Above 30% weekly (safe burst boundary): rolling window is 100% usable (HealthFactor = 1.0).
- * - Below 30% weekly: weekly fuel attenuates 5h via smooth linear decay (Weekly / 30).
+ * - Above safe threshold (25% for Gemini, 50% for Claude & GPT): rolling window is 100% usable (HealthFactor = 1.0).
+ * - Below safe threshold: weekly fuel attenuates 5h via smooth linear decay (Weekly / threshold).
  */
-export function calculateModulatedInstantQuota(p5h: number, pWeekly?: number): number {
+export function calculateModulatedInstantQuota(
+  p5h: number,
+  pWeekly?: number,
+  safeWeeklyThreshold: number = SAFE_WEEKLY_THRESHOLDS.DEFAULT
+): number {
   if (pWeekly === undefined) {
     return p5h;
   }
-  const SAFE_WEEKLY_THRESHOLD = 30;
   const healthFactor =
-    pWeekly >= SAFE_WEEKLY_THRESHOLD
+    pWeekly >= safeWeeklyThreshold
       ? 1.0
-      : Math.max(0, pWeekly) / SAFE_WEEKLY_THRESHOLD;
+      : Math.max(0, pWeekly) / safeWeeklyThreshold;
   return Math.round(p5h * healthFactor);
 }
 
@@ -1379,16 +1382,34 @@ export class QuotaService {
       //   Below 40% weekly, weekly fuel attenuates 5h via smooth square-root decay (Math.sqrt(Weekly / 40)).
       let pInstant = pWeekly;
       if (!isFree) {
-        let p5h: number | undefined = acc.fiveHourQuotaPercentage;
-        if (p5h === undefined && acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled && acc.geminiGroup.fiveHour.percentage >= 0) {
-          const g5h = acc.geminiGroup.fiveHour.percentage;
-          const c5h = (acc.claudeGptGroup?.fiveHour && !acc.claudeGptGroup.fiveHour.disabled && acc.claudeGptGroup.fiveHour.percentage >= 0)
-            ? acc.claudeGptGroup.fiveHour.percentage
-            : undefined;
-          p5h = c5h !== undefined ? Math.round((g5h * MODEL_WEIGHTS.GEMINI + c5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE)) : g5h;
-        }
-        if (p5h !== undefined) {
-          pInstant = calculateModulatedInstantQuota(p5h, pWeekly);
+        const g5h = acc.geminiGroup?.fiveHour;
+        const validG5h = g5h && !g5h.disabled && g5h.percentage >= 0;
+        const gWk = acc.geminiGroup?.weekly;
+        const validGWk = gWk && !gWk.disabled && gWk.percentage >= 0;
+
+        const c5h = acc.claudeGptGroup?.fiveHour;
+        const validC5h = c5h && !c5h.disabled && c5h.percentage >= 0;
+        const cWk = acc.claudeGptGroup?.weekly;
+        const validCWk = cWk && !cWk.disabled && cWk.percentage >= 0;
+
+        if (validG5h && validGWk && validC5h && validCWk) {
+          const gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+          const cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+          pInstant = Math.round((gInstant * MODEL_WEIGHTS.GEMINI + cInstant * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+        } else if (validG5h && validGWk) {
+          pInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+        } else if (validC5h && validCWk) {
+          pInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+        } else {
+          let p5h: number | undefined = acc.fiveHourQuotaPercentage;
+          if (p5h === undefined && validG5h) {
+            p5h = validC5h
+              ? Math.round((g5h.percentage * MODEL_WEIGHTS.GEMINI + c5h.percentage * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE))
+              : g5h.percentage;
+          }
+          if (p5h !== undefined) {
+            pInstant = calculateModulatedInstantQuota(p5h, pWeekly, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
+          }
         }
       }
       sumInstantWeighted += pInstant * weight;
@@ -1429,7 +1450,7 @@ export class QuotaService {
         let gInstant = validGWk ? gWk.percentage : 0;
         if (!isFree) {
           if (validG5h && validGWk) {
-            gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage);
+            gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
           } else if (validG5h) {
             gInstant = g5h.percentage;
           }
@@ -1457,7 +1478,7 @@ export class QuotaService {
         let cInstant = validCWk ? cWk.percentage : 0;
         if (!isFree) {
           if (validC5h && validCWk) {
-            cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage);
+            cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
           } else if (validC5h) {
             cInstant = c5h.percentage;
           }

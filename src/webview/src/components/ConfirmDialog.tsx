@@ -41,7 +41,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       }}
     >
       <DialogContent>
-        <DialogHeader className="gap-2">
+        <DialogHeader className="gap-2 shrink-0">
           <div className="flex items-center gap-2 text-foreground">
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-rose-500/15 text-rose-500 shrink-0">
               {isDestructive ? (
@@ -56,7 +56,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
         </DialogHeader>
 
         {items.length > 0 && (
-          <div className="max-h-28 overflow-y-auto rounded-md bg-muted/40 p-2 border border-border/60 flex flex-col gap-1 text-[11px] font-mono text-foreground/90">
+          <div className="flex-1 min-h-0 max-h-36 overflow-y-auto rounded-md bg-muted/40 p-2 border border-border/60 flex flex-col gap-1 text-[11px] font-mono text-foreground/90">
             {items.map((item, idx) => (
               <div key={idx} className="truncate flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
@@ -66,7 +66,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0 pt-1">
           <Button
             onClick={onCancel}
             size="sm"

@@ -27,20 +27,36 @@ export const MODEL_WEIGHTS = {
 } as const;
 
 /**
+ * Safe Weekly Quota Thresholds (%) for Instant Quota Modulation
+ * Defines the minimum weekly quota percentage needed so that an account
+ * can burn 100% of its 5-hour rolling burst window without hitting the weekly limit.
+ * - Gemini: ~22.86% measured (set to 25% with safe buffer, ~4.38 burst sessions/week)
+ * - Claude & GPT: 50% measured (burning 100% 5h depletes 50% weekly, ~2 burst sessions/week)
+ */
+export const SAFE_WEEKLY_THRESHOLDS = {
+  GEMINI: 25,
+  CLAUDE_GPT: 50,
+  DEFAULT: 25,
+} as const;
+
+/**
  * Calculates the usable instant burst quota for a rolling window (5h)
  * modulated by remaining weekly fuel capacity.
- * - Above 30% weekly: rolling window is 100% usable (HealthFactor = 1.0).
- * - Below 30% weekly: weekly fuel attenuates 5h via smooth linear decay (Weekly / 30).
+ * - Above safe threshold (25% for Gemini, 50% for Claude & GPT): rolling window is 100% usable (HealthFactor = 1.0).
+ * - Below safe threshold: weekly fuel attenuates 5h via smooth linear decay (Weekly / threshold).
  */
-export const calculateModulatedInstantQuota = (p5h: number, pWeekly?: number): number => {
+export const calculateModulatedInstantQuota = (
+  p5h: number,
+  pWeekly?: number,
+  safeWeeklyThreshold: number = SAFE_WEEKLY_THRESHOLDS.DEFAULT
+): number => {
   if (pWeekly === undefined) {
     return p5h;
   }
-  const SAFE_WEEKLY_THRESHOLD = 30;
   const healthFactor =
-    pWeekly >= SAFE_WEEKLY_THRESHOLD
+    pWeekly >= safeWeeklyThreshold
       ? 1.0
-      : Math.max(0, pWeekly) / SAFE_WEEKLY_THRESHOLD;
+      : Math.max(0, pWeekly) / safeWeeklyThreshold;
   return Math.round(p5h * healthFactor);
 };
 
