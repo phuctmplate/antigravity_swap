@@ -29,8 +29,8 @@ export const API_ENDPOINTS = {
   USER_INFO_HOST: 'www.googleapis.com',
   USER_INFO_PATH: '/oauth2/v3/userinfo',
   CLOUD_CODE_HOSTS: [
-    'daily-cloudcode-pa.googleapis.com', // Primary backend with Claude & GPT rolling quotas
-    'cloudcode-pa.googleapis.com'       // Fallback backend
+    'daily-cloudcode-pa.googleapis.com', // Primary Antigravity backend with active runtime model quotas
+    'cloudcode-pa.googleapis.com'        // Production backend with Gemini weekly plan quotas
   ] as const
 } as const;
 

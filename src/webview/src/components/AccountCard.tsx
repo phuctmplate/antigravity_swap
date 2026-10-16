@@ -52,16 +52,17 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const claudeGptGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
 
   const quotas = account.quotas || [];
-  const fiveHourQuotas = quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
+  // 5h quotas only exist for paid tiers (Free tier strictly has no 5h bucket)
+  const fiveHourQuotas = isFree ? [] : quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
   const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
 
-  // Gemini buckets
-  const gemini5h = geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash'));
+  // Gemini buckets: Free tier strictly has no 5h bucket
+  const gemini5h = isFree ? undefined : (geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')));
   const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
 
-  // Claude & GPT buckets
+  // Claude & GPT buckets: Free tier strictly has no 5h bucket
   const claudeWeekly = claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
-  const claude5h = claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+  const claude5h = isFree ? undefined : (claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
 
   // Validity checks for buckets
   const validGemini5h = gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0;
@@ -70,55 +71,80 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const validClaudeWk = claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0;
 
   // Instant quota calculations
-  const hasGeminiData = gemini5h != null || geminiWeekly != null || geminiGroup != null;
-  const geminiInstant: number | undefined = !hasGeminiData
-    ? undefined
-    : isFree
-      ? (validGeminiWk ? geminiWeekly.percentage : geminiGroup?.buckets?.[0]?.percentage)
-      : (validGemini5h && validGeminiWk
-        ? calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI)
-        : validGemini5h
-          ? gemini5h.percentage
-          : validGeminiWk
-            ? geminiWeekly.percentage
-            : geminiGroup?.buckets?.[0]?.percentage);
+  let geminiInstant: number | undefined;
+  if (isFree) {
+    if (validGeminiWk) {
+      geminiInstant = geminiWeekly.percentage;
+    } else if (geminiGroup?.buckets?.[0]?.percentage !== undefined && geminiGroup.buckets[0].percentage >= 0) {
+      geminiInstant = geminiGroup.buckets[0].percentage;
+    }
+  } else {
+    if (validGemini5h && validGeminiWk) {
+      geminiInstant = calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+    } else if (validGemini5h) {
+      geminiInstant = gemini5h.percentage;
+    } else if (validGeminiWk) {
+      geminiInstant = geminiWeekly.percentage;
+    } else if (geminiGroup?.buckets?.[0]?.percentage !== undefined && geminiGroup.buckets[0].percentage >= 0) {
+      geminiInstant = geminiGroup.buckets[0].percentage;
+    }
+  }
 
-  const hasClaudeData = claude5h != null || claudeWeekly != null || claudeGptGroup != null;
-  const claudeInstant: number | undefined = !hasClaudeData
-    ? undefined
-    : isFree
-      ? (validClaudeWk ? claudeWeekly.percentage : claudeGptGroup?.buckets?.[0]?.percentage)
-      : (validClaude5h && validClaudeWk
-        ? calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT)
-        : validClaude5h
-          ? claude5h.percentage
-          : validClaudeWk
-            ? claudeWeekly.percentage
-            : claudeGptGroup?.buckets?.[0]?.percentage);
+  let claudeInstant: number | undefined;
+  if (isFree) {
+    if (validClaudeWk) {
+      claudeInstant = claudeWeekly.percentage;
+    } else if (claudeGptGroup?.buckets?.[0]?.percentage !== undefined && claudeGptGroup.buckets[0].percentage >= 0) {
+      claudeInstant = claudeGptGroup.buckets[0].percentage;
+    }
+  } else {
+    if (validClaude5h && validClaudeWk) {
+      claudeInstant = calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+    } else if (validClaude5h) {
+      claudeInstant = claude5h.percentage;
+    } else if (validClaudeWk) {
+      claudeInstant = claudeWeekly.percentage;
+    } else if (claudeGptGroup?.buckets?.[0]?.percentage !== undefined && claudeGptGroup.buckets[0].percentage >= 0) {
+      claudeInstant = claudeGptGroup.buckets[0].percentage;
+    }
+  }
 
-  const hasQuotaData =
-    (quotas.length > 0 ||
-      geminiGroup != null ||
-      claudeGptGroup != null ||
-      account.weeklyQuotaPercentage != null ||
-      account.fiveHourQuotaPercentage != null ||
-      account.lastRefreshedAt != null) &&
-    account.averageQuotaPercentage != null;
+  // Account Instant Quota: combines available models without dragging missing models down to 0
+  let accountInstant: number | undefined;
+  if (geminiInstant != null && claudeInstant != null) {
+    accountInstant = Math.round((geminiInstant * MODEL_WEIGHTS.GEMINI) + (claudeInstant * MODEL_WEIGHTS.CLAUDE));
+  } else if (geminiInstant != null) {
+    accountInstant = geminiInstant;
+  } else if (claudeInstant != null) {
+    accountInstant = claudeInstant;
+  } else {
+    // Only fall back to account-level aggregates if present
+    if (isFree) {
+      accountInstant = account.weeklyQuotaPercentage ?? account.averageQuotaPercentage;
+    } else {
+      const p5h = account.fiveHourQuotaPercentage;
+      const pWk = account.weeklyQuotaPercentage ?? account.averageQuotaPercentage;
+      if (p5h !== undefined && pWk !== undefined) {
+        accountInstant = calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
+      } else if (p5h !== undefined) {
+        accountInstant = p5h;
+      } else if (pWk !== undefined) {
+        accountInstant = pWk;
+      }
+    }
+  }
 
-  const accountInstant: number | undefined = !hasQuotaData
-    ? undefined
-    : isFree
-      ? (account.weeklyQuotaPercentage ?? account.averageQuotaPercentage ?? (geminiInstant != null && claudeInstant != null ? Math.round((geminiInstant * MODEL_WEIGHTS.GEMINI) + (claudeInstant * MODEL_WEIGHTS.CLAUDE)) : geminiInstant ?? claudeInstant))
-      : (geminiInstant != null && claudeInstant != null
-          ? Math.round((geminiInstant * MODEL_WEIGHTS.GEMINI) + (claudeInstant * MODEL_WEIGHTS.CLAUDE))
-          : geminiInstant ?? claudeInstant ?? (() => {
-              const p5h = account.fiveHourQuotaPercentage ?? (validGemini5h && validClaude5h ? Math.round((gemini5h.percentage * MODEL_WEIGHTS.GEMINI) + (claude5h.percentage * MODEL_WEIGHTS.CLAUDE)) : validGemini5h ? gemini5h.percentage : validClaude5h ? claude5h.percentage : undefined);
-              const pWk = account.weeklyQuotaPercentage ?? account.averageQuotaPercentage;
-              if (p5h !== undefined && pWk !== undefined) {
-                return calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
-              }
-              return p5h ?? pWk;
-            })());
+  // Account Total Quota
+  let accountTotal: number | undefined = account.averageQuotaPercentage ?? account.weeklyQuotaPercentage;
+  if (accountTotal === undefined) {
+    if (validGeminiWk && validClaudeWk) {
+      accountTotal = Math.round((geminiWeekly.percentage * MODEL_WEIGHTS.GEMINI) + (claudeWeekly.percentage * MODEL_WEIGHTS.CLAUDE));
+    } else if (validGeminiWk) {
+      accountTotal = geminiWeekly.percentage;
+    } else if (validClaudeWk) {
+      accountTotal = claudeWeekly.percentage;
+    }
+  }
 
   const getFillClass = quotaFillClass;
   const getTextColor = quotaTextClass;
@@ -359,102 +385,96 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
                     Gemini Models
                   </span>
-                  {isFree && !gemini5h && (
+                  {isFree && (
                     <span className="text-[9px] text-muted-foreground font-medium">Free Tier</span>
                   )}
                 </div>
 
-                {/* Gemini Instant Quota */}
-                {geminiInstant != null && (
-                  <div
-                    className="flex flex-col gap-0.5 cursor-help"
-                    title={`Gemini Instant Quota (${geminiInstant}%): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
-                  >
-                    <div className="flex justify-between items-center text-[9px]">
-                      <span className="flex items-center gap-1 min-w-0">
-                        <Zap className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                        <span className="text-foreground/90 font-medium">Instant</span>
-                      </span>
-                      <span className={`font-bold font-mono ml-1 shrink-0 ${getTextColor(geminiInstant)}`}>
-                        {geminiInstant}%
-                      </span>
+                {/* Gemini Instant Quota Slot (Always rendered) */}
+                <div
+                  className="flex flex-col gap-0.5 cursor-help"
+                  title={geminiInstant != null ? `Gemini Instant Quota (${geminiInstant}%): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.` : 'Gemini Instant Quota: No data'}
+                >
+                  <div className="flex justify-between items-center text-[9px]">
+                    <span className="flex items-center gap-1 min-w-0">
+                      <Zap className={cn("w-2.5 h-2.5 shrink-0", geminiInstant != null ? "text-amber-400" : "text-muted-foreground/40")} />
+                      <span className={cn("font-medium", geminiInstant != null ? "text-foreground/90" : "text-muted-foreground/50")}>Instant</span>
+                    </span>
+                    <span className={cn("font-bold font-mono ml-1 shrink-0", geminiInstant != null ? getTextColor(geminiInstant) : "text-muted-foreground")}>
+                      {geminiInstant != null ? `${geminiInstant}%` : '-%'}
+                    </span>
+                  </div>
+                  <Progress
+                    value={geminiInstant ?? 0}
+                    indicatorClassName={geminiInstant != null ? getFillClass(geminiInstant) : "bg-transparent"}
+                    className="h-1.5 w-full"
+                  />
+                </div>
+
+                {/* Gemini Sub-Windows Container (Always rendered) */}
+                <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
+                  {/* Gemini 5h Window Slot (Only rendered for non-Free tiers) */}
+                  {!isFree && (
+                    <div className="flex flex-col gap-0.5">
+                      <div
+                        className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
+                        title={validGemini5h ? `5h: ${gemini5h.disabled ? 'N/A' : gemini5h.percentage + '%'} ${bucketNote(gemini5h)}` : '5h rolling limit: No data'}
+                      >
+                        <span className="flex items-center gap-1 min-w-0">
+                          <Clock className={cn("w-2.5 h-2.5 shrink-0", validGemini5h ? "text-sky-400" : "text-muted-foreground/40")} />
+                          <span className={cn("font-medium", validGemini5h ? "text-foreground/80" : "text-muted-foreground/50")}>5h</span>
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
+                          {validGemini5h && gemini5h.resetCountdown && (
+                            <span className="text-muted-foreground/80 font-normal">
+                              {gemini5h.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${gemini5h.resetCountdown}`}
+                            </span>
+                          )}
+                          {validGemini5h && gemini5h.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                          <span className={cn("font-bold", validGemini5h ? (gemini5h.disabled ? "text-muted-foreground" : getTextColor(gemini5h.percentage)) : "text-muted-foreground")}>
+                            {validGemini5h ? (gemini5h.disabled ? 'N/A' : `${gemini5h.percentage}%`) : '-%'}
+                          </span>
+                        </div>
+                      </div>
+                      <DashedProgress
+                        value={validGemini5h ? gemini5h.percentage : 0}
+                        disabled={!validGemini5h || gemini5h.disabled}
+                        indicatorClassName={validGemini5h ? (gemini5h.disabled ? "bg-muted" : getFillClass(gemini5h.percentage)) : "bg-transparent"}
+                        className="h-1.5 w-full"
+                      />
                     </div>
-                    <Progress
-                      value={geminiInstant}
-                      indicatorClassName={getFillClass(geminiInstant)}
+                  )}
+
+                  {/* Gemini Weekly Window Slot (Always rendered for all tiers) */}
+                  <div className="flex flex-col gap-0.5">
+                    <div
+                      className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
+                      title={validGeminiWk ? `Weekly: ${geminiWeekly.percentage}% ${bucketNote(geminiWeekly)}` : 'Weekly quota: No data'}
+                    >
+                      <span className="flex items-center gap-1 min-w-0">
+                        <Calendar className={cn("w-2.5 h-2.5 shrink-0", validGeminiWk ? "text-purple-400" : "text-muted-foreground/40")} />
+                        <span className={cn("font-medium", validGeminiWk ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
+                        {validGeminiWk && geminiWeekly.resetCountdown && (
+                          <span className="text-muted-foreground/80 font-normal">
+                            {geminiWeekly.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${geminiWeekly.resetCountdown}`}
+                          </span>
+                        )}
+                        {validGeminiWk && geminiWeekly.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                        <span className={cn("font-bold", validGeminiWk ? getTextColor(geminiWeekly.percentage) : "text-muted-foreground")}>
+                          {validGeminiWk ? `${geminiWeekly.percentage}%` : '-%'}
+                        </span>
+                      </div>
+                    </div>
+                    <DashedProgress
+                      value={validGeminiWk ? geminiWeekly.percentage : 0}
+                      disabled={!validGeminiWk || geminiWeekly.disabled}
+                      indicatorClassName={validGeminiWk ? getFillClass(geminiWeekly.percentage) : "bg-transparent"}
                       className="h-1.5 w-full"
                     />
                   </div>
-                )}
-
-                {/* Gemini Sub-Windows: 5h Window & Weekly Plan Breakdown */}
-                {(gemini5h || geminiWeekly) ? (
-                  <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
-                    {gemini5h && (
-                      <div className="flex flex-col gap-0.5">
-                        <div
-                          className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
-                          title={`5h: ${gemini5h.disabled ? 'N/A' : gemini5h.percentage + '%'} ${bucketNote(gemini5h)}`}
-                        >
-                          <span className="flex items-center gap-1 min-w-0">
-                            <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
-                            <span className="font-medium text-foreground/80">5h</span>
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                            {gemini5h.resetCountdown && (
-                              <span className="text-muted-foreground/80 font-normal">
-                                {gemini5h.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${gemini5h.resetCountdown}`}
-                              </span>
-                            )}
-                            {gemini5h.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
-                            <span className={cn("font-bold", gemini5h.disabled ? "text-muted-foreground" : getTextColor(gemini5h.percentage))}>
-                              {gemini5h.disabled ? 'N/A' : `${gemini5h.percentage}%`}
-                            </span>
-                          </div>
-                        </div>
-                        <DashedProgress
-                          value={gemini5h.percentage}
-                          disabled={gemini5h.disabled}
-                          indicatorClassName={gemini5h.disabled ? "bg-muted" : getFillClass(gemini5h.percentage)}
-                          className="h-1.5 w-full"
-                        />
-                      </div>
-                    )}
-
-                    {geminiWeekly && (
-                      <div className="flex flex-col gap-0.5">
-                        <div
-                          className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
-                          title={`Weekly: ${geminiWeekly.percentage}% ${bucketNote(geminiWeekly)}`}
-                        >
-                          <span className="flex items-center gap-1 min-w-0">
-                            <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
-                            <span className="font-medium text-foreground/80">Weekly</span>
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                            {geminiWeekly.resetCountdown && (
-                              <span className="text-muted-foreground/80 font-normal">
-                                {geminiWeekly.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${geminiWeekly.resetCountdown}`}
-                              </span>
-                            )}
-                            {geminiWeekly.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
-                            <span className={cn("font-bold", getTextColor(geminiWeekly.percentage))}>
-                              {geminiWeekly.percentage}%
-                            </span>
-                          </div>
-                        </div>
-                        <DashedProgress
-                          value={geminiWeekly.percentage}
-                          disabled={geminiWeekly.disabled}
-                          indicatorClassName={getFillClass(geminiWeekly.percentage)}
-                          className="h-1.5 w-full"
-                        />
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-[9px] text-muted-foreground">Standard access</div>
-                )}
+                </div>
               </div>
 
               {/* Group 2: Claude & GPT Models */}
@@ -464,102 +484,96 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                     <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                     Claude & GPT
                   </span>
-                  {isFree && !claude5h ? (
+                  {isFree && (
                     <span className="text-[9px] text-muted-foreground font-medium">Free Tier</span>
-                  ) : null}
+                  )}
                 </div>
 
-                {/* Claude & GPT Instant Quota */}
-                {claudeInstant != null && (
-                  <div
-                    className="flex flex-col gap-0.5 cursor-help"
-                    title={`Claude & GPT Instant Quota (${claudeInstant}%): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
-                  >
-                    <div className="flex justify-between items-center text-[9px]">
-                      <span className="flex items-center gap-1 min-w-0">
-                        <Zap className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                        <span className="text-foreground/90 font-medium">Instant</span>
-                      </span>
-                      <span className={`font-bold font-mono ml-1 shrink-0 ${getTextColor(claudeInstant)}`}>
-                        {claudeInstant}%
-                      </span>
+                {/* Claude & GPT Instant Quota Slot (Always rendered) */}
+                <div
+                  className="flex flex-col gap-0.5 cursor-help"
+                  title={claudeInstant != null ? `Claude & GPT Instant Quota (${claudeInstant}%): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.` : 'Claude & GPT Instant Quota: No data'}
+                >
+                  <div className="flex justify-between items-center text-[9px]">
+                    <span className="flex items-center gap-1 min-w-0">
+                      <Zap className={cn("w-2.5 h-2.5 shrink-0", claudeInstant != null ? "text-amber-400" : "text-muted-foreground/40")} />
+                      <span className={cn("font-medium", claudeInstant != null ? "text-foreground/90" : "text-muted-foreground/50")}>Instant</span>
+                    </span>
+                    <span className={cn("font-bold font-mono ml-1 shrink-0", claudeInstant != null ? getTextColor(claudeInstant) : "text-muted-foreground")}>
+                      {claudeInstant != null ? `${claudeInstant}%` : '-%'}
+                    </span>
+                  </div>
+                  <Progress
+                    value={claudeInstant ?? 0}
+                    indicatorClassName={claudeInstant != null ? getFillClass(claudeInstant) : "bg-transparent"}
+                    className="h-1.5 w-full"
+                  />
+                </div>
+
+                {/* Claude Sub-Windows Container (Always rendered) */}
+                <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
+                  {/* Claude 5h Window Slot (Only rendered for non-Free tiers) */}
+                  {!isFree && (
+                    <div className="flex flex-col gap-0.5">
+                      <div
+                        className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
+                        title={validClaude5h ? `5h: ${claude5h.disabled ? 'N/A' : claude5h.percentage + '%'} ${bucketNote(claude5h)}` : '5h rolling limit: No data'}
+                      >
+                        <span className="flex items-center gap-1 min-w-0">
+                          <Clock className={cn("w-2.5 h-2.5 shrink-0", validClaude5h ? "text-sky-400" : "text-muted-foreground/40")} />
+                          <span className={cn("font-medium", validClaude5h ? "text-foreground/80" : "text-muted-foreground/50")}>5h</span>
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
+                          {validClaude5h && claude5h.resetCountdown && (
+                            <span className={cn("font-normal", claude5h.disabled ? "text-amber-400/90" : "text-muted-foreground/80")}>
+                              {claude5h.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${claude5h.resetCountdown}`}
+                            </span>
+                          )}
+                          {validClaude5h && claude5h.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                          <span className={cn("font-bold", validClaude5h ? (claude5h.disabled ? "text-muted-foreground" : getTextColor(claude5h.percentage)) : "text-muted-foreground")}>
+                            {validClaude5h ? (claude5h.disabled ? 'N/A' : `${claude5h.percentage}%`) : '-%'}
+                          </span>
+                        </div>
+                      </div>
+                      <DashedProgress
+                        value={validClaude5h ? claude5h.percentage : 0}
+                        disabled={!validClaude5h || claude5h.disabled}
+                        indicatorClassName={validClaude5h ? (claude5h.disabled ? "bg-muted" : getFillClass(claude5h.percentage)) : "bg-transparent"}
+                        className="h-1.5 w-full"
+                      />
                     </div>
-                    <Progress
-                      value={claudeInstant}
-                      indicatorClassName={getFillClass(claudeInstant)}
+                  )}
+
+                  {/* Claude Weekly Window Slot (Always rendered for all tiers) */}
+                  <div className="flex flex-col gap-0.5">
+                    <div
+                      className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
+                      title={validClaudeWk ? `Weekly: ${claudeWeekly.percentage}% ${bucketNote(claudeWeekly)}` : 'Weekly quota: No data'}
+                    >
+                      <span className="flex items-center gap-1 min-w-0">
+                        <Calendar className={cn("w-2.5 h-2.5 shrink-0", validClaudeWk ? "text-purple-400" : "text-muted-foreground/40")} />
+                        <span className={cn("font-medium", validClaudeWk ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
+                        {validClaudeWk && claudeWeekly.resetCountdown && (
+                          <span className="text-muted-foreground/80 font-normal">
+                            {claudeWeekly.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${claudeWeekly.resetCountdown}`}
+                          </span>
+                        )}
+                        {validClaudeWk && claudeWeekly.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                        <span className={cn("font-bold", validClaudeWk ? getTextColor(claudeWeekly.percentage) : "text-muted-foreground")}>
+                          {validClaudeWk ? `${claudeWeekly.percentage}%` : '-%'}
+                        </span>
+                      </div>
+                    </div>
+                    <DashedProgress
+                      value={validClaudeWk ? claudeWeekly.percentage : 0}
+                      disabled={!validClaudeWk || claudeWeekly.disabled}
+                      indicatorClassName={validClaudeWk ? getFillClass(claudeWeekly.percentage) : "bg-transparent"}
                       className="h-1.5 w-full"
                     />
                   </div>
-                )}
-
-                {/* Claude Sub-Windows: 5h Window & Weekly Plan Breakdown */}
-                {(claude5h || claudeWeekly) ? (
-                  <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
-                    {claude5h && (
-                      <div className="flex flex-col gap-0.5">
-                        <div
-                          className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
-                          title={`5h: ${claude5h.disabled ? 'N/A' : claude5h.percentage + '%'} ${bucketNote(claude5h)}`}
-                        >
-                          <span className="flex items-center gap-1 min-w-0">
-                            <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
-                            <span className="font-medium text-foreground/80">5h</span>
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                            {claude5h.resetCountdown && (
-                              <span className={cn("font-normal", claude5h.disabled ? "text-amber-400/90" : "text-muted-foreground/80")}>
-                                {claude5h.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${claude5h.resetCountdown}`}
-                              </span>
-                            )}
-                            {claude5h.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
-                            <span className={cn("font-bold", claude5h.disabled ? "text-muted-foreground" : getTextColor(claude5h.percentage))}>
-                              {claude5h.disabled ? 'N/A' : `${claude5h.percentage}%`}
-                            </span>
-                          </div>
-                        </div>
-                        <DashedProgress
-                          value={claude5h.percentage}
-                          disabled={claude5h.disabled}
-                          indicatorClassName={claude5h.disabled ? "bg-muted" : getFillClass(claude5h.percentage)}
-                          className="h-1.5 w-full"
-                        />
-                      </div>
-                    )}
-
-                    {claudeWeekly && (
-                      <div className="flex flex-col gap-0.5">
-                        <div
-                          className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
-                          title={`Weekly: ${claudeWeekly.percentage}% ${bucketNote(claudeWeekly)}`}
-                        >
-                          <span className="flex items-center gap-1 min-w-0">
-                            <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
-                            <span className="font-medium text-foreground/80">Weekly</span>
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                            {claudeWeekly.resetCountdown && (
-                              <span className="text-muted-foreground/80 font-normal">
-                                {claudeWeekly.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${claudeWeekly.resetCountdown}`}
-                              </span>
-                            )}
-                            {claudeWeekly.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
-                            <span className={cn("font-bold", getTextColor(claudeWeekly.percentage))}>
-                              {claudeWeekly.percentage}%
-                            </span>
-                          </div>
-                        </div>
-                        <DashedProgress
-                          value={claudeWeekly.percentage}
-                          disabled={claudeWeekly.disabled}
-                          indicatorClassName={getFillClass(claudeWeekly.percentage)}
-                          className="h-1.5 w-full"
-                        />
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-[9px] text-muted-foreground">Standard access</div>
-                )}
+                </div>
               </div>
             </>
           )}
@@ -571,20 +585,20 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             {/* Account Instant Quota */}
             <div
               className="flex flex-col gap-0.5 cursor-help"
-              title={`Account Instant Quota (${hasQuotaData && accountInstant != null ? `${accountInstant}%` : '—'}): Effective usable quota available right now across all models for this account.`}
+              title={`Account Instant Quota (${accountInstant != null ? `${accountInstant}%` : '-%'}): Effective usable quota available right now across all models for this account.`}
             >
               <div className="flex justify-between items-center text-[10px]">
                 <span className="flex items-center gap-1 font-medium">
                   <Zap className="w-3 h-3 text-amber-400 shrink-0" />
                   <span className="text-foreground/90 font-semibold">Account Instant Quota</span>
                 </span>
-                <span className={cn("font-bold font-mono", hasQuotaData && accountInstant != null ? getTextColor(accountInstant) : "text-muted-foreground")}>
-                  {hasQuotaData && accountInstant != null ? `${accountInstant}%` : '—'}
+                <span className={cn("font-bold font-mono", accountInstant != null ? getTextColor(accountInstant) : "text-muted-foreground")}>
+                  {accountInstant != null ? `${accountInstant}%` : '-%'}
                 </span>
               </div>
               <Progress
-                value={hasQuotaData && accountInstant != null ? accountInstant : 0}
-                indicatorClassName={hasQuotaData && accountInstant != null ? getFillClass(accountInstant) : "bg-transparent"}
+                value={accountInstant != null ? accountInstant : 0}
+                indicatorClassName={accountInstant != null ? getFillClass(accountInstant) : "bg-transparent"}
                 className="h-1.5 w-full"
               />
             </div>
@@ -592,20 +606,20 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             {/* Account Total Quota */}
             <div
               className="flex flex-col gap-0.5 cursor-help"
-              title={`Account Total Quota (${hasQuotaData && account.averageQuotaPercentage != null ? `${account.averageQuotaPercentage}%` : '—'}): Total weekly quota capacity for this account.`}
+              title={`Account Total Quota (${accountTotal != null ? `${accountTotal}%` : '-%'}): Total weekly quota capacity for this account.`}
             >
               <div className="flex justify-between items-center text-[10px]">
                 <span className="flex items-center gap-1 font-medium">
                   <Gauge className="w-3 h-3 text-muted-foreground/80 shrink-0" />
                   <span className="text-foreground/90 font-semibold">Account Total Quota</span>
                 </span>
-                <span className={cn("font-bold font-mono", hasQuotaData ? getTextColor(account.averageQuotaPercentage!) : "text-muted-foreground")}>
-                  {hasQuotaData ? `${account.averageQuotaPercentage}%` : '—'}
+                <span className={cn("font-bold font-mono", accountTotal != null ? getTextColor(accountTotal) : "text-muted-foreground")}>
+                  {accountTotal != null ? `${accountTotal}%` : '-%'}
                 </span>
               </div>
               <Progress
-                value={hasQuotaData ? (account.averageQuotaPercentage ?? 0) : 0}
-                indicatorClassName={hasQuotaData ? getFillClass(account.averageQuotaPercentage ?? 0) : "bg-transparent"}
+                value={accountTotal != null ? accountTotal : 0}
+                indicatorClassName={accountTotal != null ? getFillClass(accountTotal) : "bg-transparent"}
                 className="h-1.5 w-full"
               />
             </div>
@@ -632,15 +646,17 @@ export const AccountCard: React.FC<AccountCardProps> = ({
               </Button>
             )}
 
-            <Button
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-              size="iconXs"
-              variant="outline"
-              title="Refresh quota"
-            >
-              <RotateCw className={cn("w-3 h-3", isRefreshing && "animate-spin text-primary")} />
-            </Button>
+            {!isAuthFailed && !isBanned && (
+              <Button
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                size="iconXs"
+                variant="outline"
+                title="Refresh quota"
+              >
+                <RotateCw className={cn("w-3 h-3", isRefreshing && "animate-spin text-primary")} />
+              </Button>
+            )}
 
             <Button
               onClick={handleRemove}

@@ -123,8 +123,8 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
                         <CardContent className="flex flex-col p-2.5">
                           <div className="flex items-center justify-between gap-1 mb-1">
                             <span className="font-semibold text-xs text-foreground truncate" title={quotaLabel(q)}>{quotaLabel(q)}</span>
-                            <span className={`text-[10px] font-bold shrink-0 ${q.disabled ? 'text-muted-foreground' : isPlaceholder ? 'text-muted-foreground' : getTextColor(pct)}`}>
-                              {q.disabled ? 'Disabled' : isPlaceholder ? 'Free Tier' : `${pct}%`}
+                            <span className={`text-[10px] font-bold shrink-0 ${q.disabled ? 'text-muted-foreground' : isPlaceholder ? 'text-muted-foreground' : q.percentage != null ? getTextColor(pct) : 'text-muted-foreground'}`}>
+                              {q.disabled ? 'Disabled' : isPlaceholder ? 'Free Tier' : q.percentage != null ? `${pct}%` : '-%'}
                             </span>
                           </div>
 

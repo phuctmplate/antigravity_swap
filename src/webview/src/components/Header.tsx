@@ -7,6 +7,7 @@ import { Clock, Calendar, Users, ShieldCheck, Sparkles, Zap, HelpCircle } from '
 import { quotaFillClass, quotaTextClass, quotaStrokeColor, calculateModulatedInstantQuota, SAFE_WEEKLY_THRESHOLDS } from '../lib/quota';
 import { LogoIcon } from './LogoIcon';
 import { InstantConceptModal } from './InstantConceptModal';
+import { cn } from '../lib/utils';
 
 interface HeaderProps {
   overall: OverallQuotaSummary;
@@ -55,7 +56,7 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
         : claudeWk);
 
   return (
-    <div className="flex flex-col gap-2.5 mb-3">
+    <div className="@container flex flex-col gap-2.5 mb-3">
       {/* Title Header */}
       <div className="flex items-center justify-between px-0.5 py-0.5 min-h-6">
         <div className="flex items-center gap-2">
@@ -79,19 +80,19 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             variant="outline"
             className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
           >
-            v1.3.1
+            v1.3.2
           </Badge>
         </div>
       </div>
 
       {/* Hero Overview Card with Twin Circular Gauges */}
-      <Card className="relative overflow-hidden border-border/80 bg-card/70 shadow-sm">
+      <Card className="@container relative overflow-hidden border-border/80 bg-card/70 shadow-sm">
         <CardContent className="flex flex-col gap-2.5 p-3">
-          {/* Twin SVG Half-Circle Gauges Container - Width-constrained for consistent spacing that fluidly scales on smaller viewports */}
-          <div className="flex items-center justify-between max-w-[300px] mx-auto w-full px-2 py-1">
+          {/* Twin SVG Half-Circle Gauges Container - Responsively wraps vertically on narrow screens (<280px) and stays side-by-side on wider viewports */}
+          <div className="flex flex-col @[280px]:flex-row items-center justify-center @[280px]:justify-between max-w-[300px] mx-auto w-full px-2 py-1 gap-3 @[280px]:gap-0">
             {/* 1. Instant Quota Gauge */}
             <div
-              className="flex flex-col items-center cursor-help"
+              className="flex flex-col items-center cursor-help shrink-0"
               title={`All Accounts Instant Quota (${instantPct}%): Usable pooled quota in the current session across all accounts (5-Hour rolling window, modulated by remaining weekly capacity).`}
             >
               <div className="relative flex h-[58px] w-[104px] shrink-0 items-center justify-center">
@@ -130,12 +131,13 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
               </div>
             </div>
 
-            {/* Subtle Divider */}
-            <div className="h-12 w-px bg-border/70 shrink-0 self-center mx-1" />
+            {/* Subtle Divider: vertical when side-by-side, horizontal divider when wrapped */}
+            <div className="hidden @[280px]:block h-12 w-px bg-border/70 shrink-0 self-center mx-1" />
+            <div className="block @[280px]:hidden w-28 h-px bg-border/40 shrink-0 my-0.5" />
 
             {/* 2. Total Quota Gauge */}
             <div
-              className="flex flex-col items-center cursor-help"
+              className="flex flex-col items-center cursor-help shrink-0"
               title={`All Accounts Total Quota (${overallPct}%): Total weekly plan capacity across all healthy accounts.`}
             >
               <div className="relative flex h-[58px] w-[104px] shrink-0 items-center justify-center">
@@ -195,8 +197,8 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
         </CardContent>
       </Card>
 
-      {/* Separated Gemini and Claude & GPT Overall Cards */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Separated Gemini and Claude & GPT Overall Cards - Responsively wraps to 1 column when screen/container < 340px */}
+      <div className="grid grid-cols-1 @[340px]:grid-cols-2 gap-2">
         {/* Gemini Models Card */}
         <Card className="bg-card/70 border-border/80">
           <CardContent className="flex flex-col gap-1.5 p-2.5">
@@ -210,75 +212,78 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             {/* Instant Usable Quota */}
             <div
               className="flex flex-col gap-0.5 cursor-help"
-              title={`Gemini Instant Quota (${geminiInstant != null ? `${geminiInstant}%` : '—'}): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
+              title={`Gemini Instant Quota (${geminiInstant != null ? `${geminiInstant}%` : '-%'}): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
             >
               <div className="flex justify-between items-center text-[9px]">
                 <span className="flex items-center gap-1 min-w-0">
                   <Zap className="w-2.5 h-2.5 text-amber-400 shrink-0" />
                   <span className="text-foreground/90 font-medium">Instant</span>
                 </span>
-                <span className={`font-bold font-mono ${geminiInstant != null ? getTextColor(geminiInstant) : 'text-muted-foreground'}`}>
-                  {geminiInstant != null ? `${geminiInstant}%` : '—'}
+                <span className={cn("font-bold font-mono", geminiInstant != null ? getTextColor(geminiInstant) : "text-muted-foreground")}>
+                  {geminiInstant != null ? `${geminiInstant}%` : '-%'}
                 </span>
               </div>
               <Progress
                 value={geminiInstant ?? 0}
-                indicatorClassName={geminiInstant != null ? getProgressIndicator(geminiInstant) : 'bg-muted'}
+                indicatorClassName={geminiInstant != null ? getProgressIndicator(geminiInstant) : 'bg-transparent'}
                 className="h-1.5 w-full"
               />
             </div>
 
             {/* Gemini Sub-Windows Breakdown */}
-            {hasPro && gemini5h != null ? (
+            {hasPro ? (
               <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`5h: ${gemini5h}%`}>
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={gemini5h != null ? `5h: ${gemini5h}%` : '5h rolling limit: No data'}>
                     <span className="flex items-center gap-1">
-                      <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
-                      <span className="font-medium text-foreground/80">5h</span>
+                      <Clock className={cn("w-2.5 h-2.5 shrink-0", gemini5h != null ? "text-sky-400" : "text-muted-foreground/40")} />
+                      <span className={cn("font-medium", gemini5h != null ? "text-foreground/80" : "text-muted-foreground/50")}>5h</span>
                     </span>
-                    <span className={`font-bold font-mono ${getTextColor(gemini5h)}`}>
-                      {gemini5h}%
+                    <span className={cn("font-bold font-mono", gemini5h != null ? getTextColor(gemini5h) : "text-muted-foreground")}>
+                      {gemini5h != null ? `${gemini5h}%` : '-%'}
                     </span>
                   </div>
                   <DashedProgress
-                    value={gemini5h}
-                    indicatorClassName={getProgressIndicator(gemini5h)}
+                    value={gemini5h ?? 0}
+                    disabled={gemini5h == null}
+                    indicatorClassName={gemini5h != null ? getProgressIndicator(gemini5h) : 'bg-transparent'}
                     className="h-1.5 w-full"
                   />
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${geminiWk != null ? geminiWk + '%' : '—'}`}>
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={geminiWk != null ? `Weekly: ${geminiWk}%` : 'Weekly quota: No data'}>
                     <span className="flex items-center gap-1">
-                      <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
-                      <span className="font-medium text-foreground/80">Weekly</span>
+                      <Calendar className={cn("w-2.5 h-2.5 shrink-0", geminiWk != null ? "text-purple-400" : "text-muted-foreground/40")} />
+                      <span className={cn("font-medium", geminiWk != null ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
                     </span>
-                    <span className={`font-bold font-mono ${geminiWk != null ? getTextColor(geminiWk) : 'text-muted-foreground'}`}>
-                      {geminiWk != null ? `${geminiWk}%` : '—'}
+                    <span className={cn("font-bold font-mono", geminiWk != null ? getTextColor(geminiWk) : "text-muted-foreground")}>
+                      {geminiWk != null ? `${geminiWk}%` : '-%'}
                     </span>
                   </div>
                   <DashedProgress
                     value={geminiWk ?? 0}
-                    indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-muted'}
+                    disabled={geminiWk == null}
+                    indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-transparent'}
                     className="h-1.5 w-full"
                   />
                 </div>
               </div>
             ) : (
-              /* Weekly Plan Quota */
+              /* Weekly Plan Quota for 100% Free pool */
               <div className="flex flex-col gap-0.5 pt-1 border-t border-border/30 mt-0.5">
-                <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${geminiWk != null ? geminiWk + '%' : '—'}`}>
+                <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={geminiWk != null ? `Weekly: ${geminiWk}%` : 'Weekly quota: No data'}>
                   <span className="flex items-center gap-1">
-                    <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
-                    <span className="font-medium text-foreground/80">Weekly</span>
+                    <Calendar className={cn("w-2.5 h-2.5 shrink-0", geminiWk != null ? "text-purple-400" : "text-muted-foreground/40")} />
+                    <span className={cn("font-medium", geminiWk != null ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
                   </span>
-                  <span className={`font-bold font-mono ${geminiWk != null ? getTextColor(geminiWk) : 'text-muted-foreground'}`}>
-                    {geminiWk != null ? `${geminiWk}%` : '—'}
+                  <span className={cn("font-bold font-mono", geminiWk != null ? getTextColor(geminiWk) : "text-muted-foreground")}>
+                    {geminiWk != null ? `${geminiWk}%` : '-%'}
                   </span>
                 </div>
                 <DashedProgress
                   value={geminiWk ?? 0}
-                  indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-muted'}
+                  disabled={geminiWk == null}
+                  indicatorClassName={geminiWk != null ? getProgressIndicator(geminiWk) : 'bg-transparent'}
                   className="h-1.5 w-full"
                 />
               </div>
@@ -299,75 +304,78 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
             {/* Instant Usable Quota */}
             <div
               className="flex flex-col gap-0.5 cursor-help"
-              title={`Claude & GPT Instant Quota (${claudeInstant != null ? `${claudeInstant}%` : '—'}): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
+              title={`Claude & GPT Instant Quota (${claudeInstant != null ? `${claudeInstant}%` : '-%'}): Usable quota available right now, calculated from the 5h rolling window modulated by weekly capacity.`}
             >
               <div className="flex justify-between items-center text-[9px]">
                 <span className="flex items-center gap-1 min-w-0">
                   <Zap className="w-2.5 h-2.5 text-amber-400 shrink-0" />
                   <span className="text-foreground/90 font-medium">Instant</span>
                 </span>
-                <span className={`font-bold font-mono ${claudeInstant != null ? getTextColor(claudeInstant) : 'text-muted-foreground'}`}>
-                  {claudeInstant != null ? `${claudeInstant}%` : '—'}
+                <span className={cn("font-bold font-mono", claudeInstant != null ? getTextColor(claudeInstant) : "text-muted-foreground")}>
+                  {claudeInstant != null ? `${claudeInstant}%` : '-%'}
                 </span>
               </div>
               <Progress
                 value={claudeInstant ?? 0}
-                indicatorClassName={claudeInstant != null ? getProgressIndicator(claudeInstant) : 'bg-muted'}
+                indicatorClassName={claudeInstant != null ? getProgressIndicator(claudeInstant) : 'bg-transparent'}
                 className="h-1.5 w-full"
               />
             </div>
 
             {/* Claude Sub-Windows Breakdown */}
-            {hasPro && claude5h != null ? (
+            {hasPro ? (
               <div className="flex flex-col gap-1.5 pt-1.5 border-t border-border/30 mt-0.5">
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`5h: ${claude5h}%`}>
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={claude5h != null ? `5h: ${claude5h}%` : '5h rolling limit: No data'}>
                     <span className="flex items-center gap-1">
-                      <Clock className="w-2.5 h-2.5 text-sky-400 shrink-0" />
-                      <span className="font-medium text-foreground/80">5h</span>
+                      <Clock className={cn("w-2.5 h-2.5 shrink-0", claude5h != null ? "text-sky-400" : "text-muted-foreground/40")} />
+                      <span className={cn("font-medium", claude5h != null ? "text-foreground/80" : "text-muted-foreground/50")}>5h</span>
                     </span>
-                    <span className={`font-bold font-mono ${getTextColor(claude5h)}`}>
-                      {claude5h}%
+                    <span className={cn("font-bold font-mono", claude5h != null ? getTextColor(claude5h) : "text-muted-foreground")}>
+                      {claude5h != null ? `${claude5h}%` : '-%'}
                     </span>
                   </div>
                   <DashedProgress
-                    value={claude5h}
-                    indicatorClassName={getProgressIndicator(claude5h)}
+                    value={claude5h ?? 0}
+                    disabled={claude5h == null}
+                    indicatorClassName={claude5h != null ? getProgressIndicator(claude5h) : 'bg-transparent'}
                     className="h-1.5 w-full"
                   />
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${claudeWk != null ? claudeWk + '%' : '—'}`}>
+                  <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={claudeWk != null ? `Weekly: ${claudeWk}%` : 'Weekly quota: No data'}>
                     <span className="flex items-center gap-1">
-                      <Calendar className="w-2.5 h-2.5 text-purple-400 shrink-0" />
-                      <span className="font-medium text-foreground/80">Weekly</span>
+                      <Calendar className={cn("w-2.5 h-2.5 shrink-0", claudeWk != null ? "text-purple-400" : "text-muted-foreground/40")} />
+                      <span className={cn("font-medium", claudeWk != null ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
                     </span>
-                    <span className={`font-bold font-mono ${claudeWk != null ? getTextColor(claudeWk) : 'text-muted-foreground'}`}>
-                      {claudeWk != null ? `${claudeWk}%` : '—'}
+                    <span className={cn("font-bold font-mono", claudeWk != null ? getTextColor(claudeWk) : "text-muted-foreground")}>
+                      {claudeWk != null ? `${claudeWk}%` : '-%'}
                     </span>
                   </div>
                   <DashedProgress
                     value={claudeWk ?? 0}
-                    indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-muted'}
+                    disabled={claudeWk == null}
+                    indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-transparent'}
                     className="h-1.5 w-full"
                   />
                 </div>
               </div>
             ) : (
-              /* Weekly Plan Quota */
+              /* Weekly Plan Quota for 100% Free pool */
               <div className="flex flex-col gap-0.5 pt-1 border-t border-border/30 mt-0.5">
-                <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={`Weekly: ${claudeWk != null ? claudeWk + '%' : '—'}`}>
+                <div className="flex items-center justify-between text-[9px] text-muted-foreground" title={claudeWk != null ? `Weekly: ${claudeWk}%` : 'Weekly quota: No data'}>
                   <span className="flex items-center gap-1">
-                    <Calendar className="w-2.5 h-2.5 text-purple-400" />
-                    <span className="font-medium text-foreground/80">Weekly</span>
+                    <Calendar className={cn("w-2.5 h-2.5 shrink-0", claudeWk != null ? "text-purple-400" : "text-muted-foreground/40")} />
+                    <span className={cn("font-medium", claudeWk != null ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
                   </span>
-                  <span className={`font-bold font-mono ${claudeWk != null ? getTextColor(claudeWk) : 'text-muted-foreground'}`}>
-                    {claudeWk != null ? `${claudeWk}%` : '—'}
+                  <span className={cn("font-bold font-mono", claudeWk != null ? getTextColor(claudeWk) : "text-muted-foreground")}>
+                    {claudeWk != null ? `${claudeWk}%` : '-%'}
                   </span>
                 </div>
                 <DashedProgress
                   value={claudeWk ?? 0}
-                  indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-muted'}
+                  disabled={claudeWk == null}
+                  indicatorClassName={claudeWk != null ? getProgressIndicator(claudeWk) : 'bg-transparent'}
                   className="h-1.5 w-full"
                 />
               </div>

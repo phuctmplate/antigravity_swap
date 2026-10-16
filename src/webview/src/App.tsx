@@ -55,6 +55,10 @@ function getInitialState(): WebviewState {
 export const AppContent: React.FC = () => {
   const [state, setState] = useState<WebviewState>(getInitialState);
 
+  const effectiveAccounts = state.accounts;
+  const effectiveOverall = state.overall;
+  const effectiveActiveAccount = state.activeAccount;
+
   const [selectedEmail, setSelectedEmail] = useState<string | null>(() => {
     return state.activeAccount?.email || state.accounts[0]?.email || null;
   });
@@ -133,7 +137,7 @@ export const AppContent: React.FC = () => {
   };
 
   const selectedAcc =
-    state.accounts.find((a) => a.email === selectedEmail) || state.activeAccount || state.accounts[0] || null;
+    effectiveAccounts.find((a) => a.email === selectedEmail) || effectiveActiveAccount || effectiveAccounts[0] || null;
 
   return (
     <div className="flex flex-col min-h-screen w-full">
@@ -148,25 +152,27 @@ export const AppContent: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex flex-col max-w-7xl mx-auto w-full p-2.5">
         {/* Header Section */}
-        <Header overall={state.overall} accounts={state.accounts} />
+        <Header overall={effectiveOverall} accounts={effectiveAccounts} />
 
         {/* Controller Action Bar */}
-        <ControllerBar
-          autoSwitchEnabled={state.autoSwitchEnabled ?? false}
-          onToggleAutoSwitch={handleToggleAutoSwitch}
-          autoSwitchTarget={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
-          onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
-          autoSwitchThreshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
-          onChangeAutoSwitchThreshold={handleChangeAutoSwitchThreshold}
-        />
+        <div className="flex flex-col gap-2">
+          <ControllerBar
+            autoSwitchEnabled={state.autoSwitchEnabled ?? false}
+            onToggleAutoSwitch={handleToggleAutoSwitch}
+            autoSwitchTarget={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
+            onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
+            autoSwitchThreshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
+            onChangeAutoSwitchThreshold={handleChangeAutoSwitchThreshold}
+          />
+        </div>
 
         {/* Main Content Area: Responsive side-by-side on wide screens */}
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[1.1fr_1fr] 2xl:grid-cols-[1.15fr_1fr] gap-4 items-start">
           {/* Accounts & Fast Switch Section */}
           <div className="min-w-0">
             <AccountList
-              accounts={state.accounts}
-              activeAccount={state.activeAccount}
+              accounts={effectiveAccounts}
+              activeAccount={effectiveActiveAccount}
               selectedEmail={selectedEmail}
               onSelectAccount={setSelectedEmail}
               isBackgroundRefreshing={state.isBackgroundRefreshing}
@@ -177,7 +183,7 @@ export const AppContent: React.FC = () => {
           <div className="min-w-0 lg:sticky lg:top-10">
             <ModelQuotas
               selectedAccount={selectedAcc}
-              activeAccount={state.activeAccount}
+              activeAccount={effectiveActiveAccount}
             />
           </div>
         </div>

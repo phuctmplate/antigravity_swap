@@ -77,6 +77,9 @@ export class AccountManager {
 
     // Listen to external accounts storage changes (e.g. from other IDE instances/windows)
     this.storage.onDidAccountsChange(async () => {
+      if (this.isBackgroundRefreshing) {
+        return;
+      }
       await this.reloadFromStorage();
     });
 
@@ -100,8 +103,8 @@ export class AccountManager {
       }
     });
 
-    // Initial quota check only for accounts with valid tokens
-    await this.refreshAllQuotas().catch((err) => console.warn('[Antigravity Swap] Initial quota refresh failed:', err));
+    // Initial quota check only for accounts with valid tokens (force=true to ensure fresh state on startup)
+    await this.refreshAllQuotas(true).catch((err) => console.warn('[Antigravity Swap] Initial quota refresh failed:', err));
 
     // ONLY auto-switch if auto-switch is explicitly enabled by user AND quotas were loaded
     if (this.isAutoSwitchEnabled()) {
@@ -769,7 +772,7 @@ export class AccountManager {
         await Promise.all(
           chunk.map(async (email) => {
             try {
-              await this.refreshAccountQuota(email);
+              await this.refreshAccountQuota(email, true, true);
             } catch (err) {
               console.warn(`[Antigravity Swap] Failed to refresh account ${email}:`, err);
             } finally {
@@ -780,6 +783,9 @@ export class AccountManager {
             }
           })
         );
+
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
 
         this.storage.renewRefreshLease();
 
@@ -829,7 +835,7 @@ export class AccountManager {
         await Promise.all(
           chunk.map(async (acc) => {
             try {
-              await this.refreshAccountQuota(acc.email);
+              await this.refreshAccountQuota(acc.email, force, true);
             } catch (err) {
               console.warn(`[Antigravity Swap] Failed to refresh account ${acc.email}:`, err);
             } finally {
@@ -840,6 +846,9 @@ export class AccountManager {
             }
           })
         );
+
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
 
         this.storage.renewRefreshLease();
 
@@ -857,9 +866,10 @@ export class AccountManager {
     }
   }
 
-  public async refreshAccountQuota(email: string, force = false): Promise<void> {
-    const acc = this.accounts.find((a) => a.email === email);
-    if (!acc) return;
+  public async refreshAccountQuota(email: string, force = false, skipSave = false): Promise<void> {
+    const accIdx = this.accounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (accIdx < 0) return;
+    const acc = this.accounts[accIdx];
 
     // Silent per-account rate limiting: skip network request if refreshed within cooldown
     const now = Date.now();
@@ -878,14 +888,22 @@ export class AccountManager {
     try {
       const tokens = await this.storage.getAccountTokens(email);
       if (!tokens || !tokens.accessToken) {
-        acc.status = 'auth_failed';
-        acc.statusMessage = 'Credentials missing. Re-login required.';
-        acc.quotas = [];
-        acc.averageQuotaPercentage = 0;
-        acc.fiveHourQuotaPercentage = undefined;
-        acc.weeklyQuotaPercentage = undefined;
-        await this.storage.saveAccounts(this.accounts);
-        this._onDidChangeState.fire();
+        const curIdx = this.accounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
+        if (curIdx >= 0) {
+          this.accounts[curIdx] = {
+            ...this.accounts[curIdx],
+            status: 'auth_failed',
+            statusMessage: 'Credentials missing. Re-login required.',
+            quotas: [],
+            averageQuotaPercentage: 0,
+            fiveHourQuotaPercentage: undefined,
+            weeklyQuotaPercentage: undefined
+          };
+        }
+        if (!skipSave) {
+          await this.storage.saveAccounts(this.accounts);
+          this._onDidChangeState.fire();
+        }
         return;
       }
 
@@ -893,30 +911,38 @@ export class AccountManager {
         await this.storage.saveAccountTokens(email, newTokens);
       });
 
-      acc.quotas = res.quotas;
-      acc.quotaGroups = res.quotaGroups;
-      acc.geminiGroup = res.geminiGroup;
-      acc.claudeGptGroup = res.claudeGptGroup;
-      acc.averageQuotaPercentage = res.averagePercentage;
-      acc.fiveHourQuotaPercentage = res.fiveHourPercentage;
-      acc.weeklyQuotaPercentage = res.weeklyPercentage;
-      acc.fiveHourResetTime = res.fiveHourResetTime;
-      acc.fiveHourResetCountdown = res.fiveHourResetCountdown;
-      acc.weeklyResetTime = res.weeklyResetTime;
-      acc.weeklyResetCountdown = res.weeklyResetCountdown;
-      acc.has5HourQuota = res.has5HourQuota;
-      acc.hasWeeklyQuota = res.hasWeeklyQuota;
-      acc.accountType = res.accountType;
-      acc.tierBadge = res.tierBadge;
-      acc.status = res.status;
-      acc.isBanned = res.isBanned;
-      acc.banReason = res.isBanned ? res.statusMessage : undefined;
-      acc.statusMessage = res.statusMessage;
-      acc.lastRefreshedAt = new Date().toISOString();
-      acc.lastHeartbeatAt = new Date().toISOString();
+      const curIdx = this.accounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
+      if (curIdx >= 0) {
+        this.accounts[curIdx] = {
+          ...this.accounts[curIdx],
+          quotas: res.quotas,
+          quotaGroups: res.quotaGroups,
+          geminiGroup: res.geminiGroup,
+          claudeGptGroup: res.claudeGptGroup,
+          averageQuotaPercentage: res.averagePercentage,
+          fiveHourQuotaPercentage: res.fiveHourPercentage,
+          weeklyQuotaPercentage: res.weeklyPercentage,
+          fiveHourResetTime: res.fiveHourResetTime,
+          fiveHourResetCountdown: res.fiveHourResetCountdown,
+          weeklyResetTime: res.weeklyResetTime,
+          weeklyResetCountdown: res.weeklyResetCountdown,
+          has5HourQuota: res.has5HourQuota,
+          hasWeeklyQuota: res.hasWeeklyQuota,
+          accountType: res.accountType,
+          tierBadge: res.tierBadge,
+          status: res.status,
+          isBanned: res.isBanned,
+          banReason: res.isBanned ? res.statusMessage : undefined,
+          statusMessage: res.statusMessage,
+          lastRefreshedAt: new Date().toISOString(),
+          lastHeartbeatAt: new Date().toISOString()
+        };
+      }
 
-      await this.storage.saveAccounts(this.accounts);
-      this._onDidChangeState.fire();
+      if (!skipSave) {
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
+      }
     } catch (err) {
       console.warn(`[Antigravity Swap] Error refreshing quota for ${email}:`, err);
     } finally {
@@ -978,12 +1004,15 @@ export class AccountManager {
         await Promise.all(
           accountsToRefresh.map(async (target) => {
             try {
-              await this.refreshAccountQuota(target.email, true);
+              await this.refreshAccountQuota(target.email, true, true);
             } catch (err) {
               console.warn(`[Antigravity Swap] Background refresh error for ${target.email}:`, err);
             }
           })
         );
+
+        await this.storage.saveAccounts(this.accounts);
+        this._onDidChangeState.fire();
       }
 
       await this.checkAutoSwitch();
@@ -1030,32 +1059,39 @@ export class AccountManager {
       const validC5h = claude5h && !claude5h.disabled && claude5h.percentage >= 0;
       const validCWk = claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0;
 
-      if (validG5h && validGWk && validC5h && validCWk) {
-        const gInst = calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
-        const cInst = calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+      let gInst: number | undefined;
+      if (validG5h && validGWk) {
+        gInst = calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+      } else if (validG5h) {
+        gInst = gemini5h.percentage;
+      } else if (validGWk) {
+        gInst = geminiWeekly.percentage;
+      }
+
+      let cInst: number | undefined;
+      if (validC5h && validCWk) {
+        cInst = calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+      } else if (validC5h) {
+        cInst = claude5h.percentage;
+      } else if (validCWk) {
+        cInst = claudeWeekly.percentage;
+      }
+
+      if (gInst !== undefined && cInst !== undefined) {
         return Math.round((gInst * MODEL_WEIGHTS.GEMINI) + (cInst * MODEL_WEIGHTS.CLAUDE));
       }
-      if (validG5h && validGWk) {
-        return calculateModulatedInstantQuota(gemini5h.percentage, geminiWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+      if (gInst !== undefined) {
+        return gInst;
       }
-      if (validC5h && validCWk) {
-        return calculateModulatedInstantQuota(claude5h.percentage, claudeWeekly.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+      if (cInst !== undefined) {
+        return cInst;
       }
 
       let p5h = account.fiveHourQuotaPercentage;
-      if (p5h === undefined) {
-        if (validG5h && validC5h) {
-          p5h = Math.round((gemini5h.percentage * MODEL_WEIGHTS.GEMINI) + (claude5h.percentage * MODEL_WEIGHTS.CLAUDE));
-        } else if (validG5h) {
-          p5h = gemini5h.percentage;
-        } else if (validC5h) {
-          p5h = claude5h.percentage;
-        }
-      }
-      if (p5h !== undefined) {
+      if (p5h !== undefined && pWk !== undefined) {
         return calculateModulatedInstantQuota(p5h, pWk, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
       }
-      return pWk;
+      return p5h ?? pWk;
     }
 
     if (target === 'gemini') {

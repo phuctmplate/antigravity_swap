@@ -274,6 +274,10 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('antigravitySwap.openDashboard', () => {
       webviewProvider.openDetachedPanel();
+    }),
+
+    vscode.commands.registerCommand('antigravitySwap.toggleMockSimulation', () => {
+      webviewProvider.toggleSimulation();
     })
   );
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 (2026-10-16)
+
+- **Quota Synchronization & 5-Hour Retention**: Fixed missing 5-hour rolling limits and inaccurate depletion warnings by prioritizing production endpoints and resolving batch refresh race conditions.
+- **Pool & Metric Reliability**: Hardened account tier detection and prevented uninitialized metrics from skewing capacity pools.
+- **Responsive Layout**: Enabled adaptive vertical wrapping for hero gauges and model overview cards on narrow sidebar viewports.
+
 ## 1.3.1 (2026-10-14)
 
 - **Quota Modulation**: Calibrated model-specific safe weekly thresholds for Gemini and Claude & GPT.

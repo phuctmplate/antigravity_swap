@@ -60,6 +60,50 @@ export class QuotaService {
   constructor(private readonly oauthService: OAuthService) {}
 
   /**
+   * Robustly identifies whether a quota bucket represents a 5-hour rolling window.
+   */
+  public static is5HourBucket(windowStr?: string, bucketId?: string, displayName?: string): boolean {
+    const w = (windowStr || '').toLowerCase();
+    const id = (bucketId || '').toLowerCase();
+    const name = (displayName || '').toLowerCase();
+    return (
+      w === '5h' ||
+      w.includes('5h') ||
+      w.includes('5_hour') ||
+      w.includes('5-hour') ||
+      w.includes('5 hour') ||
+      w.includes('five') ||
+      id.includes('5h') ||
+      id.includes('5-hour') ||
+      id.includes('5_hour') ||
+      id.includes('five') ||
+      name.includes('5-hour') ||
+      name.includes('5 hour') ||
+      name.includes('five hour') ||
+      name.includes('5h') ||
+      name.includes('rolling')
+    );
+  }
+
+  /**
+   * Robustly identifies whether a quota bucket represents a weekly plan quota.
+   */
+  public static isWeeklyBucket(windowStr?: string, bucketId?: string, displayName?: string): boolean {
+    const w = (windowStr || '').toLowerCase();
+    const id = (bucketId || '').toLowerCase();
+    const name = (displayName || '').toLowerCase();
+    return (
+      w === 'weekly' ||
+      w.includes('weekly') ||
+      w.includes('7d') ||
+      id.includes('weekly') ||
+      id.includes('plan') ||
+      name.includes('weekly') ||
+      name.includes('plan')
+    );
+  }
+
+  /**
    * Fetches the quota breakdown for an account using its access token.
    * If expired and a refresh token is available, automatically refreshes the token.
    */
@@ -257,11 +301,8 @@ export class QuotaService {
       const buckets: QuotaBucket[] = [];
 
       for (const b of (g.buckets || [])) {
-        const bWindow = (b.window || '').toLowerCase();
-        const bId = (b.bucketId || '').toLowerCase();
-        const bNameLower = (b.displayName || '').toLowerCase();
-        const is5h = bWindow === '5h' || bId.includes('5h') || bNameLower.includes('5-hour') || bNameLower.includes('five hour');
-        const isWeekly = bWindow === 'weekly' || bId.includes('weekly') || bNameLower.includes('weekly');
+        const is5h = QuotaService.is5HourBucket(b.window, b.bucketId, b.displayName);
+        const isWeekly = QuotaService.isWeeklyBucket(b.window, b.bucketId, b.displayName);
 
         const windowType: '5h' | 'weekly' = is5h ? '5h' : 'weekly';
         const remainingFraction = this.extractFraction(b);
@@ -286,11 +327,27 @@ export class QuotaService {
         if (isWeekly && !groupWeekly) groupWeekly = bucket;
       }
 
+      // Safe fallback if bucket naming didn't explicitly match keywords
+      if (buckets.length > 0) {
+        if (!group5h && !groupWeekly) {
+          if (isFree) {
+            groupWeekly = buckets[0];
+          } else {
+            group5h = buckets[0];
+          }
+        }
+      }
+
+      // Free tier accounts never have a 5-hour rolling limit window
+      if (isFree) {
+        group5h = undefined;
+      }
+
       const qg: QuotaGroup = {
         id: groupId,
         name: gDisplayName || (isGemini ? 'Gemini Models' : 'Claude and GPT models'),
         description: g.description,
-        fiveHour: group5h,
+        fiveHour: isFree ? undefined : group5h,
         weekly: groupWeekly,
         buckets
       };
@@ -298,6 +355,53 @@ export class QuotaService {
       quotaGroups.push(qg);
       if (isGemini) geminiGroup = qg;
       if (isClaudeGpt) claudeGptGroup = qg;
+    }
+
+    // Merge/preserve previous data from account if new response is missing any group or bucket
+    const prevGemini = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+    const prevClaude = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+
+    if (!geminiGroup && prevGemini) {
+      // Re-use previous Gemini group if new API response missed it
+      geminiGroup = {
+        ...prevGemini,
+        fiveHour: isFree ? undefined : prevGemini.fiveHour
+      };
+      quotaGroups.push(geminiGroup);
+    } else if (geminiGroup && prevGemini) {
+      // If newly fetched group is missing 5h or weekly bucket that was present previously:
+      if (!geminiGroup.fiveHour && !isFree && prevGemini.fiveHour) {
+        geminiGroup.fiveHour = prevGemini.fiveHour;
+      }
+      if (!geminiGroup.weekly && prevGemini.weekly) {
+        geminiGroup.weekly = prevGemini.weekly;
+      }
+    }
+
+    if (!claudeGptGroup && prevClaude) {
+      // Re-use previous Claude group if new API response missed it
+      claudeGptGroup = {
+        ...prevClaude,
+        fiveHour: isFree ? undefined : prevClaude.fiveHour
+      };
+      quotaGroups.push(claudeGptGroup);
+    } else if (claudeGptGroup && prevClaude) {
+      // If newly fetched group is missing 5h or weekly bucket that was present previously:
+      if (!claudeGptGroup.fiveHour && !isFree && prevClaude.fiveHour) {
+        claudeGptGroup.fiveHour = prevClaude.fiveHour;
+      }
+      if (!claudeGptGroup.weekly && prevClaude.weekly) {
+        claudeGptGroup.weekly = prevClaude.weekly;
+      }
+    }
+
+    // Critical: If account downgraded from Pro/Ultra to Free tier, strictly purge 5h buckets
+    if (isFree) {
+      if (geminiGroup) geminiGroup.fiveHour = undefined;
+      if (claudeGptGroup) claudeGptGroup.fiveHour = undefined;
+      for (const qg of quotaGroups) {
+        qg.fiveHour = undefined;
+      }
     }
 
     // Dynamically populate model quotas from live API response (fetchAvailableModels)
@@ -331,33 +435,39 @@ export class QuotaService {
 
         const idLower = (modelId + ' ' + displayName).toLowerCase();
         const isGemini = idLower.includes('gemini') || idLower.includes('flash');
-        const isPro = idLower.includes('pro');
         const isClaudeGpt = idLower.includes('claude') || idLower.includes('gpt') || idLower.includes('opus') || idLower.includes('sonnet');
 
-        let targetBucket: QuotaBucket | undefined;
-        let windowType: '5h' | 'weekly' = 'weekly';
-        let windowLabel = 'Weekly Quota';
+        const resetTimeCandidate = modelData.quotaInfo?.resetTime || modelData.resetTime;
+        const { windowType, windowLabel } = this.classifyQuotaWindow(modelId, displayName, resetTimeCandidate, modelData.description);
 
+        let targetBucket: QuotaBucket | undefined;
         if (isGemini) {
-          if (isPro) {
-            targetBucket = geminiGroup?.weekly || geminiGroup?.fiveHour;
-            windowType = 'weekly';
-            windowLabel = 'Weekly Quota';
-          } else {
-            targetBucket = geminiGroup?.fiveHour || geminiGroup?.weekly;
-            windowType = geminiGroup?.fiveHour ? '5h' : 'weekly';
-            windowLabel = geminiGroup?.fiveHour ? '5-Hour Window' : 'Weekly Quota';
-          }
+          targetBucket = windowType === '5h' ? (geminiGroup?.fiveHour || geminiGroup?.weekly) : (geminiGroup?.weekly || geminiGroup?.fiveHour);
         } else if (isClaudeGpt) {
-          targetBucket = claudeGptGroup?.fiveHour || claudeGptGroup?.weekly || claudeGptGroup?.buckets[0];
-          windowType = claudeGptGroup?.fiveHour ? '5h' : 'weekly';
-          windowLabel = claudeGptGroup?.fiveHour ? '5-Hour Window' : 'Weekly Quota';
+          targetBucket = windowType === '5h' ? (claudeGptGroup?.fiveHour || claudeGptGroup?.weekly) : (claudeGptGroup?.weekly || claudeGptGroup?.fiveHour);
         }
 
-        const remainingFraction = targetBucket ? targetBucket.remainingFraction : this.extractFraction(modelData);
-        const percentage = targetBucket ? targetBucket.percentage : Math.round(remainingFraction * 100);
-        const resetTime = targetBucket?.resetTime || modelData.quotaInfo?.resetTime || modelData.resetTime;
-        const resetCountdown = targetBucket?.resetCountdown || (resetTime ? this.formatCountdown(resetTime) : undefined);
+        const modelFraction = this.extractFraction(modelData);
+        const hasModelQuota = modelData.quotaInfo && typeof modelData.quotaInfo.remainingFraction === 'number';
+
+        let remainingFraction: number;
+        let resetTime: string | undefined;
+
+        if (hasModelQuota) {
+          const modelQuotaFrac = Math.max(0, Math.min(1, modelData.quotaInfo.remainingFraction));
+          // Respect individual model quota as primary; cap by targetBucket if targetBucket is more depleted
+          remainingFraction = targetBucket ? Math.min(modelQuotaFrac, targetBucket.remainingFraction) : modelQuotaFrac;
+          resetTime = modelData.quotaInfo.resetTime || targetBucket?.resetTime;
+        } else if (targetBucket) {
+          remainingFraction = targetBucket.remainingFraction;
+          resetTime = targetBucket.resetTime;
+        } else {
+          remainingFraction = modelFraction;
+          resetTime = modelData.resetTime;
+        }
+
+        const percentage = Math.round(remainingFraction * 100);
+        const resetCountdown = resetTime ? this.formatCountdown(resetTime) : undefined;
 
         parsedQuotas.push({
           id: modelId,
@@ -441,12 +551,62 @@ export class QuotaService {
     // Sort parsed model quotas deterministically (highest version first)
     parsedQuotas = QuotaService.sortModelQuotas(parsedQuotas);
 
+    // Synchronize Gemini 5h bucket with live 5h model consumption
+    if (!isFree && geminiGroup) {
+      const gemini5hModels = parsedQuotas.filter(
+        (q) => ((q.groupName || '').toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')) &&
+               q.windowType === '5h' && !q.disabled && q.percentage >= 0
+      );
+      if (gemini5hModels.length > 0) {
+        const minGemini5hModel = gemini5hModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
+        if (!geminiGroup.fiveHour || minGemini5hModel.remainingFraction < geminiGroup.fiveHour.remainingFraction) {
+          const rTime = minGemini5hModel.resetTime || geminiGroup.fiveHour?.resetTime;
+          geminiGroup.fiveHour = {
+            bucketId: geminiGroup.fiveHour?.bucketId || 'gemini-5h',
+            displayName: geminiGroup.fiveHour?.displayName || 'Five Hour Limit Remaining',
+            window: '5h',
+            remainingFraction: minGemini5hModel.remainingFraction,
+            percentage: Math.round(minGemini5hModel.remainingFraction * 100),
+            resetTime: rTime,
+            resetCountdown: rTime ? this.formatCountdown(rTime) : undefined,
+            description: geminiGroup.fiveHour?.description || 'Rolling 5-hour limit for Gemini models',
+            disabled: false
+          };
+        }
+      }
+    }
+
+    // Synchronize Claude & GPT 5h bucket with live 5h model consumption (if any)
+    if (!isFree && claudeGptGroup) {
+      const claude5hModels = parsedQuotas.filter(
+        (q) => ((q.groupName || '').toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')) &&
+               q.windowType === '5h' && !q.disabled && q.percentage >= 0
+      );
+      if (claude5hModels.length > 0) {
+        const minClaude5hModel = claude5hModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
+        if (!claudeGptGroup.fiveHour || minClaude5hModel.remainingFraction < claudeGptGroup.fiveHour.remainingFraction) {
+          const rTime = minClaude5hModel.resetTime || claudeGptGroup.fiveHour?.resetTime;
+          claudeGptGroup.fiveHour = {
+            bucketId: claudeGptGroup.fiveHour?.bucketId || '3p-5h',
+            displayName: claudeGptGroup.fiveHour?.displayName || 'Five Hour Limit Remaining',
+            window: '5h',
+            remainingFraction: minClaude5hModel.remainingFraction,
+            percentage: Math.round(minClaude5hModel.remainingFraction * 100),
+            resetTime: rTime,
+            resetCountdown: rTime ? this.formatCountdown(rTime) : undefined,
+            description: claudeGptGroup.fiveHour?.description || 'Rolling 5-hour limit for Claude & GPT models',
+            disabled: false
+          };
+        }
+      }
+    }
+
     // Compute window properties and group metrics
-    const has5Hour = !!geminiGroup?.fiveHour || !!claudeGptGroup?.fiveHour;
+    const has5Hour = !isFree && (!!geminiGroup?.fiveHour || !!claudeGptGroup?.fiveHour);
     const hasWeekly = !!geminiGroup?.weekly || !!claudeGptGroup?.weekly;
 
-    const fiveHourResetTime = geminiGroup?.fiveHour?.resetTime || claudeGptGroup?.fiveHour?.resetTime;
-    const fiveHourResetCountdown = geminiGroup?.fiveHour?.resetCountdown || claudeGptGroup?.fiveHour?.resetCountdown;
+    const fiveHourResetTime = !isFree ? (geminiGroup?.fiveHour?.resetTime || claudeGptGroup?.fiveHour?.resetTime) : undefined;
+    const fiveHourResetCountdown = !isFree ? (geminiGroup?.fiveHour?.resetCountdown || claudeGptGroup?.fiveHour?.resetCountdown) : undefined;
 
     const weeklyResetTime = geminiGroup?.weekly?.resetTime || claudeGptGroup?.weekly?.resetTime;
     const weeklyResetCountdown = geminiGroup?.weekly?.resetCountdown || claudeGptGroup?.weekly?.resetCountdown;
@@ -469,11 +629,11 @@ export class QuotaService {
       weeklyPercentage = claudeWk;
     }
 
-    // Group-level 5-hour rolling window percentages
-    const gemini5h = (geminiGroup?.fiveHour && !geminiGroup.fiveHour.disabled && geminiGroup.fiveHour.percentage >= 0)
+    // Group-level 5-hour rolling window percentages (Free tier is strictly undefined)
+    const gemini5h = (!isFree && geminiGroup?.fiveHour && !geminiGroup.fiveHour.disabled && geminiGroup.fiveHour.percentage >= 0)
       ? geminiGroup.fiveHour.percentage
       : undefined;
-    const claude5h = (claudeGptGroup?.fiveHour && !claudeGptGroup.fiveHour.disabled && claudeGptGroup.fiveHour.percentage >= 0)
+    const claude5h = (!isFree && claudeGptGroup?.fiveHour && !claudeGptGroup.fiveHour.disabled && claudeGptGroup.fiveHour.percentage >= 0)
       ? claudeGptGroup.fiveHour.percentage
       : undefined;
 
@@ -487,25 +647,44 @@ export class QuotaService {
       fiveHourPercentage = claude5h;
     }
 
-    // Check model availability per group
-    const geminiAvailable = (geminiWk ?? 0) > 0 && (gemini5h === undefined || gemini5h > 0);
-    const claudeAvailable = (claudeWk ?? 0) > 0 && (claude5h === undefined || claude5h > 0);
+    // Model availability check:
+    // Determine whether each family is supported and whether its active quota is depleted.
+    const hasGemini = gemini5h !== undefined || geminiWk !== undefined || (geminiGroup?.buckets && geminiGroup.buckets.length > 0) || parsedQuotas.some((q) => q.displayName.toLowerCase().includes('gemini'));
+    const isGeminiDepleted = (gemini5h !== undefined && gemini5h <= 0) ||
+                             (geminiWk !== undefined && geminiWk <= 0) ||
+                             (gemini5h === undefined && geminiWk === undefined && geminiGroup?.buckets?.[0]?.percentage !== undefined && geminiGroup.buckets[0].percentage <= 0);
+    const geminiAvailable = hasGemini && !isGeminiDepleted;
+
+    const hasClaude = claude5h !== undefined || claudeWk !== undefined || (claudeGptGroup?.buckets && claudeGptGroup.buckets.length > 0) || parsedQuotas.some((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+    const isClaudeDepleted = (claude5h !== undefined && claude5h <= 0) || (claudeWk !== undefined && claudeWk <= 0);
+    const claudeAvailable = hasClaude && !isClaudeDepleted;
 
     let status: AccountStatus = 'healthy';
     let statusMessage: string | undefined;
 
-    if (!geminiAvailable && !claudeAvailable) {
-      status = 'low_balance';
-      statusMessage = 'All model quotas depleted';
-    } else if (!geminiAvailable && claudeAvailable) {
-      statusMessage = 'Gemini depleted · Claude available';
-    } else if (geminiAvailable && !claudeAvailable) {
-      statusMessage = 'Claude depleted · Gemini available';
+    if (hasGemini && hasClaude) {
+      if (!geminiAvailable && !claudeAvailable) {
+        status = 'low_balance';
+        statusMessage = 'All model quotas depleted';
+      } else if (!geminiAvailable && claudeAvailable) {
+        statusMessage = 'Gemini depleted · Claude available';
+      } else if (geminiAvailable && !claudeAvailable) {
+        statusMessage = 'Claude depleted · Gemini available';
+      }
+    } else if (hasGemini && !hasClaude) {
+      if (!geminiAvailable) {
+        status = 'low_balance';
+        statusMessage = 'Gemini quota depleted';
+      }
+    } else if (!hasGemini && hasClaude) {
+      if (!claudeAvailable) {
+        status = 'low_balance';
+        statusMessage = 'Claude quota depleted';
+      }
     }
 
-    // Total Quota of each Account is determined strictly by its Weekly Plan Quota
-    // (5h window is an instant rate limit, not overall capacity)
-    const averagePercentage = weeklyPercentage ?? this.calculateAveragePercentage(parsedQuotas);
+    // Total Quota of each Account is determined strictly by its Weekly Plan Quota (or 5h window / bucket / average)
+    const averagePercentage = weeklyPercentage ?? fiveHourPercentage ?? (geminiGroup?.buckets?.[0]?.percentage ?? claudeGptGroup?.buckets?.[0]?.percentage) ?? this.calculateAveragePercentage(parsedQuotas);
 
     return {
       quotas: parsedQuotas,
@@ -562,25 +741,16 @@ export class QuotaService {
     // 1. Discover project ID and subscription tier via loadCodeAssist
     const codeAssistBodies = [
       {
+        metadata: { ideType: 'ANTIGRAVITY' }
+      },
+      {},
+      {
         metadata: {
           ide_type: 'ANTIGRAVITY',
           ide_version: '1.22.2',
           ide_name: 'antigravity'
         }
-      },
-      {
-        metadata: {
-          ideType: 'ANTIGRAVITY',
-          ideVersion: '1.22.2',
-          ideName: 'antigravity',
-          platform: 'WINDOWS',
-          pluginType: 'GEMINI'
-        }
-      },
-      {
-        metadata: { ideType: 'ANTIGRAVITY' }
-      },
-      {}
+      }
     ];
 
     for (const host of hosts) {
@@ -609,42 +779,116 @@ export class QuotaService {
     let groupsData: any = null;
     let modelsData: any = null;
 
+    // Helper to check if groupsData has both primary Gemini and 3P (Claude/GPT) groups
+    const hasCompleteGroups = (data: any): boolean => {
+      const gList = data?.response?.groups || data?.groups || [];
+      const hasGem = gList.some((g: any) => (g.displayName || '').toLowerCase().includes('gemini'));
+      const hasClaude = gList.some((g: any) => {
+        const s = (g.displayName || '').toLowerCase();
+        return s.includes('claude') || s.includes('gpt') || s.includes('3p');
+      });
+      return hasGem && hasClaude;
+    };
+
     for (const host of hosts) {
-      if (!groupsData) {
-        try {
-          groupsData = await this.callCloudCodePost(accessToken, host, '/v1internal:retrieveUserQuotaSummary', body);
-          if (groupsData) anyEndpointSucceeded = true;
-        } catch (err: any) {
-          if (err.message && (err.message.includes('401') || err.message.includes('UNAUTHENTICATED'))) {
-            lastAuthError = err;
+      let hostGroups: any = null;
+      try {
+        hostGroups = await this.callCloudCodePost(accessToken, host, '/v1internal:retrieveUserQuotaSummary', body);
+        if (hostGroups) anyEndpointSucceeded = true;
+      } catch (err: any) {
+        if (err.message && (err.message.includes('401') || err.message.includes('UNAUTHENTICATED'))) {
+          lastAuthError = err;
+        }
+        if (projectId) {
+          try {
+            hostGroups = await this.callCloudCodePost(accessToken, host, '/v1internal:retrieveUserQuotaSummary', {});
+            if (hostGroups) anyEndpointSucceeded = true;
+          } catch {}
+        }
+      }
+
+      if (hostGroups) {
+        if (!groupsData) {
+          groupsData = hostGroups;
+        } else {
+          // Merge missing groups and synchronize matching buckets across hosts
+          const existingGroups: any[] = groupsData?.response?.groups || groupsData?.groups || [];
+          const newGroups: any[] = hostGroups?.response?.groups || hostGroups?.groups || [];
+          for (const ng of newGroups) {
+            const ngName = (ng.displayName || '').toLowerCase();
+            const isNgGemini = ngName.includes('gemini');
+            const isNgClaude = ngName.includes('claude') || ngName.includes('gpt') || ngName.includes('3p');
+            const existingMatch = existingGroups.find((eg: any) => {
+              const egName = (eg.displayName || '').toLowerCase();
+              return (
+                (isNgGemini && egName.includes('gemini')) ||
+                (isNgClaude && (egName.includes('claude') || egName.includes('gpt') || egName.includes('3p')))
+              );
+            });
+            if (!existingMatch) {
+              existingGroups.push(ng);
+            } else {
+              // Merge buckets: preserve lower remainingFraction for identical buckets
+              for (const nb of (ng.buckets || [])) {
+                const eb = (existingMatch.buckets || []).find((b: any) => b.bucketId === nb.bucketId || b.displayName === nb.displayName);
+                if (eb) {
+                  if (typeof nb.remainingFraction === 'number' && typeof eb.remainingFraction === 'number') {
+                    if (nb.remainingFraction < eb.remainingFraction) {
+                      eb.remainingFraction = nb.remainingFraction;
+                      eb.resetTime = nb.resetTime || eb.resetTime;
+                    }
+                  }
+                } else {
+                  (existingMatch.buckets || []).push(nb);
+                }
+              }
+            }
           }
-          if (projectId) {
-            try {
-              groupsData = await this.callCloudCodePost(accessToken, host, '/v1internal:retrieveUserQuotaSummary', {});
-              if (groupsData) anyEndpointSucceeded = true;
-            } catch {}
+          if (groupsData.response && groupsData.response.groups) {
+            groupsData.response.groups = existingGroups;
+          }
+          if (groupsData.groups) {
+            groupsData.groups = existingGroups;
           }
         }
       }
 
-      if (!modelsData) {
-        try {
-          modelsData = await this.callCloudCodePost(accessToken, host, '/v1internal:fetchAvailableModels', body);
-          if (modelsData) anyEndpointSucceeded = true;
-        } catch (err: any) {
-          if (err.message && (err.message.includes('401') || err.message.includes('UNAUTHENTICATED'))) {
-            lastAuthError = err;
-          }
-          if (projectId) {
-            try {
-              modelsData = await this.callCloudCodePost(accessToken, host, '/v1internal:fetchAvailableModels', {});
-              if (modelsData) anyEndpointSucceeded = true;
-            } catch {}
-          }
+      let hostModels: any = null;
+      try {
+        hostModels = await this.callCloudCodePost(accessToken, host, '/v1internal:fetchAvailableModels', body);
+        if (hostModels) anyEndpointSucceeded = true;
+      } catch (err: any) {
+        if (err.message && (err.message.includes('401') || err.message.includes('UNAUTHENTICATED'))) {
+          lastAuthError = err;
+        }
+        if (projectId) {
+          try {
+            hostModels = await this.callCloudCodePost(accessToken, host, '/v1internal:fetchAvailableModels', {});
+            if (hostModels) anyEndpointSucceeded = true;
+          } catch {}
         }
       }
 
-      if (groupsData && modelsData) break;
+      if (hostModels && hostModels.models) {
+        if (!modelsData) {
+          modelsData = { ...hostModels, models: { ...hostModels.models } };
+        } else {
+          modelsData.models = modelsData.models || {};
+          for (const [id, m] of Object.entries<any>(hostModels.models)) {
+            if (!modelsData.models[id]) {
+              modelsData.models[id] = m;
+            } else {
+              const currFrac = modelsData.models[id]?.quotaInfo?.remainingFraction;
+              const newFrac = m?.quotaInfo?.remainingFraction;
+              if (typeof newFrac === 'number') {
+                if (typeof currFrac !== 'number' || newFrac < currFrac) {
+                  modelsData.models[id] = m;
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     // If nothing succeeded and we encountered 401, throw so fetchAccountQuotas can refresh token or mark auth_failed
@@ -797,14 +1041,10 @@ export class QuotaService {
 
         // Find 5h and weekly buckets within the group
         const bucket5h = buckets.find((b: any) =>
-          (b.window && b.window.toLowerCase() === '5h') ||
-          (b.bucketId && b.bucketId.toLowerCase().includes('5h')) ||
-          (b.displayName && (b.displayName.toLowerCase().includes('5-hour') || b.displayName.toLowerCase().includes('five hour')))
+          QuotaService.is5HourBucket(b.window, b.bucketId, b.displayName)
         );
         const bucketWeekly = buckets.find((b: any) =>
-          (b.window && b.window.toLowerCase() === 'weekly') ||
-          (b.bucketId && b.bucketId.toLowerCase().includes('weekly')) ||
-          (b.displayName && b.displayName.toLowerCase().includes('weekly'))
+          QuotaService.isWeeklyBucket(b.window, b.bucketId, b.displayName)
         );
 
         if (groupName.includes('gemini')) {
@@ -1153,6 +1393,15 @@ export class QuotaService {
       return null;
     };
 
+    // In Google Cloud Code PA, ONLY paid Google AI accounts (Pro/Ultra) receive 5-hour rolling limit buckets ("Five Hour Limit Remaining" / window: "5h").
+    // Standard Free accounts ONLY have Weekly Limit Remaining.
+    const groups = rawResponse?.response?.groups || rawResponse?.groups || [];
+    const has5hBucket = groups.some((g: any) =>
+      (g.buckets || []).some((b: any) => {
+        return QuotaService.is5HourBucket(b.window, b.bucketId, b.displayName);
+      })
+    );
+
     // 1. Check paidTier FIRST (This is Google's canonical field for paid Google AI / Google One subscriptions)
     if (rawResponse.paidTier) {
       if (typeof rawResponse.paidTier === 'object') {
@@ -1165,7 +1414,8 @@ export class QuotaService {
         if (t) return this.mapBadgeToResult(t);
 
         // If paidTier is explicitly free-tier / starter quota (e.g. "free-tier" "Antigravity Starter Quota")
-        if (id === 'free-tier' || name.includes('starter') || combined.includes('free-tier')) {
+        // But if retrieveUserQuotaSummary returned a 5-hour rolling bucket, it is incontrovertibly a paid tier
+        if ((id === 'free-tier' || name.includes('starter') || combined.includes('free-tier')) && !has5hBucket) {
           if (!rawResponse.userTier || !checkStringForPaidTier(typeof rawResponse.userTier === 'string' ? rawResponse.userTier : JSON.stringify(rawResponse.userTier))) {
             return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
           }
@@ -1173,7 +1423,7 @@ export class QuotaService {
       } else if (typeof rawResponse.paidTier === 'string') {
         const t = checkStringForPaidTier(rawResponse.paidTier);
         if (t) return this.mapBadgeToResult(t);
-        if (rawResponse.paidTier.toLowerCase().includes('free')) {
+        if (rawResponse.paidTier.toLowerCase().includes('free') && !has5hBucket) {
           return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
         }
       }
@@ -1200,17 +1450,6 @@ export class QuotaService {
     }
 
     // 4. Check retrieveUserQuotaSummary buckets:
-    // In Google Cloud Code PA, ONLY paid Google AI accounts (Pro/Ultra) receive 5-hour rolling limit buckets ("Five Hour Limit Remaining" / window: "5h").
-    // Standard Free accounts ONLY have Weekly Limit Remaining.
-    const groups = rawResponse?.response?.groups || rawResponse?.groups || [];
-    const has5hBucket = groups.some((g: any) =>
-      (g.buckets || []).some((b: any) => {
-        const win = (b.window || '').toLowerCase();
-        const bId = (b.bucketId || '').toLowerCase();
-        const dName = (b.displayName || '').toLowerCase();
-        return win === '5h' || bId.includes('5h') || dName.includes('5-hour') || dName.includes('five hour');
-      })
-    );
     if (has5hBucket) {
       return { accountType: 'Google AI Pro', tierBadge: 'PRO' };
     }
@@ -1362,127 +1601,159 @@ export class QuotaService {
 
       healthyCount++;
 
-      // Weekly / Capacity percentage of this account (Gemini 70% + Claude 30%)
-      const pWeekly = acc.weeklyQuotaPercentage ?? acc.averageQuotaPercentage ?? 0;
-      if (pWeekly > maxPercentage) maxPercentage = pWeekly;
-      if (pWeekly < 20) {
-        lowCount++;
-      }
-
       const weight = getTierWeight(acc.tierBadge);
 
-      // 1. Overall capacity: weighted sum of weekly plan quotas across all healthy accounts
-      sumOverallWeighted += pWeekly * weight;
-      totalOverallWeight += weight;
+      // Check validity of Gemini and Claude buckets
+      const g5h = isFree ? undefined : acc.geminiGroup?.fiveHour;
+      const validG5h = !isFree && g5h && !g5h.disabled && g5h.percentage >= 0;
+      const gWk = acc.geminiGroup?.weekly;
+      const validGWk = gWk && !gWk.disabled && gWk.percentage >= 0;
 
-      // 2. Instant quota: usable burst quota in current session.
-      // - For Free accounts: Weekly plan quota is the only available window.
-      // - For Paid accounts: 5-Hour rolling window is modulated by safe weekly capacity.
-      //   Above 40% weekly (safe burst boundary), 5h is 100% usable (HealthFactor = 1.0).
-      //   Below 40% weekly, weekly fuel attenuates 5h via smooth square-root decay (Math.sqrt(Weekly / 40)).
-      let pInstant = pWeekly;
-      if (!isFree) {
-        const g5h = acc.geminiGroup?.fiveHour;
-        const validG5h = g5h && !g5h.disabled && g5h.percentage >= 0;
-        const gWk = acc.geminiGroup?.weekly;
-        const validGWk = gWk && !gWk.disabled && gWk.percentage >= 0;
+      const c5h = isFree ? undefined : acc.claudeGptGroup?.fiveHour;
+      const validC5h = !isFree && c5h && !c5h.disabled && c5h.percentage >= 0;
+      const cWk = acc.claudeGptGroup?.weekly;
+      const validCWk = cWk && !cWk.disabled && cWk.percentage >= 0;
 
-        const c5h = acc.claudeGptGroup?.fiveHour;
-        const validC5h = c5h && !c5h.disabled && c5h.percentage >= 0;
-        const cWk = acc.claudeGptGroup?.weekly;
-        const validCWk = cWk && !cWk.disabled && cWk.percentage >= 0;
+      // Weekly / Capacity percentage of this account (Gemini 70% + Claude 30%)
+      let pWeekly: number | undefined = acc.weeklyQuotaPercentage ?? acc.averageQuotaPercentage;
+      if (pWeekly === undefined) {
+        if (validGWk && validCWk) {
+          pWeekly = Math.round((gWk.percentage * MODEL_WEIGHTS.GEMINI + cWk.percentage * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+        } else if (validGWk) {
+          pWeekly = gWk.percentage;
+        } else if (validCWk) {
+          pWeekly = cWk.percentage;
+        }
+      }
 
-        if (validG5h && validGWk && validC5h && validCWk) {
-          const gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
-          const cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
-          pInstant = Math.round((gInstant * MODEL_WEIGHTS.GEMINI + cInstant * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
-        } else if (validG5h && validGWk) {
-          pInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
-        } else if (validC5h && validCWk) {
-          pInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+      // 1. Overall capacity: weighted sum of weekly plan quotas across healthy accounts with weekly data
+      if (pWeekly !== undefined) {
+        if (pWeekly > maxPercentage) maxPercentage = pWeekly;
+        if (pWeekly < 20) {
+          lowCount++;
+        }
+        sumOverallWeighted += pWeekly * weight;
+        totalOverallWeight += weight;
+      }
+
+      // 2. Gemini Instant Quota
+      let gInstant: number | undefined;
+      if (isFree) {
+        if (validGWk) gInstant = gWk.percentage;
+      } else {
+        if (validG5h && validGWk) {
+          gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+        } else if (validG5h) {
+          gInstant = g5h.percentage;
+        } else if (validGWk) {
+          gInstant = gWk.percentage;
+        }
+      }
+
+      // 3. Claude Instant Quota
+      let cInstant: number | undefined;
+      if (isFree) {
+        if (validCWk) cInstant = cWk.percentage;
+      } else {
+        if (validC5h && validCWk) {
+          cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
+        } else if (validC5h) {
+          cInstant = c5h.percentage;
+        } else if (validCWk) {
+          cInstant = cWk.percentage;
+        }
+      }
+
+      // 4. Account Instant Quota (pInstant): only blend models that actually have data
+      let pInstant: number | undefined;
+      if (gInstant !== undefined && cInstant !== undefined) {
+        pInstant = Math.round((gInstant * MODEL_WEIGHTS.GEMINI + cInstant * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+      } else if (gInstant !== undefined) {
+        pInstant = gInstant;
+      } else if (cInstant !== undefined) {
+        pInstant = cInstant;
+      } else {
+        // Fallback to account-level aggregates if present
+        if (isFree) {
+          pInstant = pWeekly;
         } else {
-          let p5h: number | undefined = acc.fiveHourQuotaPercentage;
-          if (p5h === undefined && validG5h) {
-            p5h = validC5h
-              ? Math.round((g5h.percentage * MODEL_WEIGHTS.GEMINI + c5h.percentage * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE))
-              : g5h.percentage;
-          }
-          if (p5h !== undefined) {
-            pInstant = calculateModulatedInstantQuota(p5h, pWeekly, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
+          const acc5h = acc.fiveHourQuotaPercentage;
+          if (acc5h !== undefined && pWeekly !== undefined) {
+            pInstant = calculateModulatedInstantQuota(acc5h, pWeekly, SAFE_WEEKLY_THRESHOLDS.DEFAULT);
+          } else if (acc5h !== undefined) {
+            pInstant = acc5h;
+          } else if (pWeekly !== undefined) {
+            pInstant = pWeekly;
           }
         }
       }
-      sumInstantWeighted += pInstant * weight;
-      totalInstantWeight += weight;
 
-      // 3. 5-Hour Rolling Window aggregates
-      const has5h = acc.fiveHourQuotaPercentage !== undefined || (acc.geminiGroup?.fiveHour && !acc.geminiGroup.fiveHour.disabled);
-      if (has5h) {
-        const val5h = acc.fiveHourQuotaPercentage ?? acc.geminiGroup?.fiveHour?.percentage ?? acc.claudeGptGroup?.fiveHour?.percentage ?? 0;
-        sum5hWeighted += val5h * weight;
-        total5hWeight += weight;
+      // Only add to instant pool if this account actually has instant data!
+      if (pInstant !== undefined) {
+        sumInstantWeighted += pInstant * weight;
+        totalInstantWeight += weight;
       }
 
-      // 4. Weekly Plan Quota aggregates
-      const hasWk = acc.weeklyQuotaPercentage !== undefined || (acc.geminiGroup?.weekly && !acc.geminiGroup.weekly.disabled);
-      if (hasWk) {
-        const valWk = acc.weeklyQuotaPercentage ?? acc.geminiGroup?.weekly?.percentage ?? acc.claudeGptGroup?.weekly?.percentage ?? 0;
-        sumWeeklyWeighted += valWk * weight;
+      // 5. 5-Hour Rolling Window aggregates (paid tiers only)
+      if (!isFree) {
+        let acc5hVal: number | undefined;
+        if (validG5h && validC5h) {
+          acc5hVal = Math.round((g5h.percentage * MODEL_WEIGHTS.GEMINI + c5h.percentage * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+        } else if (validG5h) {
+          acc5hVal = g5h.percentage;
+        } else if (validC5h) {
+          acc5hVal = c5h.percentage;
+        } else if (acc.fiveHourQuotaPercentage !== undefined) {
+          acc5hVal = acc.fiveHourQuotaPercentage;
+        }
+
+        if (acc5hVal !== undefined) {
+          sum5hWeighted += acc5hVal * weight;
+          total5hWeight += weight;
+        }
+      }
+
+      // 6. Weekly Plan Quota aggregates
+      let accWkVal: number | undefined;
+      if (validGWk && validCWk) {
+        accWkVal = Math.round((gWk.percentage * MODEL_WEIGHTS.GEMINI + cWk.percentage * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+      } else if (validGWk) {
+        accWkVal = gWk.percentage;
+      } else if (validCWk) {
+        accWkVal = cWk.percentage;
+      } else if (pWeekly !== undefined) {
+        accWkVal = pWeekly;
+      }
+
+      if (accWkVal !== undefined) {
+        sumWeeklyWeighted += accWkVal * weight;
         totalWeeklyWeight += weight;
       }
 
-      // Gemini Separated Aggregates
-      const g5h = acc.geminiGroup?.fiveHour;
-      const validG5h = g5h && !g5h.disabled && g5h.percentage >= 0;
+      // 7. Gemini Separated Aggregates
       if (validG5h) {
         sumGemini5h += g5h.percentage * weight;
         totalGemini5hWeight += weight;
       }
-      const gWk = acc.geminiGroup?.weekly;
-      const validGWk = gWk && !gWk.disabled && gWk.percentage >= 0;
       if (validGWk) {
         sumGeminiWeekly += gWk.percentage * weight;
         totalGeminiWeeklyWeight += weight;
       }
-
-      // Gemini Instant Aggregate
-      if (validG5h || validGWk) {
-        let gInstant = validGWk ? gWk.percentage : 0;
-        if (!isFree) {
-          if (validG5h && validGWk) {
-            gInstant = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
-          } else if (validG5h) {
-            gInstant = g5h.percentage;
-          }
-        }
+      if (gInstant !== undefined) {
         sumGeminiInstant += gInstant * weight;
         totalGeminiInstantWeight += weight;
       }
 
-      // Claude & GPT Separated Aggregates
-      const c5h = acc.claudeGptGroup?.fiveHour;
-      const validC5h = c5h && !c5h.disabled && c5h.percentage >= 0;
+      // 8. Claude & GPT Separated Aggregates
       if (validC5h) {
         sumClaude5h += c5h.percentage * weight;
         totalClaude5hWeight += weight;
       }
-      const cWk = acc.claudeGptGroup?.weekly;
-      const validCWk = cWk && !cWk.disabled && cWk.percentage >= 0;
       if (validCWk) {
         sumClaudeWeekly += cWk.percentage * weight;
         totalClaudeWeeklyWeight += weight;
       }
-
-      // Claude & GPT Instant Aggregate
-      if (validC5h || validCWk) {
-        let cInstant = validCWk ? cWk.percentage : 0;
-        if (!isFree) {
-          if (validC5h && validCWk) {
-            cInstant = calculateModulatedInstantQuota(c5h.percentage, cWk.percentage, SAFE_WEEKLY_THRESHOLDS.CLAUDE_GPT);
-          } else if (validC5h) {
-            cInstant = c5h.percentage;
-          }
-        }
+      if (cInstant !== undefined) {
         sumClaudeInstant += cInstant * weight;
         totalClaudeInstantWeight += weight;
       }

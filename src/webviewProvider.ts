@@ -252,6 +252,16 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  public toggleSimulation(): void {
+    const msg = { type: 'toggleSimulation' };
+    if (this._view) {
+      this._view.webview.postMessage(msg);
+    }
+    if (this._panel) {
+      this._panel.webview.postMessage(msg);
+    }
+  }
+
   public sendThemeUpdate(theme?: vscode.ColorTheme): void {
     const currentTheme = theme || vscode.window.activeColorTheme;
     const isLight =
