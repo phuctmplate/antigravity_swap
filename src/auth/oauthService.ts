@@ -3,8 +3,10 @@ import * as https from 'https';
 import * as url from 'url';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { OAuthTokens } from './types';
-import { OAUTH_CONFIG, API_ENDPOINTS } from './constants';
+import { OAuthTokens } from '../types';
+import { OAUTH_CONFIG, API_ENDPOINTS } from '../constants';
+
+const HTTP_REQUEST_TIMEOUT_MS = 10000;
 
 interface ActiveOAuthSession {
   cancel: (reason?: string) => void;
@@ -548,6 +550,9 @@ export class OAuthService {
           });
         }
       );
+      req.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+        req.destroy(new Error(`Request timed out (${HTTP_REQUEST_TIMEOUT_MS / 1000}s)`));
+      });
       req.on('error', reject);
       req.end();
     });
@@ -579,6 +584,9 @@ export class OAuthService {
           });
         }
       );
+      req.setTimeout(HTTP_REQUEST_TIMEOUT_MS, () => {
+        req.destroy(new Error(`Request timed out (${HTTP_REQUEST_TIMEOUT_MS / 1000}s)`));
+      });
       req.on('error', reject);
       req.write(body);
       req.end();

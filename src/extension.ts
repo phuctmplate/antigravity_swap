@@ -1,13 +1,12 @@
 import * as vscode from 'vscode';
 import { StorageService } from './storage';
-import { OAuthService } from './oauthService';
-import { QuotaService } from './quotaService';
-import { AccountManager } from './accountManager';
-import { StatusBarService } from './statusBar';
-import { WebviewProvider } from './webviewProvider';
-import { HeartbeatService } from './heartbeatService';
+import { OAuthService } from './auth';
+import { QuotaService } from './quota';
+import { AccountService } from './account';
+import { StatusBarService, WebviewProvider } from './ui';
+import { HeartbeatService } from './heartbeat';
 import { CONFIG_KEYS, EXTENSION_DEFAULTS } from './constants';
-import { ensureIdeExtensionPatched, restoreIdeExtensionBackup } from './patchIdeExtension';
+import { ensureIdeExtensionPatched, restoreIdeExtensionBackup } from './patcher';
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('[Antigravity Swap] Activating extension with Heartbeat & Ban detection...');
@@ -30,11 +29,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const oauthService = new OAuthService();
   const quotaService = new QuotaService(oauthService);
-  const accountManager = new AccountManager(storageService, oauthService, quotaService);
-  const heartbeatService = new HeartbeatService(accountManager);
+  const accountService = new AccountService(storageService, oauthService, quotaService);
+  const heartbeatService = new HeartbeatService(accountService);
 
   // Register Webview Sidebar Provider immediately (synchronous to prevent ServiceWorker invalid state)
-  const webviewProvider = new WebviewProvider(context.extensionUri, accountManager, heartbeatService);
+  const webviewProvider = new WebviewProvider(context.extensionUri, accountService, heartbeatService);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(WebviewProvider.viewType, webviewProvider, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -42,8 +41,8 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   // Initialize accounts in background without blocking webview registration
-  accountManager.initialize().catch((err) => {
-    console.error('[Antigravity Swap] AccountManager initialization error:', err);
+  accountService.initialize().catch((err) => {
+    console.error('[Antigravity Swap] AccountService initialization error:', err);
   });
 
   // Listen for IDE auth session changes (login / logout / account switch directly in IDE)
@@ -55,7 +54,7 @@ export async function activate(context: vscode.ExtensionContext) {
         e.provider.id.includes('antigravity') ||
         e.provider.id === 'google'
       ) {
-        await accountManager.handleIdeSessionChange();
+        await accountService.handleIdeSessionChange();
       }
     })
   );
@@ -64,21 +63,17 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration(CONFIG_KEYS.SECTION)) {
-        accountManager.handleConfigurationChange();
-        const updatedConfig = vscode.workspace.getConfiguration(CONFIG_KEYS.SECTION);
-        const newInterval = updatedConfig.get<number>(CONFIG_KEYS.HEARTBEAT_INTERVAL, EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
-        heartbeatService.start(newInterval);
+        accountService.handleConfigurationChange();
       }
     })
   );
 
-  // Start Heartbeat service
-  const heartbeatSec = config.get<number>(CONFIG_KEYS.HEARTBEAT_INTERVAL, EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
-  heartbeatService.start(heartbeatSec);
+  // Start Heartbeat service with fixed internal interval
+  heartbeatService.start(EXTENSION_DEFAULTS.DEFAULT_HEARTBEAT_SECONDS);
   context.subscriptions.push(heartbeatService);
 
   // Register Status Bar
-  const statusBar = new StatusBarService(accountManager);
+  const statusBar = new StatusBarService(accountService);
   context.subscriptions.push(statusBar);
 
   // Register Commands
@@ -122,11 +117,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('antigravitySwap.switchAccount', async (emailArg?: string) => {
       if (emailArg && typeof emailArg === 'string') {
-        await accountManager.switchAccount(emailArg, true);
+        await accountService.switchAccount(emailArg, true);
         return;
       }
 
-      const accounts = accountManager.getAccounts();
+      const accounts = accountService.getAccounts();
       if (accounts.length === 0) {
         const addChoice = await vscode.window.showInformationMessage(
           'No accounts in Antigravity Swap. Add your first account now?',
@@ -134,7 +129,7 @@ export async function activate(context: vscode.ExtensionContext) {
           'Cancel'
         );
         if (addChoice === 'Sign in with Google') {
-          await accountManager.addAccountViaOAuth();
+          await accountService.addAccountViaOAuth();
         }
         return;
       }
@@ -156,14 +151,14 @@ export async function activate(context: vscode.ExtensionContext) {
       });
 
       if (pick) {
-        await accountManager.switchAccount(pick.email, true);
+        await accountService.switchAccount(pick.email, true);
       }
     }),
 
     vscode.commands.registerCommand('antigravitySwap.reloginAccount', async (emailArg?: string) => {
       let email = emailArg;
       if (!email) {
-        const accounts = accountManager.getAccounts();
+        const accounts = accountService.getAccounts();
         const pick = await vscode.window.showQuickPick(
           accounts.map((a) => ({
             label: `${a.isBanned ? '⛔ ' : ''}${a.email}`,
@@ -175,11 +170,11 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!pick) return;
         email = pick.email;
       }
-      await accountManager.reloginAccount(email);
+      await accountService.reloginAccount(email);
     }),
 
     vscode.commands.registerCommand('antigravitySwap.addAccount', async () => {
-      await accountManager.addAccountViaOAuth();
+      await accountService.addAccountViaOAuth();
     }),
 
     vscode.commands.registerCommand('antigravitySwap.addAccountManual', async () => {
@@ -215,13 +210,13 @@ export async function activate(context: vscode.ExtensionContext) {
         ignoreFocusOut: true
       });
 
-      await accountManager.addAccountManually(email, accessToken, refreshToken, name);
+      await accountService.addAccountManually(email, accessToken, refreshToken, name);
     }),
 
     vscode.commands.registerCommand('antigravitySwap.removeAccount', async (emailArg?: string) => {
       let email = emailArg;
       if (!email) {
-        const accounts = accountManager.getAccounts();
+        const accounts = accountService.getAccounts();
         const pick = await vscode.window.showQuickPick(
           accounts.map((a) => ({ label: a.email, description: a.name })),
           { placeHolder: 'Select account to remove' }
@@ -229,7 +224,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!pick) return;
         email = pick.label;
       }
-      await accountManager.removeAccount(email);
+      await accountService.removeAccount(email);
     }),
 
     vscode.commands.registerCommand('antigravitySwap.refreshQuotas', async () => {
@@ -241,7 +236,7 @@ export async function activate(context: vscode.ExtensionContext) {
         },
         async (progress) => {
           let lastInc = 0;
-          await accountManager.refreshAllQuotas(true, (current, total, email) => {
+          await accountService.refreshAllQuotas(true, (current, total, email) => {
             const pct = Math.round((current / total) * 100);
             const increment = pct - lastInc;
             lastInc = pct;
@@ -256,7 +251,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('antigravitySwap.importExistingAccounts', async () => {
-      const count = await accountManager.importDetectedAccounts();
+      const count = await accountService.importDetectedAccounts();
       if (count > 0) {
         vscode.window.showInformationMessage(`Imported ${count} previously active account(s)!`);
       } else {
@@ -265,7 +260,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('antigravitySwap.importCurrentAntigravity', async () => {
-      await accountManager.importCurrentAntigravityAccount();
+      await accountService.importCurrentAntigravityAccount();
     }),
 
     vscode.commands.registerCommand('antigravitySwap.popOutDashboard', () => {

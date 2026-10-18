@@ -7,7 +7,7 @@ import { Button } from './ui/button';
 import { Progress, DashedProgress } from './ui/progress';
 import { Checkbox } from './ui/checkbox';
 import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, Gauge, Zap } from 'lucide-react';
-import { quotaFillClass, quotaTextClass, calculateModulatedInstantQuota, MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from '../lib/quota';
+import { quotaFillClass, quotaTextClass, calculateModulatedInstantQuota, parseCountdownFromDescription, MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from '../lib/quota';
 import { cn } from '../lib/utils';
 
 interface AccountCardProps {
@@ -58,11 +58,21 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 
   // Gemini buckets: Free tier strictly has no 5h bucket
   const gemini5h = isFree ? undefined : (geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')));
-  const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
+  const rawGeminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
+  const minGeminiWeeklyModel = weeklyQuotas.filter((q) => (q.groupName || '').toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'))
+    .reduce((prev, curr) => (!prev || curr.percentage < prev.percentage ? curr : prev), undefined as any);
+  const geminiWeekly = rawGeminiWeekly && minGeminiWeeklyModel && minGeminiWeeklyModel.percentage < rawGeminiWeekly.percentage
+    ? { ...rawGeminiWeekly, percentage: minGeminiWeeklyModel.percentage, remainingFraction: minGeminiWeeklyModel.remainingFraction }
+    : rawGeminiWeekly;
 
   // Claude & GPT buckets: Free tier strictly has no 5h bucket
-  const claudeWeekly = claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
   const claude5h = isFree ? undefined : (claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
+  const rawClaudeWeekly = claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+  const minClaudeWeeklyModel = weeklyQuotas.filter((q) => (q.groupName || '').toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'))
+    .reduce((prev, curr) => (!prev || curr.percentage < prev.percentage ? curr : prev), undefined as any);
+  const claudeWeekly = rawClaudeWeekly && minClaudeWeeklyModel && minClaudeWeeklyModel.percentage < rawClaudeWeekly.percentage
+    ? { ...rawClaudeWeekly, percentage: minClaudeWeeklyModel.percentage, remainingFraction: minClaudeWeeklyModel.remainingFraction }
+    : rawClaudeWeekly;
 
   // Validity checks for buckets
   const validGemini5h = gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0;
@@ -149,10 +159,16 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const getFillClass = quotaFillClass;
   const getTextColor = quotaTextClass;
 
+  const getCountdown = (b?: { resetCountdown?: string; description?: string }) => {
+    if (!b) return undefined;
+    return b.resetCountdown || parseCountdownFromDescription(b.description);
+  };
+
   // Short status note for a bucket, derived from the API semantics.
-  const bucketNote = (b: { disabled?: boolean; notStarted?: boolean; resetCountdown?: string; window?: string }) => {
-    if (!b.resetCountdown) return '';
-    return b.resetCountdown.toLowerCase().includes('ready') ? '• Ready' : `• resets ${b.resetCountdown}`;
+  const bucketNote = (b: { disabled?: boolean; notStarted?: boolean; resetCountdown?: string; description?: string; window?: string }) => {
+    const cd = getCountdown(b);
+    if (!cd) return '';
+    return cd.toLowerCase().includes('ready') ? '• Ready' : `• resets ${cd}`;
   };
 
   const handleCardClick = () => {
@@ -425,12 +441,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                           <span className={cn("font-medium", validGemini5h ? "text-foreground/80" : "text-muted-foreground/50")}>5h</span>
                         </span>
                         <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                          {validGemini5h && gemini5h.resetCountdown && (
+                          {validGemini5h && getCountdown(gemini5h) && (
                             <span className="text-muted-foreground/80 font-normal">
-                              {gemini5h.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${gemini5h.resetCountdown}`}
+                              {getCountdown(gemini5h)!.toLowerCase().includes('ready') ? 'Ready' : `resets ${getCountdown(gemini5h)}`}
                             </span>
                           )}
-                          {validGemini5h && gemini5h.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                          {validGemini5h && getCountdown(gemini5h) && <span className="text-muted-foreground/50 font-normal">•</span>}
                           <span className={cn("font-bold", validGemini5h ? (gemini5h.disabled ? "text-muted-foreground" : getTextColor(gemini5h.percentage)) : "text-muted-foreground")}>
                             {validGemini5h ? (gemini5h.disabled ? 'N/A' : `${gemini5h.percentage}%`) : '-%'}
                           </span>
@@ -456,12 +472,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                         <span className={cn("font-medium", validGeminiWk ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                        {validGeminiWk && geminiWeekly.resetCountdown && (
+                        {validGeminiWk && getCountdown(geminiWeekly) && (
                           <span className="text-muted-foreground/80 font-normal">
-                            {geminiWeekly.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${geminiWeekly.resetCountdown}`}
+                            {getCountdown(geminiWeekly)!.toLowerCase().includes('ready') ? 'Ready' : `resets ${getCountdown(geminiWeekly)}`}
                           </span>
                         )}
-                        {validGeminiWk && geminiWeekly.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                        {validGeminiWk && getCountdown(geminiWeekly) && <span className="text-muted-foreground/50 font-normal">•</span>}
                         <span className={cn("font-bold", validGeminiWk ? getTextColor(geminiWeekly.percentage) : "text-muted-foreground")}>
                           {validGeminiWk ? `${geminiWeekly.percentage}%` : '-%'}
                         </span>
@@ -524,12 +540,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                           <span className={cn("font-medium", validClaude5h ? "text-foreground/80" : "text-muted-foreground/50")}>5h</span>
                         </span>
                         <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                          {validClaude5h && claude5h.resetCountdown && (
+                          {validClaude5h && getCountdown(claude5h) && (
                             <span className={cn("font-normal", claude5h.disabled ? "text-amber-400/90" : "text-muted-foreground/80")}>
-                              {claude5h.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${claude5h.resetCountdown}`}
+                              {getCountdown(claude5h)!.toLowerCase().includes('ready') ? 'Ready' : `resets ${getCountdown(claude5h)}`}
                             </span>
                           )}
-                          {validClaude5h && claude5h.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                          {validClaude5h && getCountdown(claude5h) && <span className="text-muted-foreground/50 font-normal">•</span>}
                           <span className={cn("font-bold", validClaude5h ? (claude5h.disabled ? "text-muted-foreground" : getTextColor(claude5h.percentage)) : "text-muted-foreground")}>
                             {validClaude5h ? (claude5h.disabled ? 'N/A' : `${claude5h.percentage}%`) : '-%'}
                           </span>
@@ -555,12 +571,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                         <span className={cn("font-medium", validClaudeWk ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
-                        {validClaudeWk && claudeWeekly.resetCountdown && (
+                        {validClaudeWk && getCountdown(claudeWeekly) && (
                           <span className="text-muted-foreground/80 font-normal">
-                            {claudeWeekly.resetCountdown.toLowerCase().includes('ready') ? 'Ready' : `resets ${claudeWeekly.resetCountdown}`}
+                            {getCountdown(claudeWeekly)!.toLowerCase().includes('ready') ? 'Ready' : `resets ${getCountdown(claudeWeekly)}`}
                           </span>
                         )}
-                        {validClaudeWk && claudeWeekly.resetCountdown && <span className="text-muted-foreground/50 font-normal">•</span>}
+                        {validClaudeWk && getCountdown(claudeWeekly) && <span className="text-muted-foreground/50 font-normal">•</span>}
                         <span className={cn("font-bold", validClaudeWk ? getTextColor(claudeWeekly.percentage) : "text-muted-foreground")}>
                           {validClaudeWk ? `${claudeWeekly.percentage}%` : '-%'}
                         </span>

@@ -1,12 +1,12 @@
 import * as vscode from "vscode";
-import { AccountManager } from "./accountManager";
-import { SAFE_WEEKLY_THRESHOLDS } from "./constants";
+import { AccountService } from "../account";
+import { SAFE_WEEKLY_THRESHOLDS } from "../constants";
 
 export class StatusBarService implements vscode.Disposable {
   private statusBarItem: vscode.StatusBarItem;
   private disposables: vscode.Disposable[] = [];
 
-  constructor(private readonly accountManager: AccountManager) {
+  constructor(private readonly accountService: AccountService) {
     this.statusBarItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
       100,
@@ -15,7 +15,7 @@ export class StatusBarService implements vscode.Disposable {
     this.disposables.push(this.statusBarItem);
 
     this.disposables.push(
-      this.accountManager.onDidChangeState(() => this.update()),
+      this.accountService.onDidChangeState(() => this.update()),
     );
 
     this.update();
@@ -23,9 +23,9 @@ export class StatusBarService implements vscode.Disposable {
   }
 
   public update(): void {
-    const accounts = this.accountManager.getAccounts();
-    const active = this.accountManager.getActiveAccount();
-    const overall = this.accountManager.getOverallSummary();
+    const accounts = this.accountService.getAccounts();
+    const active = this.accountService.getActiveAccount();
+    const overall = this.accountService.getOverallSummary();
     const instantPct = overall.instantPercentage ?? 0;
     const overallPct = overall.overallPercentage ?? 0;
 
@@ -50,15 +50,15 @@ export class StatusBarService implements vscode.Disposable {
       return;
     }
 
-    const geminiPct = this.accountManager.getAccountTargetQuota(
+    const geminiPct = this.accountService.getAccountTargetQuota(
       active,
       "gemini",
     );
-    const claudePct = this.accountManager.getAccountTargetQuota(
+    const claudePct = this.accountService.getAccountTargetQuota(
       active,
       "claude",
     );
-    const accountInstantPct = this.accountManager.getAccountTargetQuota(
+    const accountInstantPct = this.accountService.getAccountTargetQuota(
       active,
       "instant",
     );
@@ -282,15 +282,15 @@ export class StatusBarService implements vscode.Disposable {
   }
 
   public async showQuickMenu(): Promise<void> {
-    const accounts = this.accountManager.getAccounts();
-    const active = this.accountManager.getActiveAccount();
-    const overall = this.accountManager.getOverallSummary();
+    const accounts = this.accountService.getAccounts();
+    const active = this.accountService.getActiveAccount();
+    const overall = this.accountService.getOverallSummary();
     const instantPct = overall.instantPercentage ?? 0;
     const overallPct = overall.overallPercentage ?? 0;
 
     const items: vscode.QuickPickItem[] = [];
 
-    const activeAccountInstantPct = active ? this.accountManager.getAccountTargetQuota(active, "instant") : 0;
+    const activeAccountInstantPct = active ? this.accountService.getAccountTargetQuota(active, "instant") : 0;
     items.push({
       label: `All Accounts Instant Quota: ${instantPct}% · Total Quota: ${overallPct}% across ${overall.totalAccounts} account(s)`,
       description: `Active: ${active ? active.email : "None"} (Account Instant Quota: ${activeAccountInstantPct}%, Total Quota: ${active ? active.averageQuotaPercentage : 0}%)`,
@@ -318,7 +318,7 @@ export class StatusBarService implements vscode.Disposable {
             ? "CURRENTLY ACTIVE"
             : "Click to switch without reloading";
 
-      const accInstant = this.accountManager.getAccountTargetQuota(acc, "instant");
+      const accInstant = this.accountService.getAccountTargetQuota(acc, "instant");
       items.push({
         label: `${statusIcon} ${acc.name || acc.email}${statusExtra}`,
         description: `${acc.email} — Account Instant Quota: ${acc.isBanned ? "0%" : accInstant + "%"} · Total: ${acc.isBanned ? "0%" : quotaPct + "%"}`,
@@ -382,9 +382,9 @@ export class StatusBarService implements vscode.Disposable {
       const tooltip = (e.button as any).tooltip;
       if (tooltip === "Re-login / Reconnect Account") {
         quickPick.hide();
-        await this.accountManager.reloginAccount(targetEmail);
+        await this.accountService.reloginAccount(targetEmail);
       } else if (tooltip === "Refresh quota") {
-        await this.accountManager.refreshAccountQuota(targetEmail);
+        await this.accountService.refreshAccountQuota(targetEmail);
       } else if (tooltip === "Remove account") {
         const confirm = await vscode.window.showWarningMessage(
           `Remove account ${targetEmail} from Antigravity Swap?`,
@@ -392,7 +392,7 @@ export class StatusBarService implements vscode.Disposable {
           "Remove",
         );
         if (confirm === "Remove") {
-          await this.accountManager.removeAccount(targetEmail);
+          await this.accountService.removeAccount(targetEmail);
           quickPick.items = quickPick.items.filter(
             (i) => !i.description?.startsWith(targetEmail),
           );
@@ -406,9 +406,9 @@ export class StatusBarService implements vscode.Disposable {
       const chosen = selection[0];
 
       if (chosen.label.includes("Import Current Antigravity Session")) {
-        await this.accountManager.importCurrentAntigravityAccount();
+        await this.accountService.importCurrentAntigravityAccount();
       } else if (chosen.label.includes("Add Account (Google OAuth)")) {
-        await this.accountManager.addAccountViaOAuth();
+        await this.accountService.addAccountViaOAuth();
       } else if (chosen.label.includes("Add Account (Manual Token)")) {
         await vscode.commands.executeCommand(
           "antigravitySwap.addAccountManual",
@@ -418,7 +418,7 @@ export class StatusBarService implements vscode.Disposable {
       } else {
         const email = chosen.description?.split(" — ")[0]?.trim();
         if (email) {
-          await this.accountManager.switchAccount(email, true);
+          await this.accountService.switchAccount(email, true);
         }
       }
     });

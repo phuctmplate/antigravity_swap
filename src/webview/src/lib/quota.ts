@@ -69,7 +69,7 @@ export const formatCountdown = (isoString?: string): string | undefined => {
     if (diff <= 0) return 'Ready';
     const hours = Math.floor(diff / (1000 * 60 * 60));
     const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    if (hours > 24) {
+    if (hours >= 24) {
       const days = Math.floor(hours / 24);
       const remHours = hours % 24;
       return `${days}d ${remHours}h`;
@@ -82,3 +82,36 @@ export const formatCountdown = (isoString?: string): string | undefined => {
     return undefined;
   }
 };
+
+/**
+ * Parses countdown time from Google's native quota bucket description:
+ * e.g. "You have used some of your weekly limit, it will fully refresh in 6 days, 15 hours." -> "6d 15h"
+ */
+export const parseCountdownFromDescription = (desc?: string): string | undefined => {
+  if (!desc || typeof desc !== 'string') return undefined;
+
+  const match = desc.match(/(?:fully refresh in|refreshes in|refresh in|resets in)\s+([^.]+)/i);
+  if (!match) return undefined;
+
+  const raw = match[1].trim();
+  const daysMatch = raw.match(/(\d+)\s*(?:days?|d)\b/i);
+  const hoursMatch = raw.match(/(\d+)\s*(?:hours?|hrs?|h)\b/i);
+  const minsMatch = raw.match(/(\d+)\s*(?:minutes?|mins?|m)\b/i);
+
+  const days = daysMatch ? parseInt(daysMatch[1], 10) : 0;
+  const hours = hoursMatch ? parseInt(hoursMatch[1], 10) : 0;
+  const mins = minsMatch ? parseInt(minsMatch[1], 10) : 0;
+
+  if (days > 0) {
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+  if (hours > 0) {
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  }
+  if (mins > 0) {
+    return `${mins}m`;
+  }
+
+  return raw;
+};
+

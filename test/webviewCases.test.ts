@@ -149,4 +149,127 @@ test('UI Response & Data Display Test Suite for Edge-Case Accounts', async (t) =
     assert.strictEqual(authFailedAccount.status, 'auth_failed');
     assert.strictEqual(getDisplayPercentage(authFailedAccount.averageQuotaPercentage), '-%');
   });
+
+  // Case 6: Ultra Tier Account
+  const ultraAccount: AccountInfo = {
+    id: 'acc-ultra',
+    email: 'ultra.dev@gmail.com',
+    name: 'Ultra Power User',
+    isActive: false,
+    status: 'healthy',
+    accountType: 'Google AI Ultra',
+    tierBadge: 'ULTRA',
+    has5HourQuota: true,
+    hasWeeklyQuota: true,
+    fiveHourQuotaPercentage: 95,
+    weeklyQuotaPercentage: 98,
+    averageQuotaPercentage: 96
+  };
+
+  await t.test('Case 6: Ultra Tier Account correctly formats quota and tier', () => {
+    assert.strictEqual(ultraAccount.tierBadge, 'ULTRA');
+    assert.strictEqual(getDisplayPercentage(ultraAccount.fiveHourQuotaPercentage), '95%');
+    assert.strictEqual(getDisplayPercentage(ultraAccount.weeklyQuotaPercentage), '98%');
+  });
+
+  // Case 7: Enterprise Tier Account
+  const enterpriseAccount: AccountInfo = {
+    id: 'acc-enterprise',
+    email: 'corp.dev@enterprise.com',
+    name: 'Enterprise Engineer',
+    isActive: false,
+    status: 'healthy',
+    accountType: 'Antigravity Enterprise',
+    tierBadge: 'ENTERPRISE',
+    has5HourQuota: true,
+    hasWeeklyQuota: true,
+    fiveHourQuotaPercentage: 100,
+    weeklyQuotaPercentage: 100,
+    averageQuotaPercentage: 100
+  };
+
+  await t.test('Case 7: Enterprise Tier Account correctly formats quota and tier', () => {
+    assert.strictEqual(enterpriseAccount.tierBadge, 'ENTERPRISE');
+    assert.strictEqual(getDisplayPercentage(enterpriseAccount.fiveHourQuotaPercentage), '100%');
+  });
+
+  // Case 8: Banned Account
+  const bannedAccount: AccountInfo = {
+    id: 'acc-banned',
+    email: 'banned.user@gmail.com',
+    name: 'Banned User',
+    isActive: false,
+    status: 'banned',
+    isBanned: true,
+    banReason: 'Account suspended by Google Terms of Service.',
+    accountType: 'Google AI Pro',
+    tierBadge: 'PRO',
+    quotas: []
+  };
+
+  await t.test('Case 8: Banned Account shows banned state and empty quotas format as -%', () => {
+    assert.strictEqual(bannedAccount.isBanned, true);
+    assert.strictEqual(bannedAccount.status, 'banned');
+    assert.strictEqual(getDisplayPercentage(bannedAccount.averageQuotaPercentage), '-%');
+  });
+
+  // Case 9: 100% 5h Burst with 25% Weekly Capacity (burst session scenario)
+  const burstWithLowWeekly: AccountInfo = {
+    id: 'acc-burst-low-weekly',
+    email: 'pro.burst@gmail.com',
+    name: 'Burst Account',
+    isActive: false,
+    status: 'healthy',
+    accountType: 'Google AI Pro',
+    tierBadge: 'PRO',
+    has5HourQuota: true,
+    hasWeeklyQuota: true,
+    fiveHourQuotaPercentage: 100,
+    weeklyQuotaPercentage: 25,
+    averageQuotaPercentage: 36,
+    fiveHourResetCountdown: '4h 58m',
+    weeklyResetCountdown: '6d 18h',
+    geminiGroup: {
+      id: 'gemini',
+      name: 'Gemini Models',
+      fiveHour: {
+        bucketId: 'gemini-5h',
+        displayName: 'Five Hour Limit Remaining',
+        window: '5h',
+        percentage: 100,
+        remainingFraction: 1.0,
+        resetCountdown: '4h 58m'
+      },
+      weekly: {
+        bucketId: 'gemini-weekly',
+        displayName: 'Weekly Limit Remaining',
+        window: 'weekly',
+        percentage: 25,
+        remainingFraction: 0.25,
+        resetCountdown: '6d 18h'
+      }
+    }
+  };
+
+  await t.test('Case 9: 100% 5h with 25% Weekly displays distinct 5h and Weekly numbers, and modulates Instant properly', () => {
+    const g5h = burstWithLowWeekly.geminiGroup!.fiveHour!;
+    const gWk = burstWithLowWeekly.geminiGroup!.weekly!;
+
+    assert.strictEqual(getDisplayPercentage(g5h.percentage), '100%');
+    assert.strictEqual(g5h.resetCountdown, '4h 58m');
+    assert.strictEqual(getDisplayPercentage(gWk.percentage), '25%');
+    assert.strictEqual(gWk.resetCountdown, '6d 18h');
+
+    // At 25% weekly quota, Gemini has enough fuel for 1 full burst session (healthFactor = 1.0)
+    const instantAtThreshold = calculateModulatedInstantQuota(g5h.percentage, gWk.percentage, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+    assert.strictEqual(instantAtThreshold, 100, 'Instant quota at 25% safe threshold is 100%');
+
+    // Below 25% weekly quota (e.g. 10%), instant quota attenuates: 100 * (10 / 25) = 40%
+    const attenuatedInstant = calculateModulatedInstantQuota(100, 10, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+    assert.strictEqual(attenuatedInstant, 40, 'Instant quota attenuates to 40% when weekly quota is 10%');
+
+    // At 0% weekly quota, instant quota drops to 0%
+    const depletedInstant = calculateModulatedInstantQuota(100, 0, SAFE_WEEKLY_THRESHOLDS.GEMINI);
+    assert.strictEqual(depletedInstant, 0, 'Instant quota is 0% when weekly quota is 0%');
+  });
 });

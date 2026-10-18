@@ -12,9 +12,11 @@ import { cn } from '../lib/utils';
 interface HeaderProps {
   overall: OverallQuotaSummary;
   accounts: Account[];
+  appVersion?: string;
 }
 
-export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
+export const Header: React.FC<HeaderProps> = ({ overall, accounts, appVersion }) => {
+  const displayVersion = appVersion || (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '');
   const instantPct = overall.instantPercentage ?? 0;
   const overallPct = overall.overallPercentage ?? 0;
   // Half-circle gauge metrics (180deg dome arc)
@@ -76,12 +78,14 @@ export const Header: React.FC<HeaderProps> = ({ overall, accounts }) => {
               <HelpCircle className="w-3.5 h-3.5" />
             </button>
           </InstantConceptModal>
-          <Badge
-            variant="outline"
-            className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
-          >
-            v1.3.2
-          </Badge>
+          {displayVersion ? (
+            <Badge
+              variant="outline"
+              className="text-[10px] text-muted-foreground/80 font-mono border-border/60 py-0 px-1.5 h-5 leading-none inline-flex items-center justify-center"
+            >
+              {displayVersion}
+            </Badge>
+          ) : null}
         </div>
       </div>
 

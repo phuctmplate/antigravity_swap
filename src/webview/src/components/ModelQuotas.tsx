@@ -4,7 +4,7 @@ import { Card, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { Progress } from './ui/progress';
 import { Search, ShieldAlert, AlertTriangle, Gauge, RotateCw } from 'lucide-react';
-import { quotaFillClass, quotaTextClass } from '../lib/quota';
+import { quotaFillClass, quotaTextClass, parseCountdownFromDescription } from '../lib/quota';
 
 interface ModelQuotasProps {
   selectedAccount: Account | null;
@@ -140,8 +140,8 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
                             <span className="truncate">{q.windowLabel || q.windowType}</span>
                             {q.disabled ? (
                               <span className="text-amber-400 font-medium shrink-0">Limit reached</span>
-                            ) : q.resetCountdown ? (
-                              <span className="text-muted-foreground/80 shrink-0">Resets {q.resetCountdown}</span>
+                            ) : (q.resetCountdown || parseCountdownFromDescription(q.description)) ? (
+                              <span className="text-muted-foreground/80 shrink-0">Resets {q.resetCountdown || parseCountdownFromDescription(q.description)}</span>
                             ) : null}
                           </div>
                         </CardContent>

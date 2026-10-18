@@ -29,8 +29,8 @@ export const API_ENDPOINTS = {
   USER_INFO_HOST: 'www.googleapis.com',
   USER_INFO_PATH: '/oauth2/v3/userinfo',
   CLOUD_CODE_HOSTS: [
-    'daily-cloudcode-pa.googleapis.com', // Primary Antigravity backend with active runtime model quotas
-    'cloudcode-pa.googleapis.com'        // Production backend with Gemini weekly plan quotas
+    'cloudcode-pa.googleapis.com',        // Production backend (contains both Gemini and Claude/GPT groups)
+    'daily-cloudcode-pa.googleapis.com'  // Companion backend fallback
   ] as const
 } as const;
 
@@ -84,7 +84,6 @@ export const STORAGE_KEYS = {
  */
 export const CONFIG_KEYS = {
   SECTION: 'antigravitySwap',
-  HEARTBEAT_INTERVAL: 'heartbeatIntervalSeconds',
   AUTO_SWITCH_WHEN_LOW: 'autoSwitchWhenQuotaLow',
   LOW_QUOTA_THRESHOLD: 'lowQuotaThresholdPercent',
   ENABLE_IDE_PATCH: 'enableIdeExtensionPatch',
@@ -99,11 +98,12 @@ export const EXTENSION_DEFAULTS = {
   DEFAULT_AUTO_SWITCH_ENABLED: false,
   DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 5,
   DEFAULT_AUTO_SWITCH_TARGET: 'gemini',
-  ACCOUNT_REFRESH_COOLDOWN_MS: 15000,
-  GLOBAL_REFRESH_COOLDOWN_MS: 15000,
+  ACCOUNT_FRESHNESS_THRESHOLD_MS: 30000,
+  ACCOUNT_REFRESH_COOLDOWN_MS: 30000,
+  GLOBAL_REFRESH_COOLDOWN_MS: 30000,
   BATCH_PACING_DELAY_MS: 100,
-  REFRESH_BATCH_SIZE: 4,
-  BACKGROUND_REFRESH_BATCH_SIZE: 2,
+  FORCE_REFRESH_BATCH_SIZE: 4,
+  BACKGROUND_REFRESH_BATCH_SIZE: 4,
   TOKEN_PROPAGATION_RETRY_DELAY_MS: 5000,
   OAUTH_COOLDOWN_MS: 2000,
   IMPORT_COOLDOWN_MS: 2000,

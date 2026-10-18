@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { QuotaService } from '../src/quotaService';
+import { QuotaService } from '../src/quota';
 import { MOCK_RAW_RESPONSES, MOCK_PRO_HEALTHY, MOCK_FREE_HEALTHY, ALL_MOCK_ACCOUNTS } from './mocks/mockAccounts';
 
 const dummyOAuthService: any = {
@@ -426,5 +426,69 @@ test('Live Model Quota and 5h Group Synchronization', async (t) => {
     // Verify overall weekly percentage is weighted correctly (Gemini 90%, Claude 50%)
     // Math.round((90 * 0.85 + 50 * 0.15) / 1) = 84%
     assert.strictEqual(res.weeklyPercentage, 84, 'Weekly percentage should be weighted combination ~84%');
+  });
+
+  await t.test('Model with weekly reset time (> 5.5h away) does NOT corrupt 5h bucket percentage or reset time', () => {
+    // Current time + 8.5 hours (weekly reset time)
+    const futureWeeklyReset = new Date(Date.now() + 8.5 * 3600 * 1000).toISOString();
+    // Current time + 4.9 hours (legitimate 5h rolling reset time)
+    const valid5hReset = new Date(Date.now() + 4.9 * 3600 * 1000).toISOString();
+
+    const rawResponse = {
+      paidTier: { id: 'g1-pro-tier' },
+      response: {
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              {
+                bucketId: 'gemini-5h',
+                displayName: 'Five Hour Limit Remaining',
+                window: '5h',
+                remainingFraction: 1.0,
+                resetTime: valid5hReset
+              },
+              {
+                bucketId: 'gemini-weekly',
+                displayName: 'Weekly Limit Remaining',
+                window: 'weekly',
+                remainingFraction: 0.25,
+                resetTime: futureWeeklyReset
+              }
+            ]
+          }
+        ]
+      },
+      models: {
+        'gemini-3.8-flash-tiered': {
+          displayName: 'Gemini 3.8 Flash',
+          quotaInfo: {
+            remainingFraction: 0.25,
+            resetTime: futureWeeklyReset
+          }
+        }
+      }
+    };
+
+    const account: any = {
+      id: 'acc-weekly-restricted',
+      email: 'pro.active@gmail.com',
+      tierBadge: 'PRO',
+      status: 'healthy'
+    };
+
+    const res = quotaService.processQuotaData(rawResponse, account);
+
+    // 1. Gemini 5h bucket must preserve its authentic 100% and its legitimate 5h reset time (~4.9h)
+    assert.strictEqual(res.geminiGroup?.fiveHour?.percentage, 100, '5h bucket must remain 100%');
+    assert.strictEqual(res.geminiGroup?.fiveHour?.resetTime, valid5hReset, '5h bucket must retain its valid 5h reset time');
+
+    // 2. Gemini Weekly bucket retains 25% and 8.5h reset time
+    assert.strictEqual(res.geminiGroup?.weekly?.percentage, 25, 'Weekly bucket must be 25%');
+    assert.strictEqual(res.geminiGroup?.weekly?.resetTime, futureWeeklyReset, 'Weekly bucket has 8.5h reset');
+
+    // 3. Flash model is constrained by weekly cycle, so its windowType must be weekly
+    const flashModel = res.quotas.find((q) => q.id.includes('3.8-flash'));
+    assert.strictEqual(flashModel?.windowType, 'weekly', 'Flash model resetting in 8.5h must be classified as weekly');
   });
 });

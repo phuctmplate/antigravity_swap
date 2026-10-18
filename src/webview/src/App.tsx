@@ -107,7 +107,8 @@ export const AppContent: React.FC = () => {
             isBackgroundRefreshing: data.isBackgroundRefreshing === true,
             autoSwitchEnabled: data.autoSwitchEnabled === true,
             autoSwitchTarget: data.autoSwitchTarget || DEFAULT_AUTO_SWITCH_TARGET,
-            autoSwitchThreshold: typeof data.autoSwitchThreshold === 'number' ? data.autoSwitchThreshold : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
+            autoSwitchThreshold: typeof data.autoSwitchThreshold === 'number' ? data.autoSwitchThreshold : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
+            appVersion: data.appVersion
           };
           setState(nextState);
           getVsCodeApi().setState(nextState);
@@ -152,7 +153,7 @@ export const AppContent: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex flex-col max-w-7xl mx-auto w-full p-2.5">
         {/* Header Section */}
-        <Header overall={effectiveOverall} accounts={effectiveAccounts} />
+        <Header overall={effectiveOverall} accounts={effectiveAccounts} appVersion={state.appVersion} />
 
         {/* Controller Action Bar */}
         <div className="flex flex-col gap-2">

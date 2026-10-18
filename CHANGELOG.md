@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0 (2026-10-17)
+
+- **Performance & Reliability**: Re-engineered core engine architecture to deliver improved responsiveness, lower resource usage, and rock-solid operational stability.
+- **Multi-Window Synchronization**: Enhanced real-time synchronization across multiple open IDE windows, ensuring seamless and conflict-free account management.
+- **Smart Background Sync**: Optimized automatic quota refreshing by prioritizing the active account and skipping redundant network requests when accounts are already up-to-date across IDE instances.
+- **Configuration Hardening**: Removed the configurable heartbeat interval setting (`antigravitySwap.heartbeatIntervalSeconds`) to lock periodic health checks to an optimal, rate-limit-safe internal cadence.
+
 ## 1.3.2 (2026-10-16)
 
 - **Quota Synchronization & 5-Hour Retention**: Fixed missing 5-hour rolling limits and inaccurate depletion warnings by prioritizing production endpoints and resolving batch refresh race conditions.

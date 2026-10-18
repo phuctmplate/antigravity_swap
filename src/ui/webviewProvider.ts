@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { AccountManager } from './accountManager';
-import { HeartbeatService } from './heartbeatService';
-import { EXTENSION_DEFAULTS } from './constants';
+import { AccountService } from '../account';
+import { HeartbeatService } from '../heartbeat';
+import { EXTENSION_DEFAULTS } from '../constants';
 
 export class WebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravitySwap.dashboardView';
@@ -12,10 +12,10 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly accountManager: AccountManager,
+    private readonly accountService: AccountService,
     private readonly heartbeatService: HeartbeatService
   ) {
-    this.accountManager.onDidChangeState(() => this.updateWebview());
+    this.accountService.onDidChangeState(() => this.updateWebview());
     this.heartbeatService.onHeartbeat(() => this.updateWebview());
     vscode.window.onDidChangeActiveColorTheme((theme) => {
       this.sendThemeUpdate(theme);
@@ -109,32 +109,36 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'switchAccount': {
-          const ok = await this.accountManager.switchAccount(data.email, data.isManual === true, true);
+          const ok = await this.accountService.switchAccount(data.email, data.isManual === true, true);
           if (ok) {
             this.showToast(`Switched to: ${data.email}!`, 'success');
+          } else {
+            const acc = this.accountService.getAccounts().find((a) => a.email === data.email);
+            const msg = acc?.statusMessage || `Failed to switch to ${data.email}.`;
+            this.showToast(msg, 'error');
           }
           break;
         }
         case 'relogin':
         case 'reloginAccount':
-          await this.accountManager.reloginAccount(data.email);
+          await this.accountService.reloginAccount(data.email);
           break;
         case 'refreshAll':
           await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
           break;
         case 'refreshAccount':
-          await this.accountManager.refreshAccountQuota(data.email, true);
+          await this.accountService.refreshAccountQuota(data.email, true);
           this.showToast(`Refreshed quota for ${data.email}.`, 'success');
           // Re-evaluate auto-switch immediately with the fresh quota data
-          if (this.accountManager.isAutoSwitchEnabled()) {
-            await this.accountManager.checkAutoSwitch();
+          if (this.accountService.isAutoSwitchEnabled()) {
+            await this.accountService.checkAutoSwitch();
           }
           break;
         case 'addOAuth':
           await vscode.commands.executeCommand('antigravitySwap.addAccount');
           break;
         case 'importCurrentAntigravity':
-          await this.accountManager.importCurrentAntigravityAccount();
+          await this.accountService.importCurrentAntigravityAccount();
           break;
         case 'addManual':
           await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
@@ -149,7 +153,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
               },
               async (progress) => {
                 let lastInc = 0;
-                await this.accountManager.refreshMultipleAccounts(data.emails, (current, total, email) => {
+                await this.accountService.refreshMultipleAccounts(data.emails, (current, total, email) => {
                   const pct = Math.round((current / total) * 100);
                   const increment = pct - lastInc;
                   lastInc = pct;
@@ -166,13 +170,13 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'removeMultipleAccounts':
           if (Array.isArray(data.emails) && data.emails.length > 0) {
             const count = data.emails.length;
-            await this.accountManager.removeMultipleAccounts(data.emails, true);
+            await this.accountService.removeMultipleAccounts(data.emails, true);
             this.showToast(`Removed ${count} account${count > 1 ? 's' : ''}.`, 'info');
           }
           break;
         case 'removeAccount':
           if (data.confirmed) {
-            await this.accountManager.removeAccount(data.email, true);
+            await this.accountService.removeAccount(data.email, true);
             this.showToast(`Account ${data.email} removed.`, 'info');
           } else {
             const confirm = await vscode.window.showWarningMessage(
@@ -181,20 +185,20 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
               'Remove'
             );
             if (confirm === 'Remove') {
-              await this.accountManager.removeAccount(data.email, true);
+              await this.accountService.removeAccount(data.email, true);
               this.showToast(`Account ${data.email} removed.`, 'info');
             }
           }
           break;
         case 'setAutoSwitch':
-          await this.accountManager.setAutoSwitchEnabled(data.enabled);
+          await this.accountService.setAutoSwitchEnabled(data.enabled);
           break;
         case 'setAutoSwitchTarget':
-          await this.accountManager.setAutoSwitchTarget(data.target);
+          await this.accountService.setAutoSwitchTarget(data.target);
           break;
         case 'setAutoSwitchThreshold':
           if (typeof data.threshold === 'number' && !isNaN(data.threshold)) {
-            await this.accountManager.setAutoSwitchThreshold(data.threshold);
+            await this.accountService.setAutoSwitchThreshold(data.threshold);
           }
           break;
         case 'ready':
@@ -222,9 +226,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   }
 
   public updateWebview(): void {
-    const accounts = this.accountManager.getAccounts();
-    const activeAccount = this.accountManager.getActiveAccount();
-    const overall = this.accountManager.getOverallSummary();
+    const accounts = this.accountService.getAccounts();
+    const activeAccount = this.accountService.getActiveAccount();
+    const overall = this.accountService.getOverallSummary();
     const heartbeat = this.heartbeatService.getHeartbeatInfo();
 
     const isLight =
@@ -237,10 +241,11 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       activeAccount,
       overall,
       heartbeat,
-      isBackgroundRefreshing: this.accountManager.isBackgroundRefreshingState(),
-      autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
-      autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
-      autoSwitchThreshold: this.accountManager.getAutoSwitchThreshold(),
+      isBackgroundRefreshing: this.accountService.isBackgroundRefreshingState(),
+      autoSwitchEnabled: this.accountService.isAutoSwitchEnabled(),
+      autoSwitchTarget: this.accountService.getAutoSwitchTarget(),
+      autoSwitchThreshold: this.accountService.getAutoSwitchThreshold(),
+      appVersion: this.getExtensionVersion(),
       isLight
     };
 
@@ -293,9 +298,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
 
     // Inject initial snapshot data directly into root attribute for instant 0ms first frame render
     try {
-      const accounts = this.accountManager.getAccounts();
-      const activeAccount = this.accountManager.getActiveAccount();
-      const overall = this.accountManager.getOverallSummary();
+      const accounts = this.accountService.getAccounts();
+      const activeAccount = this.accountService.getActiveAccount();
+      const overall = this.accountService.getOverallSummary();
       const heartbeat = this.heartbeatService.getHeartbeatInfo();
       const isLight =
         vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light ||
@@ -306,9 +311,10 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         activeAccount,
         overall,
         heartbeat,
-        autoSwitchEnabled: this.accountManager.isAutoSwitchEnabled(),
-        autoSwitchTarget: this.accountManager.getAutoSwitchTarget(),
-        autoSwitchThreshold: this.accountManager.getAutoSwitchThreshold(),
+        autoSwitchEnabled: this.accountService.isAutoSwitchEnabled(),
+        autoSwitchTarget: this.accountService.getAutoSwitchTarget(),
+        autoSwitchThreshold: this.accountService.getAutoSwitchThreshold(),
+        appVersion: this.getExtensionVersion(),
         isLight
       };
       const b64State = Buffer.from(JSON.stringify(initialState)).toString('base64');
@@ -338,6 +344,19 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     html = html.replace('<head>', `<head>\n  ${cspMeta}`);
 
     return html;
+  }
+
+  private getExtensionVersion(): string {
+    try {
+      const pkgPath = path.join(this.extensionUri.fsPath, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (pkg && pkg.version) {
+          return `v${pkg.version}`;
+        }
+      }
+    } catch {}
+    return '';
   }
 
   private getNonce(): string {

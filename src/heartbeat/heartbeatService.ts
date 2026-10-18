@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { AccountManager } from './accountManager';
-import { HeartbeatInfo } from './types';
+import { AccountService } from '../account';
+import { HeartbeatInfo } from '../types';
 
 export class HeartbeatService implements vscode.Disposable {
   private timer?: NodeJS.Timeout;
@@ -10,7 +10,7 @@ export class HeartbeatService implements vscode.Disposable {
   private readonly _onHeartbeat = new vscode.EventEmitter<HeartbeatInfo>();
   public readonly onHeartbeat = this._onHeartbeat.event;
 
-  constructor(private readonly accountManager: AccountManager) {}
+  constructor(private readonly accountService: AccountService) {}
 
   public start(intervalSeconds = 30): void {
     this.intervalSeconds = intervalSeconds;
@@ -38,12 +38,12 @@ export class HeartbeatService implements vscode.Disposable {
   public async tick(): Promise<void> {
     this.lastTick = new Date().toISOString();
     try {
-      await this.accountManager.runHeartbeatTick();
+      await this.accountService.runHeartbeatTick();
     } catch (err) {
       console.warn('[HeartbeatService] Tick error:', err);
     }
 
-    const active = this.accountManager.getActiveAccount();
+    const active = this.accountService.getActiveAccount();
     let health: 'healthy' | 'warning' | 'error' = 'healthy';
     if (!active || active.isBanned || active.status === 'auth_failed' || active.status === 'banned') {
       health = 'error';
@@ -60,7 +60,7 @@ export class HeartbeatService implements vscode.Disposable {
   }
 
   public getHeartbeatInfo(): HeartbeatInfo {
-    const active = this.accountManager.getActiveAccount();
+    const active = this.accountService.getActiveAccount();
     let health: 'healthy' | 'warning' | 'error' = 'healthy';
     if (!active || active.isBanned || active.status === 'auth_failed' || active.status === 'banned') {
       health = 'error';
