@@ -140,7 +140,7 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
                             <span className="truncate">{q.windowLabel || q.windowType}</span>
                             {q.disabled ? (
                               <span className="text-amber-400 font-medium shrink-0">Limit reached</span>
-                            ) : (q.resetCountdown || parseCountdownFromDescription(q.description)) ? (
+                            ) : (q.resetCountdown || (q.windowType === '5h' ? parseCountdownFromDescription(q.description) : (/\b\d+\s*d\b/i.test(parseCountdownFromDescription(q.description) || '') ? parseCountdownFromDescription(q.description) : undefined))) ? (
                               <span className="text-muted-foreground/80 shrink-0">Resets {q.resetCountdown || parseCountdownFromDescription(q.description)}</span>
                             ) : null}
                           </div>

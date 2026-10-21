@@ -123,17 +123,46 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'reloginAccount':
           await this.accountService.reloginAccount(data.email);
           break;
-        case 'refreshAll':
-          await vscode.commands.executeCommand('antigravitySwap.refreshQuotas');
-          break;
-        case 'refreshAccount':
-          await this.accountService.refreshAccountQuota(data.email, true);
-          this.showToast(`Refreshed quota for ${data.email}.`, 'success');
-          // Re-evaluate auto-switch immediately with the fresh quota data
-          if (this.accountService.isAutoSwitchEnabled()) {
-            await this.accountService.checkAutoSwitch();
+        case 'refreshAll': {
+          try {
+            const accounts = this.accountService.getAccounts();
+            if (accounts.length === 0) {
+              this.showToast('No accounts available to refresh.', 'info');
+              break;
+            }
+            await this.accountService.refreshAllQuotas(true);
+            const latest = this.accountService.getAccounts();
+            const failedCount = latest.filter((a) => a.status === 'auth_failed' || a.status === 'banned').length;
+            if (failedCount > 0) {
+              this.showToast(`Refreshed ${latest.length} accounts (${failedCount} account(s) have auth or access issues).`, 'warning');
+            } else {
+              this.showToast(`All ${latest.length} account quotas refreshed successfully!`, 'success');
+            }
+          } catch (err: any) {
+            this.showToast(`Failed to refresh all accounts: ${err.message || 'Error occurred'}`, 'error');
           }
           break;
+        }
+        case 'refreshAccount': {
+          try {
+            await this.accountService.refreshAccountQuota(data.email, true);
+            const acc = this.accountService.getAccounts().find((a) => a.email.toLowerCase() === data.email.toLowerCase());
+            if (!acc) {
+              this.showToast(`Account ${data.email} not found.`, 'error');
+            } else if (acc.status === 'auth_failed') {
+              this.showToast(`Failed to refresh ${data.email}: Authentication expired. Please re-login.`, 'error');
+            } else if (acc.status === 'banned' || acc.isBanned) {
+              this.showToast(`Failed to refresh ${data.email}: Account is banned or disabled.`, 'error');
+            } else if (acc.status === 'error') {
+              this.showToast(`Failed to refresh ${data.email}: ${acc.statusMessage || 'Unknown error'}.`, 'error');
+            } else {
+              this.showToast(`Quota refreshed for ${data.email}.`, 'success');
+            }
+          } catch (err: any) {
+            this.showToast(`Failed to refresh ${data.email}: ${err.message || 'Error occurred'}`, 'error');
+          }
+          break;
+        }
         case 'addOAuth':
           await vscode.commands.executeCommand('antigravitySwap.addAccount');
           break;
@@ -143,30 +172,23 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'addManual':
           await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
           break;
-        case 'refreshMultipleAccounts':
+        case 'refreshMultipleAccounts': {
           if (Array.isArray(data.emails) && data.emails.length > 0) {
-            await vscode.window.withProgress(
-              {
-                location: vscode.ProgressLocation.Notification,
-                title: 'Antigravity Swap: Refreshing selected quotas (batched to protect your accounts)...',
-                cancellable: false
-              },
-              async (progress) => {
-                let lastInc = 0;
-                await this.accountService.refreshMultipleAccounts(data.emails, (current, total, email) => {
-                  const pct = Math.round((current / total) * 100);
-                  const increment = pct - lastInc;
-                  lastInc = pct;
-                  progress.report({
-                    message: `(${current}/${total}) ${email}`,
-                    increment: increment > 0 ? increment : undefined
-                  });
-                });
+            try {
+              await this.accountService.refreshMultipleAccounts(data.emails);
+              const accounts = this.accountService.getAccounts().filter((a) => data.emails.includes(a.email));
+              const failed = accounts.filter((a) => a.status === 'auth_failed' || a.status === 'banned');
+              if (failed.length > 0) {
+                this.showToast(`Refreshed ${data.emails.length} selected accounts (${failed.length} failed/expired).`, 'warning');
+              } else {
+                this.showToast(`Successfully refreshed ${data.emails.length} selected account(s)!`, 'success');
               }
-            );
-            this.showToast('Selected account quotas refreshed successfully!', 'success');
+            } catch (err: any) {
+              this.showToast(`Failed to refresh selected accounts: ${err.message || 'Error occurred'}`, 'error');
+            }
           }
           break;
+        }
         case 'removeMultipleAccounts':
           if (Array.isArray(data.emails) && data.emails.length > 0) {
             const count = data.emails.length;

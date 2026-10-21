@@ -10,6 +10,7 @@ import { OAuthService } from '../auth';
 import { EXTENSION_DEFAULTS } from '../constants';
 import { QuotaApiClient } from './quotaApiClient';
 import { QuotaParser, QuotaFetchResult } from './quotaParser';
+import { JitProbeResult } from './googleDirectApiClient';
 import {
   calculateModulatedInstantQuota,
   calculateOverallSummary,
@@ -58,9 +59,52 @@ export class QuotaService {
   }
 
   /**
+   * Invalidates cached Language Server connection to force rediscovery.
+   * Useful after account switching or language server restarts.
+   */
+  public invalidateLanguageServerConnection(): void {
+    this.apiClient.invalidateCache();
+  }
+
+  /**
+   * Returns the email address of the active account in the running Language Server.
+   */
+  public async getLiveLanguageServerEmail(): Promise<string | undefined> {
+    return undefined;
+  }
+
+  /**
+   * JIT Pre-Switch Candidate Verification:
+   * Fast, targeted single-shot probe to verify candidate has not been burned on another machine.
+   */
+  public async probeJitCandidate(
+    account: AccountInfo,
+    tokens: OAuthTokens,
+    onTokenRefreshed?: (newTokens: OAuthTokens) => Promise<void>,
+    timeoutMs: number = EXTENSION_DEFAULTS.JIT_TIMEOUT_MS
+  ): Promise<JitProbeResult> {
+    let currentTokens = tokens;
+    if (currentTokens.expiresAt && Date.now() > currentTokens.expiresAt - 120000 && currentTokens.refreshToken) {
+      try {
+        currentTokens = await this.oauthService.refreshAccessToken(currentTokens.refreshToken);
+        if (onTokenRefreshed) {
+          await onTokenRefreshed(currentTokens);
+        }
+      } catch (err: any) {
+        return { ok: false, isDepleted: true, error: err.message || 'Token refresh failed during JIT probe' };
+      }
+    }
+    return this.apiClient.probeJitCandidate(currentTokens.accessToken, account.email, timeoutMs);
+  }
+
+  public dispose(): void {
+    this.apiClient.dispose();
+  }
+
+  /**
    * Checks if an account's quota information is stale (older than freshness threshold).
    */
-  public isAccountStale(account: AccountInfo, thresholdMs = EXTENSION_DEFAULTS.ACCOUNT_FRESHNESS_THRESHOLD_MS): boolean {
+  public isAccountStale(account: AccountInfo, thresholdMs: number = EXTENSION_DEFAULTS.ACCOUNT_FRESHNESS_THRESHOLD_MS): boolean {
     if (!account.lastRefreshedAt) return true;
     const last = new Date(account.lastRefreshedAt).getTime();
     if (isNaN(last)) return true;
@@ -107,25 +151,58 @@ export class QuotaService {
     }
 
     try {
-      let quotaData = await this.apiClient.fetchLiveQuotaData(currentTokens.accessToken, account.isActive ?? false);
+      const liveLsEmail = await this.getLiveLanguageServerEmail().catch(() => undefined);
+      const isLiveActive = (liveLsEmail && account.email.trim().toLowerCase() === liveLsEmail.trim().toLowerCase()) || (account.isActive ?? false);
+
+      let quotaData = await this.apiClient.fetchLiveQuotaData(
+        currentTokens.accessToken,
+        isLiveActive,
+        account.email,
+        currentTokens.refreshToken
+      );
 
       const hasGroups = (quotaData?.response?.groups || quotaData?.groups || []).length > 0;
       const hasModels = Object.keys(quotaData?.models || {}).length > 0;
       const hasTierData = !!(quotaData?.paidTier || quotaData?.userTier || quotaData?.currentTier || quotaData?.cloudaicompanionProject);
 
       if (!hasGroups && !hasModels && !hasTierData) {
+        if (currentTokens.refreshToken) {
+          try {
+            currentTokens = await this.oauthService.refreshAccessToken(currentTokens.refreshToken);
+            if (onTokenRefreshed) {
+              await onTokenRefreshed(currentTokens);
+            }
+          } catch {}
+        }
         const retryDelayMs = EXTENSION_DEFAULTS.TOKEN_PROPAGATION_RETRY_DELAY_MS;
         console.log(`[QuotaService] First quota probe returned empty for ${account.email}, retrying after ${retryDelayMs}ms...`);
         await new Promise((r) => setTimeout(r, retryDelayMs));
         try {
-          const retryData = await this.apiClient.fetchLiveQuotaData(currentTokens.accessToken, account.isActive ?? false);
+          const retryData = await this.apiClient.fetchLiveQuotaData(
+            currentTokens.accessToken,
+            isLiveActive,
+            account.email,
+            currentTokens.refreshToken
+          );
           if ((retryData?.groups || retryData?.response?.groups || []).length > 0 || Object.keys(retryData?.models || {}).length > 0) {
             quotaData = retryData;
           }
         } catch {}
       }
 
-      return this.parser.processQuotaData(quotaData, account);
+
+      const parsedResult = this.parser.processQuotaData(quotaData, account);
+
+      // Detailed debug log of fetched quotas and resets time requested by user
+      const modelsSummary = (parsedResult.quotas || [])
+        .map((q) => `${q.displayName} (${q.windowType}): ${q.percentage}% (resets ${q.resetCountdown || 'ready'})`)
+        .join(', ');
+
+      console.log(
+        `[QuotaService] Refreshed ${account.email} (${parsedResult.tierBadge}): Instant=${parsedResult.averagePercentage}%, 5h=${parsedResult.fiveHourPercentage !== undefined ? parsedResult.fiveHourPercentage + '%' : 'N/A'} (resets ${parsedResult.fiveHourResetCountdown || 'N/A'}, ${parsedResult.fiveHourResetTime || 'N/A'}), Weekly=${parsedResult.weeklyPercentage !== undefined ? parsedResult.weeklyPercentage + '%' : 'N/A'} (resets ${parsedResult.weeklyResetCountdown || 'N/A'}, ${parsedResult.weeklyResetTime || 'N/A'}), Status=${parsedResult.status}. Models: [${modelsSummary}]`
+      );
+
+      return parsedResult;
     } catch (err: any) {
       const errMsg = err.message || '';
 

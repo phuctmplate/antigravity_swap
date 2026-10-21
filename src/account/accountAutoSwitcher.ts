@@ -1,14 +1,17 @@
 import * as vscode from 'vscode';
 import { AccountInfo, AutoSwitchTarget } from '../types';
 import { StorageService } from '../storage';
-import { calculateModulatedInstantQuota } from '../quota';
-import { MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from '../constants';
+import { calculateModulatedInstantQuota, JitProbeResult } from '../quota';
+import { MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS, EXTENSION_DEFAULTS } from '../constants';
 
 export interface AccountAutoSwitcherContext {
   getAccounts: () => AccountInfo[];
   getActiveAccount: () => AccountInfo | undefined;
   switchAccount: (email: string) => Promise<boolean>;
   addAccountViaOAuth: () => Promise<AccountInfo | null>;
+  probeCandidate?: (email: string) => Promise<JitProbeResult>;
+  onCandidateDepletedExternally?: (email: string, probeResult: JitProbeResult) => Promise<void>;
+  onCandidateProbed?: (email: string, probeResult: JitProbeResult) => Promise<void>;
 }
 
 /**
@@ -211,10 +214,12 @@ export class AccountAutoSwitcher {
 
       // Maximum candidate attempts per auto-switch cycle
       let attempts = 0;
+      let probeAttempts = 0;
       let switchSuccess = false;
       const failedCandidateEmails = new Set<string>();
+      const probedCandidateEmails = new Set<string>();
 
-      while (attempts < AccountAutoSwitcher.MAX_AUTO_SWITCH_ATTEMPTS) {
+      while (attempts < AccountAutoSwitcher.MAX_AUTO_SWITCH_ATTEMPTS && probeAttempts < 10) {
         const accounts = this.ctx.getAccounts();
 
         // Find candidates that have healthy quota for this target, excluding failed ones in this cycle
@@ -235,6 +240,56 @@ export class AccountAutoSwitcher {
         if (!candidate) {
           // No more eligible candidates available
           break;
+        }
+
+        // JIT Pre-Switch Verification Guard (Layer 4):
+        // Probe candidate in real-time (~150ms) to ensure quota wasn't burned on another machine
+        if (EXTENSION_DEFAULTS.ENABLE_JIT_PRE_SWITCH_CHECK && this.ctx.probeCandidate && !probedCandidateEmails.has(candidate.email)) {
+          probeAttempts++;
+          probedCandidateEmails.add(candidate.email);
+          try {
+            const probeResult = await this.ctx.probeCandidate(candidate.email);
+            if (probeResult && probeResult.ok) {
+              // Always update candidate's live probed numbers in memory and storage
+              if (this.ctx.onCandidateProbed) {
+                await this.ctx.onCandidateProbed(candidate.email, probeResult);
+              }
+
+              // 1. If completely depleted, mark as failed candidate in this cycle and bypass
+              if (probeResult.isDepleted) {
+                console.warn(
+                  `[AccountAutoSwitcher] JIT Guard detected ${candidate.email} is depleted externally (5h: ${probeResult.fiveHourPercentage}%, weekly: ${probeResult.weeklyPercentage}%). Bypassing candidate.`
+                );
+                failedCandidateEmails.add(candidate.email);
+                if (this.ctx.onCandidateDepletedExternally) {
+                  await this.ctx.onCandidateDepletedExternally(candidate.email, probeResult);
+                }
+                continue; // Try Candidate #2
+              }
+
+              // 2. Dynamic Demotion: If probed candidate's capacity decreased and is now
+              // lower than another candidate in the pool, demote it immediately without waiting for full depletion!
+              const currentAccounts = this.ctx.getAccounts();
+              const refreshedCandidate = currentAccounts.find((a) => a.email === candidate.email);
+              const probedQuota = refreshedCandidate ? this.getAccountTargetQuota(refreshedCandidate, target) : this.getAccountTargetQuota(candidate, target);
+
+              const higherCandidate = candidates.slice(1).find((other) => {
+                const otherAcc = currentAccounts.find((a) => a.email === other.email) || other;
+                return this.getAccountTargetQuota(otherAcc, target) > probedQuota;
+              });
+
+              if (higherCandidate) {
+                const higherQuota = this.getAccountTargetQuota(higherCandidate, target);
+                console.log(
+                  `[AccountAutoSwitcher] Candidate ${candidate.email} capacity dropped to ${probedQuota}% (lower than ${higherCandidate.email} with ${higherQuota}%). Demoting candidate rank immediately.`
+                );
+                // Continue without adding to failedCandidateEmails, so next while-iteration re-sorts and picks higherCandidate!
+                continue;
+              }
+            }
+          } catch (jitErr) {
+            console.warn(`[AccountAutoSwitcher] JIT probe failed for ${candidate.email}:`, jitErr);
+          }
         }
 
         attempts++;

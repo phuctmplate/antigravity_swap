@@ -127,6 +127,7 @@ export class AccountSwitcher {
       this.ctx.setActiveEmail(email);
       await this.storage.saveAccounts(updatedAccounts);
       await this.storage.setActiveAccountEmail(email);
+      this.ctx.notifyStateChange();
 
       // 2. If the user manually chose this account, disable auto-switch so it won't override their choice
       if (isManual) {
@@ -158,6 +159,9 @@ export class AccountSwitcher {
       await this.storage.syncToCloudAccountsDb(email);
 
       // 7. Hot-restart the Antigravity Language Server in the background so it immediately picks up new credentials without closing IDE
+      try {
+        await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
+      } catch (_) {}
       try {
         await vscode.commands.executeCommand('antigravity.restartLanguageServer');
         console.log('[Antigravity Swap] Executed antigravity.restartLanguageServer successfully');

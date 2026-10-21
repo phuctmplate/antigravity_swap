@@ -150,7 +150,8 @@ export class AccountStorage {
   }
 
   public async getAccountTokens(email: string): Promise<OAuthTokens | null> {
-    const raw = await this.secrets.get(`antigravitySwap.tokens.${email}`);
+    if (!email) return null;
+    const raw = await this.secrets.get(`antigravitySwap.tokens.${email.trim().toLowerCase()}`);
     if (!raw) return null;
     try {
       return JSON.parse(raw) as OAuthTokens;
@@ -160,10 +161,12 @@ export class AccountStorage {
   }
 
   public async saveAccountTokens(email: string, tokens: OAuthTokens): Promise<void> {
-    await this.secrets.store(`antigravitySwap.tokens.${email}`, JSON.stringify(tokens));
+    if (!email) return;
+    await this.secrets.store(`antigravitySwap.tokens.${email.trim().toLowerCase()}`, JSON.stringify(tokens));
   }
 
   public async removeAccountTokens(email: string): Promise<void> {
-    await this.secrets.delete(`antigravitySwap.tokens.${email}`);
+    if (!email) return;
+    await this.secrets.delete(`antigravitySwap.tokens.${email.trim().toLowerCase()}`);
   }
 }

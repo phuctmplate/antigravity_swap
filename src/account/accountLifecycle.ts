@@ -9,8 +9,10 @@ export interface AccountLifecycleContext {
   setAccounts: (accounts: AccountInfo[]) => void;
   getActiveEmail: () => string | undefined;
   setActiveEmail: (email: string | undefined) => void;
+  getLiveLanguageServerEmail?: () => Promise<string | undefined>;
   switchAccount: (email: string) => Promise<boolean>;
   refreshAccountQuota: (email: string, force?: boolean) => Promise<void>;
+  isSwitching?: () => boolean;
   notifyStateChange: () => void;
 }
 
@@ -26,6 +28,7 @@ export class AccountLifecycle {
 
   private lastOAuthTime = 0;
   private static readonly OAUTH_COOLDOWN_MS = EXTENSION_DEFAULTS.OAUTH_COOLDOWN_MS;
+  private lastManualSwitchTime = 0;
 
   constructor(
     private readonly storage: StorageService,
@@ -33,20 +36,55 @@ export class AccountLifecycle {
     private readonly ctx: AccountLifecycleContext
   ) {}
 
+  public recordManualSwitch(): void {
+    this.lastManualSwitchTime = Date.now();
+  }
+
   /**
    * Handles real-time IDE auth session changes (login / logout / switch).
    */
   public async handleIdeSessionChange(): Promise<void> {
+    // 1. Guard against race conditions during manual or programmatic account switches.
+    // If a switch is in progress or occurred within the last 15 seconds, ignore IDE session flutter.
+    if (this.ctx.isSwitching?.() || (Date.now() - this.lastManualSwitchTime < 15000)) {
+      console.log('[AccountLifecycle] Switch in progress or recently completed. Ignoring IDE session event.');
+      return;
+    }
+
     await new Promise((r) => setTimeout(r, 150));
+
+    let liveLsEmail: string | undefined;
+    try {
+      liveLsEmail = await this.ctx.getLiveLanguageServerEmail?.();
+    } catch {}
 
     const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
     const accounts = this.ctx.getAccounts();
     const activeEmail = this.ctx.getActiveEmail();
 
-    if (!currentSession || !currentSession.email || !this.storage.isValidEmail(currentSession.email) || !currentSession.accessToken) {
-      // IDE is logged out!
-      if (activeEmail !== undefined || accounts.some((a) => a.isActive)) {
-        console.log('[Antigravity Swap] Detected IDE logout: clearing active account selection.');
+    const activeSessionEmail = liveLsEmail?.trim().toLowerCase() ||
+      (currentSession?.email && this.storage.isValidEmail(currentSession.email) ? currentSession.email.trim().toLowerCase() : undefined);
+
+    // If Antigravity Swap already has an authoritative active account selected,
+    // and this external report differs from it, DO NOT hijack or revert the active account!
+    // Stale or multi-window Language Server processes must never override the user's explicit choice.
+    if (activeEmail && activeSessionEmail && activeSessionEmail !== activeEmail.toLowerCase()) {
+      console.log(`[AccountLifecycle] Active account is authoritative (${activeEmail}). Ignoring external session report: ${activeSessionEmail}`);
+      return;
+    }
+
+    if (!activeSessionEmail) {
+      // If we already have an active account established in Antigravity Swap, do NOT immediately clear it
+      // on a single undefined signal, because Language Server restart or transient auth re-validation
+      // causes activeSessionEmail to be temporarily null/unreachable.
+      if (activeEmail !== undefined) {
+        console.log(`[AccountLifecycle] activeSessionEmail is undefined, but active account (${activeEmail}) is already established. Retaining active state.`);
+        return;
+      }
+
+      // IDE is genuinely logged out and no active account is selected
+      if (accounts.some((a) => a.isActive)) {
+        console.log('[Antigravity Swap] Detected genuine IDE logout: clearing active account selection.');
         this.ctx.setActiveEmail(undefined);
         const updated = accounts.map((a) => ({ ...a, isActive: false }));
         this.ctx.setAccounts(updated);
@@ -58,38 +96,43 @@ export class AccountLifecycle {
     }
 
     // IDE is logged in to a valid account!
-    const email = currentSession.email.trim().toLowerCase();
+    const email = activeSessionEmail;
     const existingAcc = accounts.find((a) => a.email.toLowerCase() === email);
 
     if (existingAcc) {
       const existingTokens = await this.storage.getAccountTokens(existingAcc.email);
-      const isTokenDifferent = !existingTokens || (currentSession.accessToken && currentSession.accessToken !== existingTokens.accessToken);
+      const sessionAccessToken = currentSession?.accessToken;
+      const isTokenDifferent = !existingTokens || (sessionAccessToken && sessionAccessToken !== existingTokens.accessToken);
       const isAlreadyActive = activeEmail?.toLowerCase() === email && existingAcc.isActive;
 
-      if (!isAlreadyActive || isTokenDifferent) {
-        // Update tokens
+      // Update tokens if a new session access token is present
+      if (sessionAccessToken && isTokenDifferent) {
         const tokens: OAuthTokens = {
-          accessToken: currentSession.accessToken,
-          refreshToken: currentSession.refreshToken || existingTokens?.refreshToken,
+          accessToken: sessionAccessToken,
+          refreshToken: currentSession?.refreshToken || existingTokens?.refreshToken,
           expiresAt: Date.now() + 3600 * 1000
         };
         await this.storage.saveAccountTokens(existingAcc.email, tokens);
+      }
 
-        // Set active
-        this.ctx.setActiveEmail(existingAcc.email);
-        const updated = accounts.map((a) => ({
-          ...a,
-          isActive: a.email.toLowerCase() === email,
-          status: a.email.toLowerCase() === email ? 'healthy' : a.status,
-          statusMessage: a.email.toLowerCase() === email ? undefined : a.statusMessage,
-          name: (a.email.toLowerCase() === email && currentSession.name) ? currentSession.name : a.name,
-          avatarUrl: (a.email.toLowerCase() === email && currentSession.avatarUrl) ? currentSession.avatarUrl : a.avatarUrl
-        }));
-        this.ctx.setAccounts(updated);
-        await this.storage.setActiveAccountEmail(existingAcc.email);
-        await this.storage.saveAccounts(updated);
-        this.ctx.notifyStateChange();
-        console.log(`[Antigravity Swap] Synchronized active account to ${existingAcc.email} following IDE login.`);
+      if (!isAlreadyActive) {
+        // Set active only if there was previously no active account selected in Antigravity Swap
+        if (!activeEmail) {
+          this.ctx.setActiveEmail(existingAcc.email);
+          const updated = accounts.map((a) => ({
+            ...a,
+            isActive: a.email.toLowerCase() === email,
+            status: a.email.toLowerCase() === email ? 'healthy' : a.status,
+            statusMessage: a.email.toLowerCase() === email ? undefined : a.statusMessage,
+            name: (a.email.toLowerCase() === email && currentSession?.name) ? currentSession.name : a.name,
+            avatarUrl: (a.email.toLowerCase() === email && currentSession?.avatarUrl) ? currentSession.avatarUrl : a.avatarUrl
+          }));
+          this.ctx.setAccounts(updated);
+          await this.storage.setActiveAccountEmail(existingAcc.email);
+          await this.storage.saveAccounts(updated);
+          this.ctx.notifyStateChange();
+          console.log(`[Antigravity Swap] Synchronized initial active account to ${existingAcc.email} following IDE login.`);
+        }
       }
     } else {
       // Current IDE session is not in extension: clear active flag on extension accounts

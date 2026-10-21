@@ -44,10 +44,36 @@ export function isWeeklyBucket(windowStr?: string, bucketId?: string, displayNam
   );
 }
 
+export const MAX_5H_WINDOW_MS = 5.5 * 60 * 60 * 1000;
+
 /**
- * Classifies a model quota into 5h rolling window vs weekly plan quota.
- * Physical limit boundary: a genuine 5-hour rolling limit CANNOT have a future reset time > 5.5 hours away.
+ * Checks whether a reset timestamp falls within the physical boundary of a 5-hour rolling window
+ * (must be at most 5.5 hours into the future, rejecting weekly/plan cycles that reset days away).
  */
+export function isResetTimeWithin5Hours(resetTime?: string): boolean {
+  if (!resetTime) return false;
+  try {
+    const diff = new Date(resetTime).getTime() - Date.now();
+    return diff <= MAX_5H_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks whether a reset timestamp is beyond 5.5 hours in the future
+ * (guaranteed to be a weekly/plan quota cycle, never a 5h rolling limit).
+ */
+export function isResetTimeBeyond5Hours(resetTime?: string): boolean {
+  if (!resetTime) return false;
+  try {
+    const diff = new Date(resetTime).getTime() - Date.now();
+    return diff > MAX_5H_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Classifies a model quota into 5h rolling window vs weekly plan quota.
  * 
@@ -93,9 +119,20 @@ export function classifyQuotaWindow(
     return { windowType: 'weekly', windowLabel: 'Weekly Plan Quota' };
   }
 
-  // 5. Direct Cross-Reference with known Quota Group Reset Times:
+  // 5. Model Tier / Family Classification (MUST precede cross-reference):
+  // Google returns the SAME resetTime for all Gemini models (both Flash and Pro), so we cannot
+  // rely solely on resetTime cross-reference to distinguish them. Pro/Ultra model identity is
+  // the strongest unambiguous signal — always weekly regardless of resetTime.
+  const isProModel = /\bpro\b|[-_.]pro\b|\bpro[-_.]/i.test(idLower);
+  const isUltraModel = /\bultra\b|[-_.]ultra\b/i.test(idLower);
+
+  if (isProModel || isUltraModel) {
+    return { windowType: 'weekly', windowLabel: 'Weekly Plan Quota' };
+  }
+
+  // 6. Direct Cross-Reference with known Quota Group Reset Times:
   // Even if the weekly cycle is in its final hours (e.g. 4h, 1h, 10m remaining),
-  // if the model's resetTime matches the group's weekly reset time, it is unambiguously a Weekly Plan Quota!
+  // if the model's resetTime matches the group's weekly reset time, it is unambiguously a Weekly Plan Quota.
   if (resetTime && (knownWeeklyResetTime || known5HourResetTime)) {
     try {
       const modelMs = new Date(resetTime).getTime();
@@ -111,8 +148,8 @@ export function classifyQuotaWindow(
       if (matches5h && !matchesWeekly) {
         return { windowType: '5h', windowLabel: '5-Hour Rolling Window' };
       }
+      // Both match: use model name to disambiguate (flash = 5h, others = weekly)
       if (matchesWeekly && matches5h) {
-        // Both buckets happen to reset at the same time: Flash prefers 5h, others prefer weekly
         const isFlash = idLower.includes('flash');
         return isFlash
           ? { windowType: '5h', windowLabel: '5-Hour Rolling Window' }
@@ -121,28 +158,10 @@ export function classifyQuotaWindow(
     } catch {}
   }
 
-  // 6. Physical Limit Boundary Check:
+  // 7. Physical Limit Boundary Check:
   // A 5-hour rolling limit window CANNOT physically have a future reset time > 5.5 hours away.
   // If resetTime is > 5.5 hours away, it is mathematically guaranteed to belong to a weekly (or longer) cycle.
-  if (resetTime) {
-    try {
-      const diffMs = new Date(resetTime).getTime() - Date.now();
-      const diffHours = diffMs / (1000 * 60 * 60);
-
-      if (diffHours > 5.5) {
-        return { windowType: 'weekly', windowLabel: 'Weekly Plan Quota' };
-      }
-      // Note: If diffHours <= 5.5, it could be a 5h rolling window OR the final hours of a weekly cycle.
-      // We fall through to model tier and family rules below.
-    } catch {}
-  }
-
-  // 7. Model Tier / Family Classification:
-  // Pro, Ultra, and advanced reasoning models default to Weekly Plan Quota
-  const isProModel = /\bpro\b|[-_.]pro\b|\bpro[-_.]/i.test(idLower);
-  const isUltraModel = /\bultra\b|[-_.]ultra\b/i.test(idLower);
-
-  if (isProModel || isUltraModel) {
+  if (resetTime && isResetTimeBeyond5Hours(resetTime)) {
     return { windowType: 'weekly', windowLabel: 'Weekly Plan Quota' };
   }
 
@@ -202,6 +221,11 @@ export function determineAccountTier(
     })
   );
 
+  const hasClaudeOrGpt = groups.some((g: any) => {
+    const title = (g.displayName || '').toLowerCase();
+    return title.includes('claude') || title.includes('gpt');
+  });
+
   // 1. Check paidTier FIRST (This is Google's canonical field for paid Google AI / Google One subscriptions)
   if (rawResponse.paidTier) {
     if (typeof rawResponse.paidTier === 'object') {
@@ -210,22 +234,26 @@ export function determineAccountTier(
       const desc = (rawResponse.paidTier.description || '').toLowerCase();
       const combined = `${id} ${name} ${desc}`;
 
-      const t = checkStringForPaidTier(combined);
-      if (t) return mapBadgeToResult(t);
-
-      // If paidTier is explicitly free-tier / starter quota (e.g. "free-tier" "Antigravity Starter Quota")
-      // But if retrieveUserQuotaSummary returned a 5-hour rolling bucket, it is incontrovertibly a paid tier
-      if ((id === 'free-tier' || name.includes('starter') || combined.includes('free-tier')) && !has5hBucket) {
-        if (!rawResponse.userTier || !checkStringForPaidTier(typeof rawResponse.userTier === 'string' ? rawResponse.userTier : JSON.stringify(rawResponse.userTier))) {
-          return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
+      // If paidTier is explicitly free-tier / starter quota:
+      if (id === 'free-tier' || id.includes('free') || name.includes('starter') || combined.includes('starter quota')) {
+        // If retrieveUserQuotaSummary returned an authentic 5-hour rolling bucket, it is incontrovertibly a paid tier
+        if (has5hBucket) {
+          return { accountType: 'Google AI Pro', tierBadge: 'PRO' };
         }
-      }
-    } else if (typeof rawResponse.paidTier === 'string') {
-      const t = checkStringForPaidTier(rawResponse.paidTier);
-      if (t) return mapBadgeToResult(t);
-      if (rawResponse.paidTier.toLowerCase().includes('free') && !has5hBucket) {
         return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
       }
+
+      const t = checkStringForPaidTier(combined);
+      if (t) return mapBadgeToResult(t);
+    } else if (typeof rawResponse.paidTier === 'string') {
+      if (rawResponse.paidTier.toLowerCase().includes('free') || rawResponse.paidTier.toLowerCase().includes('starter')) {
+        if (has5hBucket) {
+          return { accountType: 'Google AI Pro', tierBadge: 'PRO' };
+        }
+        return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
+      }
+      const t = checkStringForPaidTier(rawResponse.paidTier);
+      if (t) return mapBadgeToResult(t);
     }
   }
 
@@ -242,12 +270,19 @@ export function determineAccountTier(
   }
 
   // 3. Check explicit plan / subscription fields
-  const planObj = rawResponse.plan || rawResponse.subscription || rawResponse.userSubscription || rawResponse.accountPlan;
+  const planObj =
+    rawResponse.plan ||
+    rawResponse.subscription ||
+    rawResponse.userSubscription ||
+    rawResponse.accountPlan ||
+    rawResponse.planName ||
+    rawResponse.teamsTier;
   if (planObj) {
     const s = typeof planObj === 'string' ? planObj : JSON.stringify(planObj);
     const t = checkStringForPaidTier(s);
     if (t) return mapBadgeToResult(t);
   }
+
 
   // 4. Check retrieveUserQuotaSummary buckets:
   if (has5hBucket) {

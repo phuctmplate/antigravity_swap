@@ -9,6 +9,7 @@ import { Checkbox } from './ui/checkbox';
 import { KeyRound, RotateCw, Trash2, ArrowRightLeft, ShieldAlert, AlertTriangle, Clock, Calendar, Gauge, Zap } from 'lucide-react';
 import { quotaFillClass, quotaTextClass, calculateModulatedInstantQuota, parseCountdownFromDescription, MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from '../lib/quota';
 import { cn } from '../lib/utils';
+import { toast } from './ui/sonner';
 
 interface AccountCardProps {
   account: Account;
@@ -159,9 +160,19 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const getFillClass = quotaFillClass;
   const getTextColor = quotaTextClass;
 
-  const getCountdown = (b?: { resetCountdown?: string; description?: string }) => {
+  const getCountdown = (b?: { resetCountdown?: string; description?: string; window?: string }) => {
     if (!b) return undefined;
-    return b.resetCountdown || parseCountdownFromDescription(b.description);
+    const cd = b.resetCountdown || parseCountdownFromDescription(b.description);
+    if (!cd) return undefined;
+    // Physical safeguard: A 5h rolling window by definition cannot reset in days
+    if (b.window === '5h' && /\b\d+\s*d\b/i.test(cd)) {
+      return undefined;
+    }
+    // Physical safeguard: A weekly window countdown cannot be hours/minutes if derived from description
+    if (b.window === 'weekly' && !b.resetCountdown && !/\b\d+\s*d\b/i.test(cd)) {
+      return undefined;
+    }
+    return cd;
   };
 
   // Short status note for a bucket, derived from the API semantics.
@@ -182,6 +193,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const handleSwitch = (e: React.MouseEvent) => {
     e.stopPropagation();
     setIsSwitching(true);
+    toast.info(`Switching to ${account.email}...`);
     vscode.postMessage({ command: 'switchAccount', email: account.email, isManual: true });
     setTimeout(() => {
       setIsSwitching(false);
@@ -198,6 +210,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
     if (onRefreshRequest) {
       onRefreshRequest(account.email);
     } else {
+      toast.info(`Refreshing quota for ${account.email}...`);
       vscode.postMessage({ command: 'refreshAccount', email: account.email });
     }
   };

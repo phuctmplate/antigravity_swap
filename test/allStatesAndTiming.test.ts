@@ -83,7 +83,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
     assert.strictEqual(res.geminiGroup?.fiveHour?.resetTime, valid5hReset);
   });
 
-  await t.test('Timing T6: Pro models with short burst reset (< 5.5h) classify as 5h rolling window and preserve authentic 5h bucket', () => {
+  await t.test('Timing T6: Pro models always classify as weekly (identity-based), 5h bucket derives from Flash only', () => {
     const burstReset = new Date(Date.now() + 3.8 * 3600 * 1000).toISOString(); // 3.8 hours away
     const weeklyReset = new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString();
 
@@ -113,16 +113,16 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
     };
 
     const res = quotaService.processQuotaData(raw, { id: 'acc-pro', email: 'pro.user@example.com', tierBadge: 'PRO', status: 'healthy' });
-    // Pro model with short reset is accurately classified as 5h rolling window
+    // Pro model is classified as weekly based on model identity (Pro always = weekly)
     const proModel = res.quotas.find((q) => q.id === 'gemini-2.5-pro');
-    assert.strictEqual(proModel?.windowType, '5h');
-    assert.strictEqual(proModel?.windowLabel, '5-Hour Rolling Window');
+    assert.strictEqual(proModel?.windowType, 'weekly');
+    assert.strictEqual(proModel?.windowLabel, 'Weekly Plan Quota');
 
-    // 5h bucket is accurately 81%
+    // 5h bucket derives from Flash models only, remains authentic at 81%
     assert.strictEqual(res.geminiGroup?.fiveHour?.percentage, 81);
     assert.strictEqual(res.geminiGroup?.fiveHour?.resetTime, burstReset);
 
-    // Weekly bucket remains authentic at 95% with weeklyReset
+    // Weekly bucket from UQS groups is preserved at 95% with weeklyReset
     assert.strictEqual(res.geminiGroup?.weekly?.percentage, 95);
     assert.strictEqual(res.geminiGroup?.weekly?.resetTime, weeklyReset);
   });

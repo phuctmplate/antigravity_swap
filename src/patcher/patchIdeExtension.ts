@@ -39,7 +39,10 @@ export function restoreIdeExtensionBackup(): boolean {
 
     const bakContent = fs.readFileSync(bakPath, 'utf8');
     // Sanity check backup syntax before restoring
-    new vm.Script(bakContent);
+    if (!validateJsSyntax(bakContent)) {
+      console.error('[Antigravity Swap] Backup file has syntax errors, cannot restore.');
+      return false;
+    }
 
     fs.copyFileSync(bakPath, extJsPath);
     console.log('[Antigravity Swap] Successfully restored original extension.js from extension.js.bak!');
@@ -52,12 +55,20 @@ export function restoreIdeExtensionBackup(): boolean {
 
 /**
  * Validates JavaScript syntax using Node's V8 compiler without executing it.
+ * Properly recognizes valid ES Modules containing import/export statements.
  */
 function validateJsSyntax(code: string): boolean {
   try {
     new vm.Script(code);
     return true;
-  } catch (e) {
+  } catch (e: any) {
+    if (e && e.message && (
+      e.message.includes('Cannot use import statement outside a module') ||
+      e.message.includes("Unexpected token 'export'") ||
+      e.message.includes("Unexpected token 'import'")
+    )) {
+      return true; // Valid ES module syntax
+    }
     return false;
   }
 }

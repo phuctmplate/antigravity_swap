@@ -30,12 +30,14 @@ export interface ModelQuota {
   description?: string;
   remainingFraction: number; // 0.0 to 1.0
   percentage: number; // 0 to 100
-  resetTime?: string; // ISO string
+  resetTime?: string; // ISO string (display value, may differ from raw Google response)
   resetCountdown?: string; // Formatted "in 2h 15m"
   windowType: QuotaWindowType; // 5h, weekly, tab, general
   windowLabel: string; // '5-Hour Window', 'Weekly Quota', etc.
   disabled?: boolean;
   refreshText?: string;
+  /** Internal: raw Google quotaInfo.resetTime before display normalization, used to detect genuine weekly vs 5h signals */
+  _rawResetTime?: string;
 }
 
 export type AccountStatus = 'healthy' | 'active' | 'low_balance' | 'auth_failed' | 'banned' | 'expired' | 'error';
@@ -74,6 +76,8 @@ export interface AccountInfo {
   has5HourQuota: boolean;
   lastRefreshedAt?: string;
   lastHeartbeatAt?: string;
+  externalActivityDetected?: boolean;
+  lastVerifiedSource?: 'language_server' | 'micro_client' | 'jit_guard' | 'manual';
 }
 
 export interface OverallQuotaSummary {

@@ -43,15 +43,75 @@ export class AccountService {
       setActiveEmail: (email) => { this.activeEmail = email; },
       notifyStateChange,
       onPostSwitch: (email) => {
-        this.quotaSync.refreshAccountQuota(email).catch(() => {});
+        this.quotaService.invalidateLanguageServerConnection();
+        this.quotaSync.refreshAccountQuota(email, true).catch(() => {});
       }
+
     });
 
     this.autoSwitcher = new AccountAutoSwitcher(this.storage, {
       getAccounts: () => this.accounts,
       getActiveAccount: () => this.getActiveAccount(),
       switchAccount: (email) => this.switchAccount(email),
-      addAccountViaOAuth: () => this.addAccountViaOAuth()
+      addAccountViaOAuth: () => this.addAccountViaOAuth(),
+      probeCandidate: async (email: string) => {
+        const tokens = await this.storage.getAccountTokens(email);
+        if (!tokens?.accessToken) {
+          return { ok: false, isDepleted: true, error: 'Tokens missing' };
+        }
+        const acc = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
+        if (!acc) return { ok: false, isDepleted: true, error: 'Account not found' };
+        return this.quotaService.probeJitCandidate(acc, tokens, async (newTokens) => {
+          await this.storage.saveAccountTokens(email, newTokens);
+        });
+      },
+      onCandidateProbed: async (email: string, probeResult) => {
+        const latestAccounts = this.accounts;
+        const curIdx = latestAccounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
+        if (curIdx >= 0) {
+          const old = latestAccounts[curIdx];
+          const new5h = probeResult.fiveHourPercentage;
+          const newWk = probeResult.weeklyPercentage;
+          const dropped = (old.fiveHourQuotaPercentage !== undefined && new5h !== undefined && new5h < old.fiveHourQuotaPercentage) ||
+                          (old.weeklyQuotaPercentage !== undefined && newWk !== undefined && newWk < old.weeklyQuotaPercentage);
+
+          const updated = [...latestAccounts];
+          updated[curIdx] = {
+            ...old,
+            fiveHourQuotaPercentage: new5h ?? old.fiveHourQuotaPercentage,
+            weeklyQuotaPercentage: newWk ?? old.weeklyQuotaPercentage,
+            averageQuotaPercentage: new5h ?? newWk ?? old.averageQuotaPercentage,
+            fiveHourResetTime: probeResult.resetTime || old.fiveHourResetTime,
+            externalActivityDetected: dropped || old.externalActivityDetected,
+            lastVerifiedSource: 'jit_guard',
+            lastRefreshedAt: new Date().toISOString()
+          };
+          this.accounts = updated;
+          await this.storage.saveAccounts(updated);
+          this._onDidChangeState.fire();
+        }
+      },
+      onCandidateDepletedExternally: async (email: string, probeResult) => {
+        const latestAccounts = this.accounts;
+        const curIdx = latestAccounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
+        if (curIdx >= 0) {
+          const updated = [...latestAccounts];
+          updated[curIdx] = {
+            ...updated[curIdx],
+            fiveHourQuotaPercentage: probeResult.fiveHourPercentage ?? 0,
+            weeklyQuotaPercentage: probeResult.weeklyPercentage ?? 0,
+            averageQuotaPercentage: probeResult.fiveHourPercentage ?? probeResult.weeklyPercentage ?? 0,
+            fiveHourResetTime: probeResult.resetTime || updated[curIdx].fiveHourResetTime,
+            status: 'low_balance',
+            externalActivityDetected: true,
+            lastVerifiedSource: 'jit_guard',
+            lastRefreshedAt: new Date().toISOString()
+          };
+          this.accounts = updated;
+          await this.storage.saveAccounts(updated);
+          this._onDidChangeState.fire();
+        }
+      }
     });
 
     this.quotaSync = new AccountQuotaSync(this.storage, this.quotaService, {
@@ -69,8 +129,10 @@ export class AccountService {
       setAccounts: (accs) => { this.accounts = accs; },
       getActiveEmail: () => this.activeEmail,
       setActiveEmail: (email) => { this.activeEmail = email; },
+      getLiveLanguageServerEmail: () => this.quotaService.getLiveLanguageServerEmail(),
       switchAccount: (email) => this.switchAccount(email),
       refreshAccountQuota: (email, force) => this.refreshAccountQuota(email, force),
+      isSwitching: () => this.switcher.isSwitchInProgress(),
       notifyStateChange
     });
   }
@@ -83,23 +145,38 @@ export class AccountService {
       console.log(`[Antigravity Swap] Sanitized ${rawAccounts.length - this.accounts.length} invalid/phantom account(s).`);
     }
 
-    // Read currently active IDE session
-    const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
+    // 1. Probe live running Language Server first (definitive ground truth of the active IDE session)
+    let liveLsEmail: string | undefined;
+    try {
+      liveLsEmail = await this.quotaService.getLiveLanguageServerEmail();
+    } catch {}
 
-    if (!currentSession || !currentSession.email || !this.storage.isValidEmail(currentSession.email)) {
+    // 2. Read stored active IDE session from SQLite / storage
+    const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
+    const activeDetectedEmail = (liveLsEmail && this.storage.isValidEmail(liveLsEmail))
+      ? liveLsEmail.trim().toLowerCase()
+      : (currentSession?.email && this.storage.isValidEmail(currentSession.email))
+        ? currentSession.email.trim().toLowerCase()
+        : undefined;
+
+    if (!activeDetectedEmail) {
       // IDE is currently logged out!
       this.activeEmail = undefined;
       this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
       await this.storage.setActiveAccountEmail(undefined);
     } else {
-      // IDE has an active session: align active account with IDE or savedActive
-      const ideEmail = currentSession.email.toLowerCase();
+      // Priority:
+      // 1. Live Language Server email (if matching an account in this.accounts)
+      // 2. savedActive (if matching an account in this.accounts)
+      // 3. activeDetectedEmail
       const savedActive = this.storage.getActiveAccountEmail()?.toLowerCase();
-      const effectiveEmail = (savedActive && this.accounts.some((a) => a.email.toLowerCase() === savedActive))
-        ? savedActive
-        : (this.accounts.some((a) => a.email.toLowerCase() === ideEmail))
-          ? ideEmail
-          : undefined;
+      const effectiveEmail = (liveLsEmail && this.accounts.some((a) => a.email.toLowerCase() === liveLsEmail.toLowerCase()))
+        ? liveLsEmail.toLowerCase()
+        : (savedActive && this.accounts.some((a) => a.email.toLowerCase() === savedActive))
+          ? savedActive
+          : (this.accounts.some((a) => a.email.toLowerCase() === activeDetectedEmail))
+            ? activeDetectedEmail
+            : undefined;
 
       if (effectiveEmail) {
         this.activeEmail = effectiveEmail;
@@ -226,6 +303,9 @@ export class AccountService {
   }
 
   public async switchAccount(email: string, isManual = false, isSilent = false): Promise<boolean> {
+    if (isManual) {
+      this.lifecycle.recordManualSwitch();
+    }
     return this.switcher.switchAccount(email, isManual, isSilent);
   }
 

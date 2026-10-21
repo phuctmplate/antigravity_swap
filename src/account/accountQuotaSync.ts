@@ -35,7 +35,7 @@ export class AccountQuotaSync {
   /**
    * Checks if an account's quota information is stale (older than freshness threshold).
    */
-  public isAccountStale(account: AccountInfo, thresholdMs = EXTENSION_DEFAULTS.ACCOUNT_FRESHNESS_THRESHOLD_MS): boolean {
+  public isAccountStale(account: AccountInfo, thresholdMs: number = EXTENSION_DEFAULTS.ACCOUNT_FRESHNESS_THRESHOLD_MS): boolean {
     if (!account.lastRefreshedAt) return true;
     const last = new Date(account.lastRefreshedAt).getTime();
     if (isNaN(last)) return true;
@@ -60,6 +60,7 @@ export class AccountQuotaSync {
       return;
     }
     this.refreshingEmails.add(email);
+    this.storage.renewRefreshLease();
 
     try {
       const tokens = await this.storage.getAccountTokens(email);
@@ -86,6 +87,10 @@ export class AccountQuotaSync {
         return;
       }
 
+      const previousFiveHour = acc.fiveHourQuotaPercentage;
+      const previousWeekly = acc.weeklyQuotaPercentage;
+      const wasActive = acc.isActive;
+
       const res = await this.quotaService.fetchAccountQuotas(acc, tokens, async (newTokens) => {
         await this.storage.saveAccountTokens(email, newTokens);
       });
@@ -93,6 +98,25 @@ export class AccountQuotaSync {
       const latestAccounts = this.ctx.getAccounts();
       const curIdx = latestAccounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
       if (curIdx >= 0) {
+        let externalActivity = latestAccounts[curIdx].externalActivityDetected ?? false;
+
+        // Detect external activity on standby accounts: if quota decreased while not active on this machine
+        if (!wasActive) {
+          const new5h = res.fiveHourPercentage;
+          const newWk = res.weeklyPercentage;
+          const dropped5h = previousFiveHour !== undefined && new5h !== undefined && new5h < previousFiveHour;
+          const droppedWk = previousWeekly !== undefined && newWk !== undefined && newWk < previousWeekly;
+
+          if (dropped5h || droppedWk) {
+            externalActivity = true;
+            console.log(
+              `[AccountQuotaSync] External activity detected for ${email}: quota dropped on another machine (5h: ${previousFiveHour}% -> ${new5h}%, weekly: ${previousWeekly}% -> ${newWk}%).`
+            );
+          } else if ((new5h !== undefined && new5h > (previousFiveHour ?? 0)) || (newWk !== undefined && newWk > (previousWeekly ?? 0))) {
+            externalActivity = false;
+          }
+        }
+
         const updated = [...latestAccounts];
         updated[curIdx] = {
           ...updated[curIdx],
@@ -115,6 +139,8 @@ export class AccountQuotaSync {
           isBanned: res.isBanned,
           banReason: res.isBanned ? res.statusMessage : undefined,
           statusMessage: res.statusMessage,
+          externalActivityDetected: externalActivity,
+          lastVerifiedSource: wasActive ? 'language_server' : 'micro_client',
           lastRefreshedAt: new Date().toISOString(),
           lastHeartbeatAt: new Date().toISOString()
         };
@@ -198,6 +224,7 @@ export class AccountQuotaSync {
 
     this.isBackgroundRefreshing = true;
     this.ctx.notifyStateChange();
+    this.storage.tryAcquireRefreshLease(true);
 
     try {
       for (let i = 0; i < total; i += batchSize) {
@@ -231,6 +258,7 @@ export class AccountQuotaSync {
 
       await this.ctx.checkAutoSwitch();
     } finally {
+      this.storage.releaseRefreshLease();
       this.isBackgroundRefreshing = false;
       this.ctx.notifyStateChange();
     }

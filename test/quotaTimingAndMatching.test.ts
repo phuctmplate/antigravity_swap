@@ -107,12 +107,13 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
     assert.ok(wkBucket);
     assert.strictEqual(wkBucket.resetCountdown, '6d 15h');
 
-    // Gemini 2.5 Pro with shortBurst5h (1h 48m) is accurately classified as 5h model and retains 1h countdown
+    // Gemini 2.5 Pro is classified as weekly based on model identity (Pro always = weekly).
+    // Google returns a 5h-style resetTime at model level, but the weekly bucket's resetTime is used
+    // for display. The weekly bucket resetTime comes from UQS (futureWeekly = 6d 15h).
     const proModel = res.quotas.find(q => q.id === 'gemini-2.5-pro');
     assert.ok(proModel);
-    assert.strictEqual(proModel.windowType, '5h');
-    assert.strictEqual(proModel.windowLabel, '5-Hour Rolling Window');
-    assert.ok(proModel.resetCountdown?.includes('1h'));
+    assert.strictEqual(proModel.windowType, 'weekly');
+    assert.strictEqual(proModel.windowLabel, 'Weekly Plan Quota');
 
     // Gemini 2.5 Flash (5h model) keeps 5h reset countdown
     const flashModel = res.quotas.find(q => q.id === 'gemini-2.5-flash');
@@ -120,6 +121,7 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
     assert.strictEqual(flashModel.windowType, '5h');
     assert.ok(flashModel.resetCountdown?.includes('1h'));
   });
+
 
   it('bucket discriminator prevents undefined bucketId from collapsing 5h and weekly buckets', () => {
     // Simulate two buckets without bucketId
@@ -292,13 +294,18 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
     // 2. 5-hour rolling bucket remains accurate at 84%
     assert.strictEqual(parsed.geminiGroup?.fiveHour?.percentage, 84);
 
-    // 3. Gemini 2.5 Pro model is accurately classified as 5h rolling window due to shortBurst5h
+    // 3. Gemini 2.5 Pro is classified as weekly by identity (Pro always = weekly).
+    // Its 5h-style shortBurst5h resetTime does NOT pollute the weekly bucket.
     const proModel = parsed.quotas.find(q => q.id === 'gemini-2.5-pro');
     assert.ok(proModel);
-    assert.strictEqual(proModel.windowType, '5h');
-    assert.strictEqual(proModel.windowLabel, '5-Hour Rolling Window');
-    assert.ok(proModel.resetCountdown?.includes('4h') || proModel.resetCountdown?.includes('5h'));
+    assert.strictEqual(proModel.windowType, 'weekly');
+    assert.strictEqual(proModel.windowLabel, 'Weekly Plan Quota');
+
+    // 4. Weekly bucket remains authentic at 100% (Pro's 5h-pool data did NOT corrupt it)
+    assert.strictEqual(parsed.geminiGroup?.weekly?.percentage, 100);
+    assert.strictEqual(parsed.geminiGroup?.weekly?.resetCountdown, '6d 23h');
   });
+
 
 
 
@@ -369,5 +376,153 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
     // Combined weekly: 50 * 0.85 + 60 * 0.15 = 42.5 + 9 = 51.5 -> 52%
     assert.strictEqual(parsed.weeklyPercentage, 52);
   });
+
+  it('Strict physical boundary: 5h rolling limit window NEVER accepts a reset time > 5.5 hours away (e.g. 4d 14h weekly reset)', () => {
+    const parser = new QuotaParser();
+    // 4 days 14 hours away (e.g. weekly reset time)
+    const futureWeeklyReset = new Date(Date.now() + 4 * 24 * 3600 * 1000 + 14 * 3600 * 1000).toISOString();
+
+    const rawPayload = {
+      groups: [
+        {
+          displayName: 'Claude and GPT models',
+          buckets: [
+            {
+              bucketId: '3p-weekly',
+              displayName: 'Weekly Limit Remaining',
+              window: 'weekly',
+              remainingFraction: 1.0,
+              resetTime: futureWeeklyReset
+            },
+            {
+              bucketId: '3p-5h',
+              displayName: 'Five Hour Limit Remaining',
+              window: '5h',
+              remainingFraction: 1.0,
+              resetTime: new Date(Date.now() + 4.9 * 3600 * 1000).toISOString() // Genuine 5h reset
+            }
+          ]
+        },
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            {
+              bucketId: 'gemini-5h',
+              displayName: 'Five Hour Limit Remaining',
+              window: '5h',
+              remainingFraction: 0.05,
+              resetTime: futureWeeklyReset // Incorrectly stamped with weekly reset time!
+            },
+            {
+              bucketId: 'gemini-weekly',
+              displayName: 'Weekly Limit Remaining',
+              window: 'weekly',
+              remainingFraction: 0.05,
+              resetTime: futureWeeklyReset
+            }
+          ]
+        }
+      ],
+      models: {
+        'gemini-2.5-flash': {
+          displayName: 'Gemini 2.5 Flash',
+          quotaInfo: {
+            remainingFraction: 0.05,
+            resetTime: futureWeeklyReset
+          }
+        },
+        'gemini-2.5-pro': {
+          displayName: 'Gemini 2.5 Pro',
+          quotaInfo: {
+            remainingFraction: 0.05,
+            resetTime: futureWeeklyReset
+          }
+        }
+      }
+    };
+
+    const dummyAcc: AccountInfo = {
+      id: 'acc-weekly-only',
+      email: 'standby@example.com',
+      name: 'Standby User',
+      isActive: false,
+      accountType: 'Google AI Pro',
+      tierBadge: 'PRO'
+    };
+
+    const res = parser.processQuotaData(rawPayload, dummyAcc);
+
+    // 1. Gemini Weekly bucket must have the 4d 14h reset
+    assert.strictEqual(res.geminiGroup?.weekly?.resetTime, futureWeeklyReset);
+    assert.ok(res.geminiGroup?.weekly?.resetCountdown?.includes('4d'));
+
+    // 2. Gemini 5h bucket MUST NOT have the 4d 14h reset!
+    assert.strictEqual(res.geminiGroup?.fiveHour?.resetTime, undefined);
+    assert.strictEqual(res.geminiGroup?.fiveHour?.resetCountdown, undefined);
+
+    // 3. Overall Weekly reset time is the 4d 14h reset
+    assert.strictEqual(res.weeklyResetTime, futureWeeklyReset);
+    assert.ok(res.weeklyResetCountdown?.includes('4d'));
+
+    // 4. Overall 5-hour reset time must be the authentic 3p-5h reset (< 5 hours), NEVER the 4d 14h weekly reset!
+    assert.notStrictEqual(res.fiveHourResetTime, futureWeeklyReset);
+    assert.ok(res.fiveHourResetCountdown?.includes('4h') || res.fiveHourResetCountdown?.includes('5h'));
+    assert.strictEqual(res.fiveHourResetCountdown?.includes('4d'), false);
+  });
+
+  it('Strict distinct quota: 5h rolling model quota NEVER clones into weekly plan quota when no weekly limit is active', () => {
+    const parser = new QuotaParser();
+    const shortBurstReset = new Date(Date.now() + 2.8 * 3600 * 1000).toISOString(); // 2h 48m away
+
+    const rawPayload = {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            {
+              bucketId: 'gemini-5h',
+              displayName: 'Five Hour Limit Remaining',
+              window: '5h',
+              remainingFraction: 0.5925588,
+              resetTime: shortBurstReset
+            }
+          ]
+        }
+      ],
+      models: {
+        'gemini-2.5-pro': {
+          displayName: 'Gemini 2.5 Pro',
+          quotaInfo: {
+            remainingFraction: 0.5925588,
+            resetTime: shortBurstReset
+          }
+        }
+      }
+    };
+
+    const dummyAcc: AccountInfo = {
+      id: 'acc-pro-user',
+      email: 'pro.user@example.com',
+      name: 'Pro User',
+      isActive: true,
+      accountType: 'Google AI Pro',
+      tierBadge: 'PRO'
+    };
+
+    const res = parser.processQuotaData(rawPayload, dummyAcc);
+
+    // 5h bucket must accurately reflect the 59% burst consumption
+    assert.strictEqual(res.geminiGroup?.fiveHour?.percentage, 59);
+    assert.strictEqual(res.geminiGroup?.fiveHour?.remainingFraction, 0.5925588);
+    assert.strictEqual(res.geminiGroup?.fiveHour?.resetTime, shortBurstReset);
+
+    // Weekly bucket MUST NOT be copied from 5h! It should be 100% (unconstrained) with no short reset time
+    assert.strictEqual(res.geminiGroup?.weekly?.percentage, 100);
+    assert.strictEqual(res.geminiGroup?.weekly?.remainingFraction, 1.0);
+    assert.notStrictEqual(res.geminiGroup?.weekly?.remainingFraction, res.geminiGroup?.fiveHour?.remainingFraction);
+    assert.strictEqual(res.geminiGroup?.weekly?.resetTime, undefined);
+  });
 });
+
+
 

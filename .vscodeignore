@@ -11,3 +11,5 @@ temp/**
 test/**
 vite.config.mts
 components.json
+scratch/**
+sl_all_accounts_quota_dump.json

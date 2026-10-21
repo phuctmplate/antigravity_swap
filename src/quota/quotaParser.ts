@@ -6,12 +6,14 @@ import {
   QuotaBucket,
   QuotaGroup
 } from '../types';
-import { MODEL_WEIGHTS } from '../constants';
+import { MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS } from '../constants';
 import {
   is5HourBucket,
   isWeeklyBucket,
   classifyQuotaWindow,
-  determineAccountTier
+  determineAccountTier,
+  isResetTimeWithin5Hours,
+  isResetTimeBeyond5Hours
 } from './quotaClassifier';
 import {
   extractFraction,
@@ -22,7 +24,7 @@ import {
   normalizeModelKey,
   sortModelQuotas
 } from './quotaFormatters';
-import { calculateAveragePercentage } from './quotaCalculator';
+import { calculateAveragePercentage, calculateModulatedInstantQuota } from './quotaCalculator';
 
 export interface QuotaFetchResult {
   quotas: ModelQuota[];
@@ -115,7 +117,17 @@ export class QuotaParser {
         if (!resetTime && b.description) {
           resetTime = synthesizeResetTimeFromDescription(b.description);
         }
-        const resetCountdown = descCountdown || (resetTime ? formatCountdown(resetTime) : undefined);
+
+        // PHYSICAL SAFEGUARD: A 5h rolling window by definition CANNOT have a reset time > 5.5 hours away!
+        if (windowType === '5h' && resetTime && isResetTimeBeyond5Hours(resetTime)) {
+          resetTime = undefined;
+        }
+
+        let validDescCountdown = descCountdown && (windowType !== 'weekly' || /\b\d+\s*d\b/i.test(descCountdown)) && (windowType !== '5h' || !/\b\d+\s*d\b/i.test(descCountdown)) ? descCountdown : undefined;
+        let resetCountdown = validDescCountdown || (resetTime ? formatCountdown(resetTime) : undefined);
+        if (windowType === '5h' && resetCountdown && /\b\d+\s*d\b/i.test(resetCountdown)) {
+          resetCountdown = undefined;
+        }
 
         const bucket: QuotaBucket = {
           bucketId: b.bucketId || `${groupId}-${windowType}`,
@@ -269,8 +281,17 @@ export class QuotaParser {
         if (hasModelQuota) {
           const modelQuotaFrac = Math.max(0, Math.min(1, modelData.quotaInfo.remainingFraction));
           remainingFraction = targetBucket ? Math.min(modelQuotaFrac, targetBucket.remainingFraction) : modelQuotaFrac;
-          // Prioritize model's authentic resetTime; only fall back to targetBucket resetTime
-          resetTime = modelData.quotaInfo.resetTime || targetBucket?.resetTime;
+          // IMPORTANT: Google returns the SAME resetTime for all models in a quota group (shared 5h rolling timestamp).
+          // For weekly-classified models we MUST use targetBucket.resetTime (the authentic weekly reset time).
+          // For 5h models, use raw model resetTime if it passes the 5h boundary check, otherwise fall back to bucket.
+          const rawModelResetTime = modelData.quotaInfo.resetTime;
+          if (windowType === 'weekly' && targetBucket?.resetTime) {
+            resetTime = targetBucket.resetTime;
+          } else if (windowType === '5h' && rawModelResetTime && isResetTimeWithin5Hours(rawModelResetTime)) {
+            resetTime = rawModelResetTime;
+          } else {
+            resetTime = rawModelResetTime || targetBucket?.resetTime;
+          }
         } else if (targetBucket) {
           remainingFraction = targetBucket.remainingFraction;
           resetTime = targetBucket.resetTime;
@@ -298,7 +319,8 @@ export class QuotaParser {
           resetCountdown,
           windowType,
           windowLabel,
-          disabled: targetBucket?.disabled ?? false
+          disabled: targetBucket?.disabled ?? false,
+          _rawResetTime: hasModelQuota ? modelData.quotaInfo.resetTime : modelData.resetTime
         });
       }
     }
@@ -314,8 +336,8 @@ export class QuotaParser {
           description: g5h?.description || 'Fast multimodal model for rapid iterations',
           remainingFraction: g5h ? g5h.remainingFraction : (gWk ? gWk.remainingFraction : 1.0),
           percentage: g5h ? g5h.percentage : (gWk ? gWk.percentage : 100),
-          resetTime: g5h?.resetTime || gWk?.resetTime,
-          resetCountdown: g5h?.resetCountdown || gWk?.resetCountdown,
+          resetTime: isResetTimeWithin5Hours(g5h?.resetTime) ? g5h?.resetTime : undefined,
+          resetCountdown: isResetTimeWithin5Hours(g5h?.resetTime) ? g5h?.resetCountdown : undefined,
           windowType: g5h ? '5h' : 'weekly',
           windowLabel: g5h ? '5-Hour Window' : 'Weekly Quota',
           disabled: g5h?.disabled ?? false
@@ -344,8 +366,8 @@ export class QuotaParser {
           description: c5h?.description || cWk?.description || 'Hybrid reasoning and state-of-the-art coding',
           remainingFraction: c5h ? c5h.remainingFraction : (cWk ? cWk.remainingFraction : 1.0),
           percentage: c5h ? c5h.percentage : (cWk ? cWk.percentage : 100),
-          resetTime: c5h?.resetTime || cWk?.resetTime,
-          resetCountdown: c5h?.resetCountdown || cWk?.resetCountdown,
+          resetTime: isResetTimeWithin5Hours(c5h?.resetTime) ? c5h?.resetTime : (cWk ? cWk.resetTime : undefined),
+          resetCountdown: isResetTimeWithin5Hours(c5h?.resetTime) ? c5h?.resetCountdown : (cWk ? cWk.resetCountdown : undefined),
           windowType: c5h ? '5h' : 'weekly',
           windowLabel: c5h ? '5-Hour Window' : 'Weekly Quota',
           disabled: c5h?.disabled ?? false
@@ -369,32 +391,29 @@ export class QuotaParser {
     // Sort parsed model quotas deterministically (highest version first)
     parsedQuotas = sortModelQuotas(parsedQuotas);
 
-    // Helper to verify a reset time is genuinely within a 5h rolling window (<= 5.5 hours from now)
-    const isWithin5hWindow = (timeStr?: string): boolean => {
-      if (!timeStr) return true;
-      try {
-        const diffHours = (new Date(timeStr).getTime() - Date.now()) / (1000 * 60 * 60);
-        return diffHours <= 5.5;
-      } catch {
-        return false;
-      }
-    };
-
-    // Synchronize Gemini 5h bucket with live 5h model consumption (only if model consumption is genuinely within 5h window)
-    if (!isFree && geminiGroup) {
+    // Synchronize Gemini 5h bucket with live 5h model consumption
+    if (!isFree) {
       const gemini5hModels = parsedQuotas.filter(
         (q) => ((q.groupName || '').toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')) &&
                q.windowType === '5h' && !q.disabled && q.percentage >= 0 &&
-               !/\bpro\b|[-_.]pro\b/i.test(q.id + ' ' + q.displayName) &&
-               (!geminiGroup.weekly?.resetTime || q.resetTime !== geminiGroup.weekly.resetTime) &&
-               isWithin5hWindow(q.resetTime)
+               !/\bpro\b|[-_.]pro\b/i.test(q.id + ' ' + q.displayName)
       );
       if (gemini5hModels.length > 0) {
+        if (!geminiGroup) {
+          geminiGroup = {
+            id: 'gemini',
+            name: 'Gemini Models',
+            description: 'Models within this group: Gemini Flash, Gemini Pro',
+            buckets: []
+          };
+          quotaGroups.unshift(geminiGroup);
+        }
         const minGemini5hModel = gemini5hModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
-        if (!geminiGroup.fiveHour || minGemini5hModel.remainingFraction < geminiGroup.fiveHour.remainingFraction || (!geminiGroup.fiveHour.resetTime && minGemini5hModel.resetTime)) {
-          const rTime = (minGemini5hModel.resetTime && isWithin5hWindow(minGemini5hModel.resetTime))
-            ? minGemini5hModel.resetTime
-            : (geminiGroup.fiveHour?.resetTime && isWithin5hWindow(geminiGroup.fiveHour.resetTime) ? geminiGroup.fiveHour.resetTime : undefined);
+        const modelReset = isResetTimeWithin5Hours(minGemini5hModel.resetTime) ? minGemini5hModel.resetTime : undefined;
+        const bucketReset = isResetTimeWithin5Hours(geminiGroup.fiveHour?.resetTime) ? geminiGroup.fiveHour?.resetTime : undefined;
+        const rTime = modelReset || bucketReset;
+
+        if (!geminiGroup.fiveHour || minGemini5hModel.remainingFraction < geminiGroup.fiveHour.remainingFraction || (!geminiGroup.fiveHour.resetTime && rTime)) {
           const frac = Math.min(minGemini5hModel.remainingFraction, geminiGroup.fiveHour?.remainingFraction ?? minGemini5hModel.remainingFraction);
           geminiGroup.fiveHour = {
             bucketId: geminiGroup.fiveHour?.bucketId || 'gemini-5h',
@@ -415,15 +434,15 @@ export class QuotaParser {
     if (!isFree && claudeGptGroup) {
       const claude5hModels = parsedQuotas.filter(
         (q) => ((q.groupName || '').toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')) &&
-               q.windowType === '5h' && !q.disabled && q.percentage >= 0 &&
-               isWithin5hWindow(q.resetTime)
+               q.windowType === '5h' && !q.disabled && q.percentage >= 0
       );
       if (claude5hModels.length > 0) {
         const minClaude5hModel = claude5hModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
-        if (!claudeGptGroup.fiveHour || minClaude5hModel.remainingFraction < claudeGptGroup.fiveHour.remainingFraction || (!claudeGptGroup.fiveHour.resetTime && minClaude5hModel.resetTime)) {
-          const rTime = (minClaude5hModel.resetTime && isWithin5hWindow(minClaude5hModel.resetTime))
-            ? minClaude5hModel.resetTime
-            : (claudeGptGroup.fiveHour?.resetTime && isWithin5hWindow(claudeGptGroup.fiveHour.resetTime) ? claudeGptGroup.fiveHour.resetTime : undefined);
+        const modelReset = isResetTimeWithin5Hours(minClaude5hModel.resetTime) ? minClaude5hModel.resetTime : undefined;
+        const bucketReset = isResetTimeWithin5Hours(claudeGptGroup.fiveHour?.resetTime) ? claudeGptGroup.fiveHour?.resetTime : undefined;
+        const rTime = modelReset || bucketReset;
+
+        if (!claudeGptGroup.fiveHour || minClaude5hModel.remainingFraction < claudeGptGroup.fiveHour.remainingFraction || (!claudeGptGroup.fiveHour.resetTime && rTime)) {
           const frac = Math.min(minClaude5hModel.remainingFraction, claudeGptGroup.fiveHour?.remainingFraction ?? minClaude5hModel.remainingFraction);
           claudeGptGroup.fiveHour = {
             bucketId: claudeGptGroup.fiveHour?.bucketId || '3p-5h',
@@ -440,30 +459,78 @@ export class QuotaParser {
       }
     }
 
-    // Synchronize Gemini Weekly bucket with live weekly model consumption (e.g. Gemini 2.5 Pro)
-    if (geminiGroup) {
-      const geminiWeeklyModels = parsedQuotas.filter(
-        (q) => ((q.groupName || '').toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini') || /\bpro\b/i.test(q.id)) &&
-               q.windowType === 'weekly' && !q.disabled && q.percentage >= 0
-      );
+    // Synchronize Gemini Weekly bucket with live weekly model consumption (e.g. Gemini 2.5 Pro).
+    // CRITICAL: Google often returns the SAME fraction + 5h-style resetTime for ALL Gemini models.
+    // We use _rawResetTime (the original quotaInfo.resetTime from Google) to determine if a model's
+    // quota data truly represents a weekly consumption signal (resetTime > 5.5h away).
+    // Only genuine weekly models (with beyond-5h raw resetTimes) can update the weekly bucket.
+    const geminiWeeklyModels = parsedQuotas.filter(
+      (q) => ((q.groupName || '').toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini') || /\bpro\b/i.test(q.id)) &&
+             q.windowType === 'weekly' && !q.disabled && q.percentage >= 0
+    );
+    if (geminiWeeklyModels.length > 0 || (geminiGroup && !geminiGroup.weekly && !isFree)) {
+      if (!geminiGroup) {
+        geminiGroup = {
+          id: 'gemini',
+          name: 'Gemini Models',
+          description: 'Models within this group: Gemini Flash, Gemini Pro',
+          buckets: []
+        };
+        quotaGroups.unshift(geminiGroup);
+      }
       if (geminiWeeklyModels.length > 0) {
-        const minGeminiWeeklyModel = geminiWeeklyModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
-        if (!geminiGroup.weekly || minGeminiWeeklyModel.remainingFraction < geminiGroup.weekly.remainingFraction || (!geminiGroup.weekly.resetTime && minGeminiWeeklyModel.resetTime)) {
-          const rTime = minGeminiWeeklyModel.resetTime || geminiGroup.weekly?.resetTime;
-          const frac = Math.min(minGeminiWeeklyModel.remainingFraction, geminiGroup.weekly?.remainingFraction ?? minGeminiWeeklyModel.remainingFraction);
+        // Filter using _rawResetTime to avoid using 5h-pool data that was re-tagged with weekly resetTime.
+        const genuineWeeklyModels = geminiWeeklyModels.filter(
+          (q: any) => q._rawResetTime && isResetTimeBeyond5Hours(q._rawResetTime)
+        );
+        if (genuineWeeklyModels.length > 0) {
+          const minGeminiWeeklyModel = genuineWeeklyModels.reduce((prev: any, curr: any) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
+          if (!geminiGroup.weekly || minGeminiWeeklyModel.remainingFraction < geminiGroup.weekly.remainingFraction || (!geminiGroup.weekly.resetTime && minGeminiWeeklyModel.resetTime)) {
+            const rTime = minGeminiWeeklyModel.resetTime || geminiGroup.weekly?.resetTime;
+            const frac = Math.min(minGeminiWeeklyModel.remainingFraction, geminiGroup.weekly?.remainingFraction ?? minGeminiWeeklyModel.remainingFraction);
+            geminiGroup.weekly = {
+              bucketId: geminiGroup.weekly?.bucketId || 'gemini-weekly',
+              displayName: geminiGroup.weekly?.displayName || 'Weekly Limit Remaining',
+              window: 'weekly',
+              remainingFraction: frac,
+              percentage: Math.round(frac * 100),
+              resetTime: rTime,
+              resetCountdown: rTime ? formatCountdown(rTime) : undefined,
+              description: geminiGroup.weekly?.description || 'Weekly plan limit for Gemini models',
+              disabled: false
+            };
+          }
+        }
+        // If no genuine weekly signal (all Pro models have 5h-style raw resetTimes), UQS bucket is authoritative.
+        // Ensure weekly bucket exists for paid accounts even if UQS didn't report one.
+        if (!geminiGroup.weekly && !isFree) {
           geminiGroup.weekly = {
-            bucketId: geminiGroup.weekly?.bucketId || 'gemini-weekly',
-            displayName: geminiGroup.weekly?.displayName || 'Weekly Limit Remaining',
+            bucketId: 'gemini-weekly',
+            displayName: 'Weekly Limit Remaining',
             window: 'weekly',
-            remainingFraction: frac,
-            percentage: Math.round(frac * 100),
-            resetTime: rTime,
-            resetCountdown: rTime ? formatCountdown(rTime) : undefined,
-            description: geminiGroup.weekly?.description || 'Weekly plan limit for Gemini models',
+            remainingFraction: 1.0,
+            percentage: 100,
+            description: 'Weekly plan limit for Gemini models',
             disabled: false
           };
         }
+      } else if (!geminiGroup.weekly && !isFree) {
+        geminiGroup.weekly = {
+          bucketId: 'gemini-weekly',
+          displayName: 'Weekly Limit Remaining',
+          window: 'weekly',
+          remainingFraction: 1.0,
+          percentage: 100,
+          description: 'Weekly plan limit for Gemini models',
+          disabled: false
+        };
       }
+    }
+    if (geminiGroup) {
+      const bList: QuotaBucket[] = [];
+      if (geminiGroup.fiveHour) bList.push(geminiGroup.fiveHour);
+      if (geminiGroup.weekly) bList.push(geminiGroup.weekly);
+      geminiGroup.buckets = bList;
     }
 
     // Synchronize Claude & GPT Weekly bucket with live weekly model consumption (e.g. Claude Sonnet / Opus)
@@ -500,12 +567,6 @@ export class QuotaParser {
     const has5Hour = !isFree && (!!geminiGroup?.fiveHour || !!claudeGptGroup?.fiveHour);
     const hasWeekly = !!geminiGroup?.weekly || !!claudeGptGroup?.weekly;
 
-    const fiveHourResetTime = !isFree ? (geminiGroup?.fiveHour?.resetTime || claudeGptGroup?.fiveHour?.resetTime) : undefined;
-    const fiveHourResetCountdown = !isFree ? (geminiGroup?.fiveHour?.resetCountdown || claudeGptGroup?.fiveHour?.resetCountdown) : undefined;
-
-    const weeklyResetTime = geminiGroup?.weekly?.resetTime || claudeGptGroup?.weekly?.resetTime;
-    const weeklyResetCountdown = geminiGroup?.weekly?.resetCountdown || claudeGptGroup?.weekly?.resetCountdown;
-
     // Group-level weekly percentages
     const geminiWk = (geminiGroup?.weekly && !geminiGroup.weekly.disabled && geminiGroup.weekly.percentage >= 0)
       ? geminiGroup.weekly.percentage
@@ -513,16 +574,6 @@ export class QuotaParser {
     const claudeWk = (claudeGptGroup?.weekly && !claudeGptGroup.weekly.disabled && claudeGptGroup.weekly.percentage >= 0)
       ? claudeGptGroup.weekly.percentage
       : undefined;
-
-    // Combined Weekly percentage (Capacity metric) with weighted model ratio (Gemini 70%, Claude 30%)
-    let weeklyPercentage: number | undefined;
-    if (geminiWk !== undefined && claudeWk !== undefined) {
-      weeklyPercentage = Math.round((geminiWk * MODEL_WEIGHTS.GEMINI + claudeWk * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
-    } else if (geminiWk !== undefined) {
-      weeklyPercentage = geminiWk;
-    } else if (claudeWk !== undefined) {
-      weeklyPercentage = claudeWk;
-    }
 
     // Group-level 5-hour rolling window percentages (Free tier is strictly undefined)
     const gemini5h = (!isFree && geminiGroup?.fiveHour && !geminiGroup.fiveHour.disabled && geminiGroup.fiveHour.percentage >= 0)
@@ -532,7 +583,63 @@ export class QuotaParser {
       ? claudeGptGroup.fiveHour.percentage
       : undefined;
 
-    // Combined 5-hour percentage with weighted model ratio (Gemini 70%, Claude 30%)
+    // Pick authentic 5h reset time prioritizing the more depleted group
+    // Physical law: A 5h reset time MUST be within 5.5 hours in the future
+    let fiveHourResetTime: string | undefined;
+    if (!isFree) {
+      const g5h = geminiGroup?.fiveHour;
+      const c5h = claudeGptGroup?.fiveHour;
+      const g5hReset = isResetTimeWithin5Hours(g5h?.resetTime) ? g5h?.resetTime : undefined;
+      const c5hReset = isResetTimeWithin5Hours(c5h?.resetTime) ? c5h?.resetTime : undefined;
+
+      if (g5hReset && c5hReset) {
+        const g5hFrac = g5h?.remainingFraction;
+        const c5hFrac = c5h?.remainingFraction;
+        if (typeof g5hFrac === 'number' && typeof c5hFrac === 'number' && g5hFrac < c5hFrac) {
+          fiveHourResetTime = g5hReset;
+        } else if (typeof g5hFrac === 'number' && typeof c5hFrac === 'number' && c5hFrac < g5hFrac) {
+          fiveHourResetTime = c5hReset;
+        } else {
+          const gTime = new Date(g5hReset).getTime();
+          const cTime = new Date(c5hReset).getTime();
+          fiveHourResetTime = gTime <= cTime ? g5hReset : c5hReset;
+        }
+      } else {
+        fiveHourResetTime = g5hReset || c5hReset;
+      }
+    }
+    const fiveHourResetCountdown = fiveHourResetTime ? formatCountdown(fiveHourResetTime) : undefined;
+
+    // Pick authentic weekly reset time prioritizing the more depleted group
+    let weeklyResetTime: string | undefined;
+    const gWkFrac = geminiGroup?.weekly?.remainingFraction;
+    const cWkFrac = claudeGptGroup?.weekly?.remainingFraction;
+    if (geminiGroup?.weekly?.resetTime && claudeGptGroup?.weekly?.resetTime) {
+      if (typeof gWkFrac === 'number' && typeof cWkFrac === 'number' && gWkFrac < cWkFrac) {
+        weeklyResetTime = geminiGroup.weekly.resetTime;
+      } else if (typeof gWkFrac === 'number' && typeof cWkFrac === 'number' && cWkFrac < gWkFrac) {
+        weeklyResetTime = claudeGptGroup.weekly.resetTime;
+      } else {
+        const gTime = new Date(geminiGroup.weekly.resetTime).getTime();
+        const cTime = new Date(claudeGptGroup.weekly.resetTime).getTime();
+        weeklyResetTime = gTime <= cTime ? geminiGroup.weekly.resetTime : claudeGptGroup.weekly.resetTime;
+      }
+    } else {
+      weeklyResetTime = geminiGroup?.weekly?.resetTime || claudeGptGroup?.weekly?.resetTime;
+    }
+    const weeklyResetCountdown = weeklyResetTime ? formatCountdown(weeklyResetTime) : undefined;
+
+    // Combined Weekly percentage (Capacity metric) with weighted model ratio (Gemini 85%, Claude 15%)
+    let weeklyPercentage: number | undefined;
+    if (geminiWk !== undefined && claudeWk !== undefined) {
+      weeklyPercentage = Math.round((geminiWk * MODEL_WEIGHTS.GEMINI + claudeWk * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
+    } else if (geminiWk !== undefined) {
+      weeklyPercentage = geminiWk;
+    } else if (claudeWk !== undefined) {
+      weeklyPercentage = claudeWk;
+    }
+
+    // Combined 5-hour percentage with weighted model ratio (Gemini 85%, Claude 15%)
     let fiveHourPercentage: number | undefined;
     if (gemini5h !== undefined && claude5h !== undefined) {
       fiveHourPercentage = Math.round((gemini5h * MODEL_WEIGHTS.GEMINI + claude5h * MODEL_WEIGHTS.CLAUDE) / (MODEL_WEIGHTS.GEMINI + MODEL_WEIGHTS.CLAUDE));
@@ -632,7 +739,40 @@ export class QuotaParser {
       );
     };
 
-    // 1. Check grouped quota buckets
+    // 1. Check direct authentic models map FIRST (from GetAvailableModels or retrieveUserQuota)
+    if (rawResponse && rawResponse.models) {
+      for (const [modelId, modelData] of Object.entries<any>(rawResponse.models)) {
+        const displayName = formatModelDisplayName(modelId, modelData.displayName);
+        if (shouldIgnoreModel(modelId, displayName)) {
+          continue;
+        }
+
+        const normId = normalizeModelKey(modelId);
+        if (seenIds.has(normId)) continue;
+        seenIds.add(normId);
+
+        const fraction = extractFraction(modelData);
+        const percentage = Math.round(fraction * 100);
+        const resetTime = modelData.quotaInfo?.resetTime || modelData.resetTime;
+        const resetCountdown = resetTime ? formatCountdown(resetTime) : undefined;
+        const { windowType, windowLabel } = classifyQuotaWindow(modelId, displayName, resetTime, modelData.description);
+
+        list.push({
+          id: modelId,
+          displayName,
+          description: modelData.description,
+          remainingFraction: fraction,
+          percentage,
+          resetTime,
+          resetCountdown,
+          windowType,
+          windowLabel,
+          disabled: modelData.disabled ?? false
+        });
+      }
+    }
+
+    // 2. Check grouped quota buckets for any models not already present
     const groups = rawResponse?.response?.groups || rawResponse?.groups || [];
     if (groups.length > 0) {
       for (const group of groups) {
@@ -667,8 +807,9 @@ export class QuotaParser {
             { id: 'gemini-3.1-flash', displayName: 'Gemini 3.1 Flash' }
           ];
           for (const m of geminiFlashModels) {
-            if (seenIds.has(m.id)) continue;
-            seenIds.add(m.id);
+            const norm = normalizeModelKey(m.id);
+            if (seenIds.has(norm)) continue;
+            seenIds.add(norm);
             list.push({
               id: m.id,
               displayName: m.displayName,
@@ -688,8 +829,9 @@ export class QuotaParser {
             { id: 'gemini-3.1-pro', displayName: 'Gemini 3.1 Pro' }
           ];
           for (const m of geminiProModels) {
-            if (seenIds.has(m.id)) continue;
-            seenIds.add(m.id);
+            const norm = normalizeModelKey(m.id);
+            if (seenIds.has(norm)) continue;
+            seenIds.add(norm);
             list.push({
               id: m.id,
               displayName: m.displayName,
@@ -716,8 +858,9 @@ export class QuotaParser {
             { id: 'gpt-oss-120b', displayName: 'GPT-OSS 120B' }
           ];
           for (const m of thirdPartyModels) {
-            if (seenIds.has(m.id)) continue;
-            seenIds.add(m.id);
+            const norm = normalizeModelKey(m.id);
+            if (seenIds.has(norm)) continue;
+            seenIds.add(norm);
             list.push({
               id: m.id,
               displayName: m.displayName,
@@ -732,39 +875,6 @@ export class QuotaParser {
             });
           }
         }
-      }
-    }
-
-    // 2. Check direct models map
-    if (rawResponse && rawResponse.models) {
-      for (const [modelId, modelData] of Object.entries<any>(rawResponse.models)) {
-        const displayName = formatModelDisplayName(modelId, modelData.displayName);
-        if (shouldIgnoreModel(modelId, displayName)) {
-          continue;
-        }
-
-        const normId = normalizeModelKey(modelId);
-        if (seenIds.has(normId)) continue;
-        seenIds.add(normId);
-
-        const fraction = extractFraction(modelData);
-        const percentage = Math.round(fraction * 100);
-        const resetTime = modelData.quotaInfo?.resetTime || modelData.resetTime;
-        const resetCountdown = resetTime ? formatCountdown(resetTime) : undefined;
-        const { windowType, windowLabel } = classifyQuotaWindow(modelId, displayName, resetTime, modelData.description);
-
-        list.push({
-          id: modelId,
-          displayName,
-          description: modelData.description,
-          remainingFraction: fraction,
-          percentage,
-          resetTime,
-          resetCountdown,
-          windowType,
-          windowLabel,
-          disabled: modelData.disabled ?? false
-        });
       }
     }
 

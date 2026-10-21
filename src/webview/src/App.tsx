@@ -197,7 +197,7 @@ export const App: React.FC = () => {
   return (
     <>
       <AppContent />
-      <Toaster />
+      <Toaster position="top-center" />
     </>
   );
 };

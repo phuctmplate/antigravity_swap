@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 (2026-10-17)
+## 2.0.0 (2026-10-21)
 
 - **Performance & Reliability**: Re-engineered core engine architecture to deliver improved responsiveness, lower resource usage, and rock-solid operational stability.
 - **Multi-Window Synchronization**: Enhanced real-time synchronization across multiple open IDE windows, ensuring seamless and conflict-free account management.
