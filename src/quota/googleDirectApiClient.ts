@@ -111,13 +111,16 @@ export function enrichQuotaGroupsWithModels(
       resultGroups.unshift(geminiGroup);
     } else {
       // Ensure only weekly bucket exists for Free Tier
+      const existingWeekly = geminiGroup.buckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName)) || geminiGroup.buckets[0];
       geminiGroup.buckets = [
         {
           bucketId: 'gemini-weekly',
           displayName: 'Weekly Limit Remaining',
           window: 'weekly',
-          remainingFraction: minWeeklyFraction,
-          resetTime: geminiWeeklyResetTime
+          remainingFraction: typeof existingWeekly?.remainingFraction === 'number'
+            ? existingWeekly.remainingFraction
+            : minWeeklyFraction,
+          resetTime: existingWeekly?.resetTime || geminiWeeklyResetTime
         }
       ];
     }
@@ -130,21 +133,24 @@ export function enrichQuotaGroupsWithModels(
   }
 
   // === PAID ACCOUNTS (PRO / ULTRA) ===
+  const is3pModel = (id: string) => {
+    const lower = id.toLowerCase();
+    return lower.includes('claude') || lower.includes('gpt') || lower.includes('opus') || lower.includes('sonnet');
+  };
 
-  // 1. Enrich Gemini models
+  // 1. Enrich Gemini models (strictly exclude Claude, GPT, Opus, Sonnet 3P models)
   const flashModelEntries = Object.entries(modelsData).filter(
     ([id]) =>
-      id.includes('flash') ||
-      id.includes('gemini') ||
-      id.includes('exp') ||
-      id.includes('thinking')
+      !is3pModel(id) &&
+      (id.includes('flash') ||
+       id.includes('gemini') ||
+       id.includes('exp'))
   );
 
   let geminiGroup = resultGroups.find(
     (g: any) =>
       (g.displayName || '').toLowerCase().includes('gemini') &&
-      !(g.displayName || '').toLowerCase().includes('claude') &&
-      !(g.displayName || '').toLowerCase().includes('gpt')
+      !is3pModel(g.displayName || '')
   );
 
   if (flashModelEntries.length > 0) {
@@ -214,15 +220,17 @@ export function enrichQuotaGroupsWithModels(
       geminiGroup.buckets = geminiGroup.buckets || [];
       const existing5h = geminiGroup.buckets.find((b: any) => is5HourBucket(b.window, b.bucketId, b.displayName));
       if (existing5h) {
-        if (has5hActiveLimit) {
+        // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
+        // Only backfill if remainingFraction is undefined.
+        if (typeof existing5h.remainingFraction !== 'number' && has5hActiveLimit) {
           existing5h.remainingFraction = min5hFraction;
         }
-        if (gemini5hResetTime) {
+        if (!existing5h.resetTime && gemini5hResetTime) {
           existing5h.resetTime = gemini5hResetTime;
         } else if (existing5h.resetTime && isResetTimeBeyond5Hours(existing5h.resetTime)) {
           delete existing5h.resetTime;
         }
-      } else {
+      } else if (has5hActiveLimit) {
         geminiGroup.buckets.push({
           bucketId: 'gemini-5h',
           displayName: 'Five Hour Limit Remaining',
@@ -234,13 +242,14 @@ export function enrichQuotaGroupsWithModels(
 
       const existingWeekly = geminiGroup.buckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName));
       if (existingWeekly) {
-        if (hasWeeklyActiveLimit) {
+        // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
+        if (typeof existingWeekly.remainingFraction !== 'number' && hasWeeklyActiveLimit) {
           existingWeekly.remainingFraction = minWeeklyFraction;
-          if (geminiWeeklyResetTime) {
-            existingWeekly.resetTime = geminiWeeklyResetTime;
-          }
         }
-      } else {
+        if (!existingWeekly.resetTime && geminiWeeklyResetTime) {
+          existingWeekly.resetTime = geminiWeeklyResetTime;
+        }
+      } else if (hasWeeklyActiveLimit) {
         geminiGroup.buckets.push({
           bucketId: 'gemini-weekly',
           displayName: 'Weekly Limit Remaining',
@@ -259,12 +268,9 @@ export function enrichQuotaGroupsWithModels(
       (g.displayName || '').toLowerCase().includes('gpt')
   );
   const claudeModelEntries = Object.entries(modelsData).filter(
-    ([id]) =>
-      id.includes('claude') ||
-      id.includes('gpt') ||
-      id.includes('opus') ||
-      id.includes('sonnet')
+    ([id]) => is3pModel(id)
   );
+
   if (claudeGroup && claudeModelEntries.length > 0) {
     let min3p5hFraction = 1.0;
     let has5hModelConsumption = false;
@@ -301,15 +307,23 @@ export function enrichQuotaGroupsWithModels(
 
     claudeGroup.buckets = claudeGroup.buckets || [];
     const existing3pWk = claudeGroup.buckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName));
-    if (existing3pWk && hasWeeklyModelConsumption && min3pWeeklyFraction < (existing3pWk.remainingFraction ?? 1.0)) {
-      existing3pWk.remainingFraction = min3pWeeklyFraction;
-      if (min3pWeeklyResetTime) existing3pWk.resetTime = min3pWeeklyResetTime;
+    if (existing3pWk) {
+      // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
+      if (typeof existing3pWk.remainingFraction !== 'number' && hasWeeklyModelConsumption) {
+        existing3pWk.remainingFraction = min3pWeeklyFraction;
+      }
+      if (!existing3pWk.resetTime && min3pWeeklyResetTime) {
+        existing3pWk.resetTime = min3pWeeklyResetTime;
+      }
     }
 
     const existing3p5h = claudeGroup.buckets.find((b: any) => is5HourBucket(b.window, b.bucketId, b.displayName));
-    if (existing3p5h && has5hModelConsumption && min3p5hFraction < (existing3p5h.remainingFraction ?? 1.0)) {
-      existing3p5h.remainingFraction = min3p5hFraction;
-      if (min3p5hResetTime) {
+    if (existing3p5h) {
+      // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
+      if (typeof existing3p5h.remainingFraction !== 'number' && has5hModelConsumption) {
+        existing3p5h.remainingFraction = min3p5hFraction;
+      }
+      if (!existing3p5h.resetTime && min3p5hResetTime) {
         existing3p5h.resetTime = min3p5hResetTime;
       } else if (existing3p5h.resetTime && isResetTimeBeyond5Hours(existing3p5h.resetTime)) {
         delete existing3p5h.resetTime;
@@ -486,10 +500,13 @@ export class GoogleDirectApiClient {
     let tierData: any = {};
     const meta = getIdeRuntimeMetadata();
 
+    const HOST_PROD = 'cloudcode-pa.googleapis.com';
+    const HOST_DAILY = 'daily-cloudcode-pa.googleapis.com';
+
     // 1. Query loadCodeAssist to determine user subscription tier and companion project
     try {
-      const lcaDaily = await this.postJson(
-        'daily-cloudcode-pa.googleapis.com',
+      const lcaProd = await this.postJson(
+        HOST_PROD,
         '/v1internal:loadCodeAssist',
         activeToken,
         {
@@ -501,9 +518,9 @@ export class GoogleDirectApiClient {
         },
         timeoutMs
       );
-      if (lcaDaily) {
-        projectId = lcaDaily.cloudaicompanionProject;
-        tierData = { ...lcaDaily };
+      if (lcaProd) {
+        projectId = lcaProd.cloudaicompanionProject;
+        tierData = { ...lcaProd };
       }
     } catch (lcaErr: any) {
       if (lcaErr.message && (lcaErr.message.includes('Authentication failed') || lcaErr.message.includes('401'))) {
@@ -511,24 +528,45 @@ export class GoogleDirectApiClient {
           const fresh = await refreshGoogleAccessToken(refreshToken);
           if (fresh) {
             activeToken = fresh;
+            try {
+              const lcaRetry = await this.postJson(
+                HOST_PROD,
+                '/v1internal:loadCodeAssist',
+                activeToken,
+                {
+                  metadata: {
+                    ide_type: 'ANTIGRAVITY',
+                    ide_version: meta.ideVersion,
+                    ide_name: meta.ideName
+                  }
+                },
+                timeoutMs
+              );
+              if (lcaRetry) {
+                projectId = lcaRetry.cloudaicompanionProject;
+                tierData = { ...lcaRetry };
+              }
+            } catch {}
           }
         }
       }
-      try {
-        const lcaProd = await this.postJson(
-          'cloudcode-pa.googleapis.com',
-          '/v1internal:loadCodeAssist',
-          activeToken,
-          {
-            metadata: { ideType: 'ANTIGRAVITY' }
-          },
-          timeoutMs
-        );
-        if (lcaProd) {
-          projectId = lcaProd.cloudaicompanionProject;
-          tierData = { ...lcaProd };
-        }
-      } catch {}
+      if (!projectId && Object.keys(tierData).length === 0) {
+        try {
+          const lcaDaily = await this.postJson(
+            HOST_DAILY,
+            '/v1internal:loadCodeAssist',
+            activeToken,
+            {
+              metadata: { ideType: 'ANTIGRAVITY' }
+            },
+            timeoutMs
+          );
+          if (lcaDaily) {
+            projectId = lcaDaily.cloudaicompanionProject;
+            tierData = { ...lcaDaily };
+          }
+        } catch {}
+      }
     }
 
     const isFreeAccount = (
@@ -544,15 +582,15 @@ export class GoogleDirectApiClient {
 
     // 2. retrieveUserQuota: Source for real-time model consumption and reset times
     try {
-      const rawQuotaDaily = await this.postJson(
-        'daily-cloudcode-pa.googleapis.com',
+      const rawQuotaProd = await this.postJson(
+        HOST_PROD,
         '/v1internal:retrieveUserQuota',
         activeToken,
         body,
         timeoutMs
       );
-      if (rawQuotaDaily && rawQuotaDaily.buckets) {
-        for (const b of rawQuotaDaily.buckets) {
+      if (rawQuotaProd && rawQuotaProd.buckets) {
+        for (const b of rawQuotaProd.buckets) {
           if (b.modelId) {
             modelsData[b.modelId] = {
               displayName: b.modelId,
@@ -566,15 +604,15 @@ export class GoogleDirectApiClient {
       }
     } catch {
       try {
-        const rawQuota = await this.postJson(
-          'cloudcode-pa.googleapis.com',
+        const rawQuotaDaily = await this.postJson(
+          HOST_DAILY,
           '/v1internal:retrieveUserQuota',
           activeToken,
           body,
           timeoutMs
         );
-        if (rawQuota && rawQuota.buckets) {
-          for (const b of rawQuota.buckets) {
+        if (rawQuotaDaily && rawQuotaDaily.buckets) {
+          for (const b of rawQuotaDaily.buckets) {
             if (b.modelId) {
               modelsData[b.modelId] = {
                 displayName: b.modelId,
@@ -594,61 +632,49 @@ export class GoogleDirectApiClient {
     if (!isFreeAccount) {
       try {
         groupsData = await this.postJson(
-          'daily-cloudcode-pa.googleapis.com',
+          HOST_PROD,
           '/v1internal:retrieveUserQuotaSummary',
           activeToken,
           body,
           timeoutMs
         );
-      } catch {}
-
-      // If daily endpoint failed or omitted Gemini Models, query official production endpoint
-      const currentGroups = groupsData?.response?.groups || groupsData?.groups || [];
-      const hasGeminiGroup = currentGroups.some(
-        (g: any) => (g.displayName || '').toLowerCase().includes('gemini')
-      );
-
-      if (!hasGeminiGroup) {
-        try {
-          const prodGroupsData = await this.postJson(
-            'cloudcode-pa.googleapis.com',
-            '/v1internal:retrieveUserQuotaSummary',
-            activeToken,
-            body,
-            timeoutMs
-          );
-          if (prodGroupsData) {
-            const prodGroups = prodGroupsData.response?.groups || prodGroupsData.groups || [];
-            if (!groupsData) {
-              groupsData = prodGroupsData;
-            } else {
-              // Merge missing groups from prod (e.g. Gemini Models) into existing groupsData
-              for (const pg of prodGroups) {
-                const pgName = (pg.displayName || '').toLowerCase();
-                const alreadyExists = currentGroups.some(
-                  (eg: any) => (eg.displayName || '').toLowerCase() === pgName
-                );
-                if (!alreadyExists) {
-                  currentGroups.unshift(pg);
-                }
-              }
-            }
-          }
-        } catch {}
+      } catch {
+        if (projectId) {
+          try {
+            groupsData = await this.postJson(
+              HOST_PROD,
+              '/v1internal:retrieveUserQuotaSummary',
+              activeToken,
+              {},
+              timeoutMs
+            );
+          } catch {}
+        }
+        if (!groupsData) {
+          try {
+            groupsData = await this.postJson(
+              HOST_DAILY,
+              '/v1internal:retrieveUserQuotaSummary',
+              activeToken,
+              body,
+              timeoutMs
+            );
+          } catch {}
+        }
       }
     }
 
     // 4. fetchAvailableModels: Model labels, display names, and fallback model quotas
     try {
-      const famDaily = await this.postJson(
-        'daily-cloudcode-pa.googleapis.com',
+      const famProd = await this.postJson(
+        HOST_PROD,
         '/v1internal:fetchAvailableModels',
         activeToken,
         body,
         timeoutMs
       );
-      if (famDaily && famDaily.models) {
-        for (const [id, m] of Object.entries<any>(famDaily.models)) {
+      if (famProd && famProd.models) {
+        for (const [id, m] of Object.entries<any>(famProd.models)) {
           if (modelsData[id]) {
             modelsData[id].displayName = m.displayName || m.label || id;
           } else {
@@ -658,15 +684,15 @@ export class GoogleDirectApiClient {
       }
     } catch {
       try {
-        const famProd = await this.postJson(
-          'cloudcode-pa.googleapis.com',
+        const famDaily = await this.postJson(
+          HOST_DAILY,
           '/v1internal:fetchAvailableModels',
           activeToken,
           body,
           timeoutMs
         );
-        if (famProd && famProd.models) {
-          for (const [id, m] of Object.entries<any>(famProd.models)) {
+        if (famDaily && famDaily.models) {
+          for (const [id, m] of Object.entries<any>(famDaily.models)) {
             if (modelsData[id]) {
               modelsData[id].displayName = m.displayName || m.label || id;
             } else {

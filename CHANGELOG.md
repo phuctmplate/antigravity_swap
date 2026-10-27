@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1 (2026-10-28)
+
+- **Quota Accuracy**: Fix quota calculation
+
 ## 2.0.0 (2026-10-21)
 
 - **Performance & Reliability**: Re-engineered core engine architecture to deliver improved responsiveness, lower resource usage, and rock-solid operational stability.

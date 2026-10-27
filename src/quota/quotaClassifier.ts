@@ -113,9 +113,12 @@ export function classifyQuotaWindow(
     return { windowType: 'weekly', windowLabel: 'Weekly Plan Quota' };
   }
 
-  // 4. Claude and GPT models: In Antigravity, Claude & GPT 3P models are bound to the weekly quota pool.
+  // 4. Claude and GPT models: In Antigravity paid accounts, Claude & GPT 3P models have both 5h rolling and weekly pools.
   const isClaudeOrGpt = idLower.includes('claude') || idLower.includes('opus') || idLower.includes('sonnet') || idLower.includes('gpt');
   if (isClaudeOrGpt) {
+    if (resetTime && isResetTimeWithin5Hours(resetTime) && (!knownWeeklyResetTime || resetTime !== knownWeeklyResetTime)) {
+      return { windowType: '5h', windowLabel: '5-Hour Rolling Window' };
+    }
     return { windowType: 'weekly', windowLabel: 'Weekly Plan Quota' };
   }
 

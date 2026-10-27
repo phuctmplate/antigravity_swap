@@ -105,7 +105,7 @@ export class QuotaApiClient {
     // 3. Fetch live model quotas via /v1internal:retrieveUserQuota
     // daily-cloudcode-pa provides authentic real-time 5-hour rolling consumption and reset times for Gemini models
     const modelsData: Record<string, any> = {};
-    const quotaHosts = ['daily-cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com'];
+    const quotaHosts = ['cloudcode-pa.googleapis.com', 'daily-cloudcode-pa.googleapis.com'];
 
     for (const host of quotaHosts) {
       try {

@@ -30,23 +30,128 @@ export class AccountStorage {
 
   public getAccounts(): AccountInfo[] {
     const filePath = this.getAccountsFilePath();
+    let accounts: AccountInfo[] = [];
     try {
       if (fs.existsSync(filePath)) {
         const raw = fs.readFileSync(filePath, 'utf-8');
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed;
+          accounts = parsed;
         }
       }
     } catch {}
 
-    const stateAccounts = this.context.globalState.get<AccountInfo[]>(STORAGE_KEYS.ACCOUNTS, []);
-    if (stateAccounts.length > 0) {
-      try {
-        fs.writeFileSync(filePath, JSON.stringify(stateAccounts, null, 2), 'utf-8');
-      } catch {}
+    if (accounts.length === 0) {
+      const stateAccounts = this.context.globalState.get<AccountInfo[]>(STORAGE_KEYS.ACCOUNTS, []);
+      if (stateAccounts.length > 0) {
+        accounts = stateAccounts;
+        try {
+          fs.writeFileSync(filePath, JSON.stringify(stateAccounts, null, 2), 'utf-8');
+        } catch {}
+      }
     }
-    return stateAccounts;
+    return this.normalizeExpiredQuotas(accounts);
+  }
+
+  private normalizeExpiredQuotas(accounts: AccountInfo[]): AccountInfo[] {
+    const now = Date.now();
+    return accounts.map((acc) => {
+      let accModified = false;
+      let geminiGroup = acc.geminiGroup;
+      let claudeGptGroup = acc.claudeGptGroup;
+      let statusMessage = acc.statusMessage;
+
+      const normalizeBucket = (b?: any) => {
+        if (!b) return b;
+        if (b.resetTime && new Date(b.resetTime).getTime() <= now) {
+          accModified = true;
+          return {
+            ...b,
+            remainingFraction: 1.0,
+            percentage: 100,
+            resetTime: undefined,
+            resetCountdown: b.window === 'weekly' ? '6d 23h' : 'Ready'
+          };
+        }
+        if (b.window === 'weekly' && b.resetCountdown === 'Ready') {
+          accModified = true;
+          return {
+            ...b,
+            resetCountdown: '6d 23h'
+          };
+        }
+        return b;
+      };
+
+      if (geminiGroup) {
+        const new5h = normalizeBucket(geminiGroup.fiveHour);
+        const newWk = normalizeBucket(geminiGroup.weekly);
+        if (new5h !== geminiGroup.fiveHour || newWk !== geminiGroup.weekly) {
+          geminiGroup = {
+            ...geminiGroup,
+            fiveHour: new5h,
+            weekly: newWk,
+            buckets: [new5h, newWk].filter(Boolean)
+          };
+        }
+      }
+
+      if (claudeGptGroup) {
+        const new5h = normalizeBucket(claudeGptGroup.fiveHour);
+        const newWk = normalizeBucket(claudeGptGroup.weekly);
+        if (new5h !== claudeGptGroup.fiveHour || newWk !== claudeGptGroup.weekly) {
+          claudeGptGroup = {
+            ...claudeGptGroup,
+            fiveHour: new5h,
+            weekly: newWk,
+            buckets: [new5h, newWk].filter(Boolean)
+          };
+        }
+      }
+
+      if (accModified) {
+        const gWk = geminiGroup?.weekly?.percentage;
+        const cWk = claudeGptGroup?.weekly?.percentage;
+        const g5h = geminiGroup?.fiveHour?.percentage;
+        const c5h = claudeGptGroup?.fiveHour?.percentage;
+
+        let weeklyPercentage = acc.weeklyQuotaPercentage;
+        if (gWk !== undefined && cWk !== undefined) {
+          weeklyPercentage = Math.round(gWk * 0.85 + cWk * 0.15);
+        } else if (gWk !== undefined) {
+          weeklyPercentage = gWk;
+        } else if (cWk !== undefined) {
+          weeklyPercentage = cWk;
+        }
+
+        let fiveHourPercentage = acc.fiveHourQuotaPercentage;
+        if (g5h !== undefined && c5h !== undefined) {
+          fiveHourPercentage = Math.round(g5h * 0.85 + c5h * 0.15);
+        } else if (g5h !== undefined) {
+          fiveHourPercentage = g5h;
+        } else if (c5h !== undefined) {
+          fiveHourPercentage = c5h;
+        }
+
+        const isHealthy = (gWk === undefined || gWk > 0) && (cWk === undefined || cWk > 0) && (g5h === undefined || g5h > 0) && (c5h === undefined || c5h > 0);
+        if (isHealthy && (statusMessage || '').includes('depleted')) {
+          statusMessage = undefined;
+        }
+
+        return {
+          ...acc,
+          geminiGroup,
+          claudeGptGroup,
+          weeklyQuotaPercentage: weeklyPercentage,
+          fiveHourQuotaPercentage: fiveHourPercentage,
+          averageQuotaPercentage: weeklyPercentage ?? fiveHourPercentage ?? acc.averageQuotaPercentage,
+          status: isHealthy && acc.status === 'low_balance' ? 'healthy' : acc.status,
+          statusMessage
+        };
+      }
+
+      return acc;
+    });
   }
 
   public async saveAccounts(accounts: AccountInfo[]): Promise<void> {

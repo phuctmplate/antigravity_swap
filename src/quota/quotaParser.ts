@@ -110,8 +110,7 @@ export class QuotaParser {
         const isWeekly = isWeeklyBucket(b.window, b.bucketId, b.displayName);
 
         const windowType: '5h' | 'weekly' = is5h ? '5h' : 'weekly';
-        const remainingFraction = extractFraction(b);
-        const percentage = Math.round(remainingFraction * 100);
+        let remainingFraction = extractFraction(b);
         const descCountdown = parseCountdownFromDescription(b.description);
         let resetTime = b.resetTime || b.quotaInfo?.resetTime || b.quotaResetUTCTimestamp;
         if (!resetTime && b.description) {
@@ -123,6 +122,7 @@ export class QuotaParser {
           resetTime = undefined;
         }
 
+        const percentage = Math.round(remainingFraction * 100);
         let validDescCountdown = descCountdown && (windowType !== 'weekly' || /\b\d+\s*d\b/i.test(descCountdown)) && (windowType !== '5h' || !/\b\d+\s*d\b/i.test(descCountdown)) ? descCountdown : undefined;
         let resetCountdown = validDescCountdown || (resetTime ? formatCountdown(resetTime) : undefined);
         if (windowType === '5h' && resetCountdown && /\b\d+\s*d\b/i.test(resetCountdown)) {
@@ -180,33 +180,56 @@ export class QuotaParser {
     const prevGemini = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
     const prevClaude = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
 
+    const resolvePrevBucket = (b?: QuotaBucket): QuotaBucket | undefined => {
+      if (!b) return undefined;
+      const isExpired = b.resetTime ? (new Date(b.resetTime).getTime() <= Date.now()) : false;
+      if (isExpired) {
+        return {
+          ...b,
+          remainingFraction: 1.0,
+          percentage: 100,
+          resetTime: undefined,
+          resetCountdown: b.window === 'weekly' ? '6d 23h' : 'Ready'
+        };
+      }
+      if (b.window === 'weekly' && b.resetCountdown === 'Ready') {
+        return {
+          ...b,
+          resetCountdown: '6d 23h'
+        };
+      }
+      return b;
+    };
+
     if (!geminiGroup && prevGemini) {
       geminiGroup = {
         ...prevGemini,
-        fiveHour: isFree ? undefined : prevGemini.fiveHour
+        fiveHour: isFree ? undefined : resolvePrevBucket(prevGemini.fiveHour),
+        weekly: resolvePrevBucket(prevGemini.weekly)
       };
       quotaGroups.push(geminiGroup);
     } else if (geminiGroup && prevGemini) {
       if (!geminiGroup.fiveHour && !isFree && prevGemini.fiveHour) {
-        geminiGroup.fiveHour = prevGemini.fiveHour;
+        geminiGroup.fiveHour = resolvePrevBucket(prevGemini.fiveHour);
       }
       if (!geminiGroup.weekly && prevGemini.weekly) {
-        geminiGroup.weekly = prevGemini.weekly;
+        geminiGroup.weekly = resolvePrevBucket(prevGemini.weekly);
       }
     }
 
     if (!claudeGptGroup && prevClaude) {
       claudeGptGroup = {
         ...prevClaude,
-        fiveHour: isFree ? undefined : prevClaude.fiveHour
+        fiveHour: isFree ? undefined : resolvePrevBucket(prevClaude.fiveHour),
+        weekly: resolvePrevBucket(prevClaude.weekly)
       };
       quotaGroups.push(claudeGptGroup);
     } else if (claudeGptGroup && prevClaude) {
       if (!claudeGptGroup.fiveHour && !isFree && prevClaude.fiveHour) {
-        claudeGptGroup.fiveHour = prevClaude.fiveHour;
+        claudeGptGroup.fiveHour = resolvePrevBucket(prevClaude.fiveHour);
       }
       if (!claudeGptGroup.weekly && prevClaude.weekly) {
-        claudeGptGroup.weekly = prevClaude.weekly;
+        claudeGptGroup.weekly = resolvePrevBucket(prevClaude.weekly);
       }
     }
 
@@ -279,18 +302,22 @@ export class QuotaParser {
         let resetTime: string | undefined;
 
         if (hasModelQuota) {
-          const modelQuotaFrac = Math.max(0, Math.min(1, modelData.quotaInfo.remainingFraction));
+          const rawModelResetTime = modelData.quotaInfo.resetTime;
+          const isDifferentCycle = targetBucket?.resetTime && rawModelResetTime
+            ? (new Date(targetBucket.resetTime).getTime() - new Date(rawModelResetTime).getTime() > 24 * 3600 * 1000)
+            : false;
+          const isModelResetExpired = (targetBucket?.remainingFraction === 1.0) && isDifferentCycle;
+          const modelQuotaFrac = isModelResetExpired ? 1.0 : Math.max(0, Math.min(1, modelData.quotaInfo.remainingFraction));
           remainingFraction = targetBucket ? Math.min(modelQuotaFrac, targetBucket.remainingFraction) : modelQuotaFrac;
           // IMPORTANT: Google returns the SAME resetTime for all models in a quota group (shared 5h rolling timestamp).
           // For weekly-classified models we MUST use targetBucket.resetTime (the authentic weekly reset time).
           // For 5h models, use raw model resetTime if it passes the 5h boundary check, otherwise fall back to bucket.
-          const rawModelResetTime = modelData.quotaInfo.resetTime;
           if (windowType === 'weekly' && targetBucket?.resetTime) {
             resetTime = targetBucket.resetTime;
           } else if (windowType === '5h' && rawModelResetTime && isResetTimeWithin5Hours(rawModelResetTime)) {
-            resetTime = rawModelResetTime;
+            resetTime = isModelResetExpired ? undefined : rawModelResetTime;
           } else {
-            resetTime = rawModelResetTime || targetBucket?.resetTime;
+            resetTime = (isModelResetExpired ? undefined : rawModelResetTime) || targetBucket?.resetTime;
           }
         } else if (targetBucket) {
           remainingFraction = targetBucket.remainingFraction;
@@ -413,19 +440,28 @@ export class QuotaParser {
         const bucketReset = isResetTimeWithin5Hours(geminiGroup.fiveHour?.resetTime) ? geminiGroup.fiveHour?.resetTime : undefined;
         const rTime = modelReset || bucketReset;
 
-        if (!geminiGroup.fiveHour || minGemini5hModel.remainingFraction < geminiGroup.fiveHour.remainingFraction || (!geminiGroup.fiveHour.resetTime && rTime)) {
-          const frac = Math.min(minGemini5hModel.remainingFraction, geminiGroup.fiveHour?.remainingFraction ?? minGemini5hModel.remainingFraction);
+        if (!geminiGroup.fiveHour) {
           geminiGroup.fiveHour = {
-            bucketId: geminiGroup.fiveHour?.bucketId || 'gemini-5h',
-            displayName: geminiGroup.fiveHour?.displayName || 'Five Hour Limit Remaining',
+            bucketId: 'gemini-5h',
+            displayName: 'Five Hour Limit Remaining',
             window: '5h',
-            remainingFraction: frac,
-            percentage: Math.round(frac * 100),
+            remainingFraction: minGemini5hModel.remainingFraction,
+            percentage: Math.round(minGemini5hModel.remainingFraction * 100),
             resetTime: rTime,
             resetCountdown: rTime ? formatCountdown(rTime) : undefined,
-            description: geminiGroup.fiveHour?.description || 'Rolling 5-hour limit for Gemini models',
+            description: 'Rolling 5-hour limit for Gemini models',
             disabled: false
           };
+        } else if (geminiGroup.fiveHour.remainingFraction === 1.0 && minGemini5hModel.remainingFraction < 1.0) {
+          geminiGroup.fiveHour.remainingFraction = minGemini5hModel.remainingFraction;
+          geminiGroup.fiveHour.percentage = Math.round(minGemini5hModel.remainingFraction * 100);
+          if (rTime) {
+            geminiGroup.fiveHour.resetTime = rTime;
+            geminiGroup.fiveHour.resetCountdown = formatCountdown(rTime);
+          }
+        } else if (!geminiGroup.fiveHour.resetTime && rTime) {
+          geminiGroup.fiveHour.resetTime = rTime;
+          geminiGroup.fiveHour.resetCountdown = formatCountdown(rTime);
         }
       }
     }
@@ -442,19 +478,28 @@ export class QuotaParser {
         const bucketReset = isResetTimeWithin5Hours(claudeGptGroup.fiveHour?.resetTime) ? claudeGptGroup.fiveHour?.resetTime : undefined;
         const rTime = modelReset || bucketReset;
 
-        if (!claudeGptGroup.fiveHour || minClaude5hModel.remainingFraction < claudeGptGroup.fiveHour.remainingFraction || (!claudeGptGroup.fiveHour.resetTime && rTime)) {
-          const frac = Math.min(minClaude5hModel.remainingFraction, claudeGptGroup.fiveHour?.remainingFraction ?? minClaude5hModel.remainingFraction);
+        if (!claudeGptGroup.fiveHour) {
           claudeGptGroup.fiveHour = {
-            bucketId: claudeGptGroup.fiveHour?.bucketId || '3p-5h',
-            displayName: claudeGptGroup.fiveHour?.displayName || 'Five Hour Limit Remaining',
+            bucketId: '3p-5h',
+            displayName: 'Five Hour Limit Remaining',
             window: '5h',
-            remainingFraction: frac,
-            percentage: Math.round(frac * 100),
+            remainingFraction: minClaude5hModel.remainingFraction,
+            percentage: Math.round(minClaude5hModel.remainingFraction * 100),
             resetTime: rTime,
             resetCountdown: rTime ? formatCountdown(rTime) : undefined,
-            description: claudeGptGroup.fiveHour?.description || 'Rolling 5-hour limit for Claude & GPT models',
+            description: 'Rolling 5-hour limit for Claude & GPT models',
             disabled: false
           };
+        } else if (claudeGptGroup.fiveHour.remainingFraction === 1.0 && minClaude5hModel.remainingFraction < 1.0) {
+          claudeGptGroup.fiveHour.remainingFraction = minClaude5hModel.remainingFraction;
+          claudeGptGroup.fiveHour.percentage = Math.round(minClaude5hModel.remainingFraction * 100);
+          if (rTime) {
+            claudeGptGroup.fiveHour.resetTime = rTime;
+            claudeGptGroup.fiveHour.resetCountdown = formatCountdown(rTime);
+          }
+        } else if (!claudeGptGroup.fiveHour.resetTime && rTime) {
+          claudeGptGroup.fiveHour.resetTime = rTime;
+          claudeGptGroup.fiveHour.resetCountdown = formatCountdown(rTime);
         }
       }
     }
@@ -479,26 +524,39 @@ export class QuotaParser {
         quotaGroups.unshift(geminiGroup);
       }
       if (geminiWeeklyModels.length > 0) {
-        // Filter using _rawResetTime to avoid using 5h-pool data that was re-tagged with weekly resetTime.
-        const genuineWeeklyModels = geminiWeeklyModels.filter(
-          (q: any) => q._rawResetTime && isResetTimeBeyond5Hours(q._rawResetTime)
-        );
+        const genuineWeeklyModels = geminiWeeklyModels.filter((q: any) => {
+          if (!q._rawResetTime || !isResetTimeBeyond5Hours(q._rawResetTime)) return false;
+          if (geminiGroup?.weekly?.resetTime) {
+            const diffToGroup = new Date(geminiGroup.weekly.resetTime).getTime() - new Date(q._rawResetTime).getTime();
+            if (diffToGroup > 24 * 3600 * 1000) return false;
+          }
+          return true;
+        });
         if (genuineWeeklyModels.length > 0) {
           const minGeminiWeeklyModel = genuineWeeklyModels.reduce((prev: any, curr: any) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
-          if (!geminiGroup.weekly || minGeminiWeeklyModel.remainingFraction < geminiGroup.weekly.remainingFraction || (!geminiGroup.weekly.resetTime && minGeminiWeeklyModel.resetTime)) {
-            const rTime = minGeminiWeeklyModel.resetTime || geminiGroup.weekly?.resetTime;
-            const frac = Math.min(minGeminiWeeklyModel.remainingFraction, geminiGroup.weekly?.remainingFraction ?? minGeminiWeeklyModel.remainingFraction);
+          if (!geminiGroup.weekly) {
+            const rTime = minGeminiWeeklyModel.resetTime;
             geminiGroup.weekly = {
-              bucketId: geminiGroup.weekly?.bucketId || 'gemini-weekly',
-              displayName: geminiGroup.weekly?.displayName || 'Weekly Limit Remaining',
+              bucketId: 'gemini-weekly',
+              displayName: 'Weekly Limit Remaining',
               window: 'weekly',
-              remainingFraction: frac,
-              percentage: Math.round(frac * 100),
+              remainingFraction: minGeminiWeeklyModel.remainingFraction,
+              percentage: Math.round(minGeminiWeeklyModel.remainingFraction * 100),
               resetTime: rTime,
               resetCountdown: rTime ? formatCountdown(rTime) : undefined,
-              description: geminiGroup.weekly?.description || 'Weekly plan limit for Gemini models',
+              description: 'Weekly plan limit for Gemini models',
               disabled: false
             };
+          } else if (geminiGroup.weekly.remainingFraction === 1.0 && minGeminiWeeklyModel.remainingFraction < 1.0 && minGeminiWeeklyModel.resetTime && new Date(minGeminiWeeklyModel.resetTime).getTime() > Date.now()) {
+            geminiGroup.weekly.remainingFraction = minGeminiWeeklyModel.remainingFraction;
+            geminiGroup.weekly.percentage = Math.round(minGeminiWeeklyModel.remainingFraction * 100);
+            if (minGeminiWeeklyModel.resetTime) {
+              geminiGroup.weekly.resetTime = minGeminiWeeklyModel.resetTime;
+              geminiGroup.weekly.resetCountdown = formatCountdown(minGeminiWeeklyModel.resetTime);
+            }
+          } else if (!geminiGroup.weekly.resetTime && minGeminiWeeklyModel.resetTime && new Date(minGeminiWeeklyModel.resetTime).getTime() > Date.now()) {
+            geminiGroup.weekly.resetTime = minGeminiWeeklyModel.resetTime;
+            geminiGroup.weekly.resetCountdown = formatCountdown(minGeminiWeeklyModel.resetTime);
           }
         }
         // If no genuine weekly signal (all Pro models have 5h-style raw resetTimes), UQS bucket is authoritative.
@@ -537,24 +595,34 @@ export class QuotaParser {
     if (claudeGptGroup) {
       const claudeWeeklyModels = parsedQuotas.filter(
         (q) => ((q.groupName || '').toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')) &&
-               q.windowType === 'weekly' && !q.disabled && q.percentage >= 0
+               q.windowType === 'weekly' && !q.disabled && q.percentage >= 0 &&
+               (!q.resetTime || new Date(q.resetTime).getTime() > Date.now())
       );
       if (claudeWeeklyModels.length > 0) {
         const minClaudeWeeklyModel = claudeWeeklyModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
-        if (!claudeGptGroup.weekly || minClaudeWeeklyModel.remainingFraction < claudeGptGroup.weekly.remainingFraction || (!claudeGptGroup.weekly.resetTime && minClaudeWeeklyModel.resetTime)) {
-          const rTime = minClaudeWeeklyModel.resetTime || claudeGptGroup.weekly?.resetTime;
-          const frac = Math.min(minClaudeWeeklyModel.remainingFraction, claudeGptGroup.weekly?.remainingFraction ?? minClaudeWeeklyModel.remainingFraction);
+        if (!claudeGptGroup.weekly) {
+          const rTime = minClaudeWeeklyModel.resetTime;
           claudeGptGroup.weekly = {
-            bucketId: claudeGptGroup.weekly?.bucketId || '3p-weekly',
-            displayName: claudeGptGroup.weekly?.displayName || 'Weekly Limit Remaining',
+            bucketId: '3p-weekly',
+            displayName: 'Weekly Limit Remaining',
             window: 'weekly',
-            remainingFraction: frac,
-            percentage: Math.round(frac * 100),
+            remainingFraction: minClaudeWeeklyModel.remainingFraction,
+            percentage: Math.round(minClaudeWeeklyModel.remainingFraction * 100),
             resetTime: rTime,
             resetCountdown: rTime ? formatCountdown(rTime) : undefined,
-            description: claudeGptGroup.weekly?.description || 'Weekly plan limit for Claude & GPT models',
+            description: 'Weekly plan limit for Claude & GPT models',
             disabled: false
           };
+        } else if (claudeGptGroup.weekly.remainingFraction === 1.0 && minClaudeWeeklyModel.remainingFraction < 1.0 && minClaudeWeeklyModel.resetTime && new Date(minClaudeWeeklyModel.resetTime).getTime() > Date.now()) {
+          claudeGptGroup.weekly.remainingFraction = minClaudeWeeklyModel.remainingFraction;
+          claudeGptGroup.weekly.percentage = Math.round(minClaudeWeeklyModel.remainingFraction * 100);
+          if (minClaudeWeeklyModel.resetTime) {
+            claudeGptGroup.weekly.resetTime = minClaudeWeeklyModel.resetTime;
+            claudeGptGroup.weekly.resetCountdown = formatCountdown(minClaudeWeeklyModel.resetTime);
+          }
+        } else if (!claudeGptGroup.weekly.resetTime && minClaudeWeeklyModel.resetTime && new Date(minClaudeWeeklyModel.resetTime).getTime() > Date.now()) {
+          claudeGptGroup.weekly.resetTime = minClaudeWeeklyModel.resetTime;
+          claudeGptGroup.weekly.resetCountdown = formatCountdown(minClaudeWeeklyModel.resetTime);
         }
       }
     }

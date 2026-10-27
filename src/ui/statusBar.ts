@@ -64,7 +64,15 @@ export class StatusBarService implements vscode.Disposable {
     );
     const activePct = active.averageQuotaPercentage ?? 0;
 
-    const minQuota = Math.min(geminiPct, claudePct);
+    const autoSwitchTarget = this.accountService.getAutoSwitchTarget();
+    let targetQuota: number;
+    if (autoSwitchTarget === "gemini") {
+      targetQuota = geminiPct;
+    } else if (autoSwitchTarget === "claude") {
+      targetQuota = claudePct;
+    } else {
+      targetQuota = accountInstantPct;
+    }
 
     // Color indicator based on quota health
     let icon = "$(zap)";
@@ -73,7 +81,7 @@ export class StatusBarService implements vscode.Disposable {
       this.statusBarItem.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.errorBackground",
       );
-    } else if (minQuota < 20 || activePct < 20) {
+    } else if (targetQuota < 20) {
       icon = "$(warning)";
       this.statusBarItem.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.warningBackground",
@@ -103,7 +111,7 @@ export class StatusBarService implements vscode.Disposable {
     // Active account info
     const accountHealthIcon = active.isBanned
       ? "$(error)"
-      : minQuota < 20
+      : targetQuota < 20
         ? "$(warning)"
         : "$(check)";
     const emailCode = `\`${active.email}\``;

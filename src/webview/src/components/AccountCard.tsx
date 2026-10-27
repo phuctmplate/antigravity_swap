@@ -57,23 +57,29 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const fiveHourQuotas = isFree ? [] : quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
   const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
 
+  // Resolve bucket with real-time expiration guard: If a bucket has a resetTime that has passed, it has reset to 100%
+  const resolveBucket = (b?: any) => {
+    if (!b || b.disabled) return undefined;
+    const isExpired = b.resetTime && new Date(b.resetTime).getTime() <= Date.now();
+    if (isExpired) {
+      return {
+        ...b,
+        remainingFraction: 1.0,
+        percentage: 100,
+        resetTime: undefined,
+        resetCountdown: b.window === 'weekly' ? '6d 23h' : 'Ready'
+      };
+    }
+    return b;
+  };
+
   // Gemini buckets: Free tier strictly has no 5h bucket
-  const gemini5h = isFree ? undefined : (geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')));
-  const rawGeminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
-  const minGeminiWeeklyModel = weeklyQuotas.filter((q) => (q.groupName || '').toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'))
-    .reduce((prev, curr) => (!prev || curr.percentage < prev.percentage ? curr : prev), undefined as any);
-  const geminiWeekly = rawGeminiWeekly && minGeminiWeeklyModel && minGeminiWeeklyModel.percentage < rawGeminiWeekly.percentage
-    ? { ...rawGeminiWeekly, percentage: minGeminiWeeklyModel.percentage, remainingFraction: minGeminiWeeklyModel.remainingFraction }
-    : rawGeminiWeekly;
+  const gemini5h = isFree ? undefined : resolveBucket(geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')));
+  const geminiWeekly = resolveBucket(geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro')));
 
   // Claude & GPT buckets: Free tier strictly has no 5h bucket
-  const claude5h = isFree ? undefined : (claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
-  const rawClaudeWeekly = claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
-  const minClaudeWeeklyModel = weeklyQuotas.filter((q) => (q.groupName || '').toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'))
-    .reduce((prev, curr) => (!prev || curr.percentage < prev.percentage ? curr : prev), undefined as any);
-  const claudeWeekly = rawClaudeWeekly && minClaudeWeeklyModel && minClaudeWeeklyModel.percentage < rawClaudeWeekly.percentage
-    ? { ...rawClaudeWeekly, percentage: minClaudeWeeklyModel.percentage, remainingFraction: minClaudeWeeklyModel.remainingFraction }
-    : rawClaudeWeekly;
+  const claude5h = isFree ? undefined : resolveBucket(claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
+  const claudeWeekly = resolveBucket(claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
 
   // Validity checks for buckets
   const validGemini5h = gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0;
@@ -163,14 +169,20 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const getCountdown = (b?: { resetCountdown?: string; description?: string; window?: string }) => {
     if (!b) return undefined;
     const cd = b.resetCountdown || parseCountdownFromDescription(b.description);
-    if (!cd) return undefined;
+    if (!cd) {
+      if (b.window === 'weekly') return '6d 23h';
+      return undefined;
+    }
     // Physical safeguard: A 5h rolling window by definition cannot reset in days
     if (b.window === '5h' && /\b\d+\s*d\b/i.test(cd)) {
       return undefined;
     }
     // Physical safeguard: A weekly window countdown cannot be hours/minutes if derived from description
     if (b.window === 'weekly' && !b.resetCountdown && !/\b\d+\s*d\b/i.test(cd)) {
-      return undefined;
+      return '6d 23h';
+    }
+    if (b.window === 'weekly' && cd.toLowerCase().includes('ready')) {
+      return '6d 23h';
     }
     return cd;
   };
@@ -179,6 +191,9 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const bucketNote = (b: { disabled?: boolean; notStarted?: boolean; resetCountdown?: string; description?: string; window?: string }) => {
     const cd = getCountdown(b);
     if (!cd) return '';
+    if (b.window === 'weekly' && cd.toLowerCase().includes('ready')) {
+      return '• resets 6d 23h';
+    }
     return cd.toLowerCase().includes('ready') ? '• Ready' : `• resets ${cd}`;
   };
 
@@ -386,9 +401,15 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 )}
               </div>
               <div className="text-[10px] text-muted-foreground truncate">{account.email}</div>
-              {account.statusMessage && (
-                <div className="text-[10px] text-amber-400 mt-0.5">{account.statusMessage}</div>
-              )}
+              {(() => {
+                const isGeminiHealthy = (geminiInstant != null && geminiInstant > 0) || (geminiWeekly?.percentage != null && geminiWeekly.percentage > 0);
+                const isClaudeHealthy = (claudeInstant != null && claudeInstant > 0) || (claudeWeekly?.percentage != null && claudeWeekly.percentage > 0);
+                const isStaleDepletionMsg = (isGeminiHealthy && isClaudeHealthy) && (account.statusMessage || '').includes('depleted');
+                if (account.statusMessage && !isStaleDepletionMsg) {
+                  return <div className="text-[10px] text-amber-400 mt-0.5">{account.statusMessage}</div>;
+                }
+                return null;
+              })()}
             </div>
           </div>
         </div>
@@ -487,7 +508,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                       <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
                         {validGeminiWk && getCountdown(geminiWeekly) && (
                           <span className="text-muted-foreground/80 font-normal">
-                            {getCountdown(geminiWeekly)!.toLowerCase().includes('ready') ? 'Ready' : `resets ${getCountdown(geminiWeekly)}`}
+                            {getCountdown(geminiWeekly)!.toLowerCase().includes('ready') ? 'resets 6d 23h' : `resets ${getCountdown(geminiWeekly)}`}
                           </span>
                         )}
                         {validGeminiWk && getCountdown(geminiWeekly) && <span className="text-muted-foreground/50 font-normal">•</span>}
@@ -586,7 +607,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                       <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
                         {validClaudeWk && getCountdown(claudeWeekly) && (
                           <span className="text-muted-foreground/80 font-normal">
-                            {getCountdown(claudeWeekly)!.toLowerCase().includes('ready') ? 'Ready' : `resets ${getCountdown(claudeWeekly)}`}
+                            {getCountdown(claudeWeekly)!.toLowerCase().includes('ready') ? 'resets 6d 23h' : `resets ${getCountdown(claudeWeekly)}`}
                           </span>
                         )}
                         {validClaudeWk && getCountdown(claudeWeekly) && <span className="text-muted-foreground/50 font-normal">•</span>}
