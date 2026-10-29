@@ -31,6 +31,7 @@ export interface QuotaFetchResult {
   quotaGroups?: QuotaGroup[];
   geminiGroup?: QuotaGroup;
   claudeGptGroup?: QuotaGroup;
+  argonGroup?: QuotaGroup;
   averagePercentage: number;
   fiveHourPercentage?: number;
   weeklyPercentage?: number;
@@ -66,6 +67,7 @@ export class QuotaParser {
         quotaGroups: account.quotaGroups,
         geminiGroup: account.geminiGroup,
         claudeGptGroup: account.claudeGptGroup,
+        argonGroup: account.argonGroup,
         averagePercentage: account.averageQuotaPercentage ?? 0,
         fiveHourPercentage: account.fiveHourQuotaPercentage,
         weeklyPercentage: account.weeklyQuotaPercentage,
@@ -85,6 +87,8 @@ export class QuotaParser {
 
     const { accountType, tierBadge } = determineAccountTier(quotaData, account);
     const isFree = tierBadge === 'STANDARD FREE';
+    const isPro = tierBadge === 'PRO' || tierBadge === 'AI PREMIUM';
+    const isUltra = tierBadge === 'ULTRA' || tierBadge === 'ENTERPRISE';
     console.log(`[QuotaService] Tier detected: ${tierBadge} (${accountType}) for ${account.email}`);
 
     const groups = quotaData?.response?.groups || quotaData?.groups || [];
@@ -93,21 +97,39 @@ export class QuotaParser {
 
     let geminiGroup: QuotaGroup | undefined;
     let claudeGptGroup: QuotaGroup | undefined;
+    let argonGroup: QuotaGroup | undefined;
 
     for (const g of groups) {
       const gDisplayName = g.displayName || '';
       const gNameLower = gDisplayName.toLowerCase();
-      const isGemini = gNameLower.includes('gemini');
+      const isArgon = gNameLower.includes('argon');
+      const isGemini = gNameLower.includes('gemini') && !isArgon;
       const isClaudeGpt = gNameLower.includes('claude') || gNameLower.includes('gpt') || gNameLower.includes('3p');
-      const groupId = isGemini ? 'gemini' : isClaudeGpt ? 'claude_gpt' : gDisplayName.toLowerCase().replace(/\s+/g, '_');
+
+      // Argon model is only available on Pro and Ultra plans (never on Free tier)
+      if (isArgon && isFree) {
+        continue;
+      }
+
+      // On Ultra plan, Argon is merged into the Gemini bucket rather than a separate group
+      const effectiveIsGemini = isGemini || (isArgon && isUltra);
+      const effectiveIsArgon = isArgon && isPro;
+      const groupId = effectiveIsGemini
+        ? 'gemini'
+        : isClaudeGpt
+          ? 'claude_gpt'
+          : effectiveIsArgon
+            ? 'argon'
+            : gDisplayName.toLowerCase().replace(/\s+/g, '_');
 
       let group5h: QuotaBucket | undefined;
       let groupWeekly: QuotaBucket | undefined;
       const buckets: QuotaBucket[] = [];
 
       for (const b of (g.buckets || [])) {
-        const is5h = is5HourBucket(b.window, b.bucketId, b.displayName);
-        const isWeekly = isWeeklyBucket(b.window, b.bucketId, b.displayName);
+        // On Pro plan, Argon bucket ONLY has a Weekly window
+        const is5h = effectiveIsArgon ? false : is5HourBucket(b.window, b.bucketId, b.displayName);
+        const isWeekly = effectiveIsArgon ? true : isWeeklyBucket(b.window, b.bucketId, b.displayName);
 
         const windowType: '5h' | 'weekly' = is5h ? '5h' : 'weekly';
         let remainingFraction = extractFraction(b);
@@ -127,6 +149,9 @@ export class QuotaParser {
         let resetCountdown = validDescCountdown || (resetTime ? formatCountdown(resetTime) : undefined);
         if (windowType === '5h' && resetCountdown && /\b\d+\s*d\b/i.test(resetCountdown)) {
           resetCountdown = undefined;
+        }
+        if (!resetCountdown && percentage >= 100) {
+          resetCountdown = 'Ready';
         }
 
         const bucket: QuotaBucket = {
@@ -149,7 +174,7 @@ export class QuotaParser {
       // Safe fallback if bucket naming didn't explicitly match keywords
       if (buckets.length > 0) {
         if (!group5h && !groupWeekly) {
-          if (isFree) {
+          if (isFree || effectiveIsArgon) {
             groupWeekly = buckets[0];
           } else {
             group5h = buckets[0];
@@ -157,28 +182,45 @@ export class QuotaParser {
         }
       }
 
-      // Free tier accounts never have a 5-hour rolling limit window
-      if (isFree) {
+      // Free tier accounts and Pro-tier Argon buckets never have a 5-hour rolling limit window
+      if (isFree || effectiveIsArgon) {
         group5h = undefined;
+      }
+
+      // If Ultra had a separate Argon group in raw response and geminiGroup already exists, merge into geminiGroup
+      if (isArgon && isUltra && geminiGroup) {
+        if (groupWeekly && (!geminiGroup.weekly || groupWeekly.remainingFraction < geminiGroup.weekly.remainingFraction)) {
+          geminiGroup.weekly = groupWeekly;
+        }
+        if (group5h && (!geminiGroup.fiveHour || group5h.remainingFraction < geminiGroup.fiveHour.remainingFraction)) {
+          geminiGroup.fiveHour = group5h;
+        }
+        continue;
       }
 
       const qg: QuotaGroup = {
         id: groupId,
-        name: gDisplayName || (isGemini ? 'Gemini Models' : 'Claude and GPT models'),
+        name: effectiveIsArgon
+          ? 'Argon Models'
+          : effectiveIsGemini
+            ? 'Gemini Models'
+            : (gDisplayName || 'Claude and GPT models'),
         description: g.description,
-        fiveHour: isFree ? undefined : group5h,
+        fiveHour: (isFree || effectiveIsArgon) ? undefined : group5h,
         weekly: groupWeekly,
-        buckets
+        buckets: effectiveIsArgon ? (groupWeekly ? [groupWeekly] : []) : buckets
       };
 
       quotaGroups.push(qg);
-      if (isGemini) geminiGroup = qg;
+      if (effectiveIsGemini) geminiGroup = qg;
       if (isClaudeGpt) claudeGptGroup = qg;
+      if (effectiveIsArgon) argonGroup = qg;
     }
 
     // Merge/preserve previous data from account if new response is missing any group or bucket
-    const prevGemini = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+    const prevGemini = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || (g.name.toLowerCase().includes('gemini') && !g.name.toLowerCase().includes('argon')));
     const prevClaude = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+    const prevArgon = account.argonGroup || account.quotaGroups?.find((g) => g.id === 'argon' || g.name.toLowerCase().includes('argon'));
 
     const resolvePrevBucket = (b?: QuotaBucket): QuotaBucket | undefined => {
       if (!b) return undefined;
@@ -189,13 +231,7 @@ export class QuotaParser {
           remainingFraction: 1.0,
           percentage: 100,
           resetTime: undefined,
-          resetCountdown: b.window === 'weekly' ? '6d 23h' : 'Ready'
-        };
-      }
-      if (b.window === 'weekly' && b.resetCountdown === 'Ready') {
-        return {
-          ...b,
-          resetCountdown: '6d 23h'
+          resetCountdown: 'Ready'
         };
       }
       return b;
@@ -233,6 +269,32 @@ export class QuotaParser {
       }
     }
 
+    const hasArgonInNewData = groups.some((g: any) => (g.displayName || '').toLowerCase().includes('argon')) ||
+      Object.keys(quotaData?.models || {}).some((id: string) => id.toLowerCase().includes('argon'));
+
+    if (isPro && hasArgonInNewData) {
+      if (!argonGroup && prevArgon) {
+        const resolvedWk = resolvePrevBucket(prevArgon.weekly);
+        argonGroup = {
+          ...prevArgon,
+          id: 'argon',
+          name: 'Argon Models',
+          fiveHour: undefined,
+          weekly: resolvedWk,
+          buckets: resolvedWk ? [resolvedWk] : []
+        };
+        quotaGroups.push(argonGroup);
+      } else if (argonGroup && prevArgon) {
+        argonGroup.fiveHour = undefined;
+        if (!argonGroup.weekly && prevArgon.weekly) {
+          argonGroup.weekly = resolvePrevBucket(prevArgon.weekly);
+        }
+        argonGroup.buckets = argonGroup.weekly ? [argonGroup.weekly] : [];
+      }
+    } else {
+      argonGroup = undefined;
+    }
+
     // Critical: If account downgraded from Pro/Ultra to Free tier, strictly purge 5h buckets
     if (isFree) {
       if (geminiGroup) geminiGroup.fiveHour = undefined;
@@ -248,6 +310,7 @@ export class QuotaParser {
 
     const shouldIgnoreModel = (id: string, name: string): boolean => {
       const s = (id + ' ' + name).toLowerCase();
+      if (s.includes('argon')) return false;
       return (
         s.startsWith('tab_') ||
         s.startsWith('tab-') ||
@@ -267,18 +330,38 @@ export class QuotaParser {
         const displayName = formatModelDisplayName(modelId, modelData.displayName);
         if (shouldIgnoreModel(modelId, displayName)) continue;
 
+        const idLower = (modelId + ' ' + displayName).toLowerCase();
+        const isArgonModel = idLower.includes('argon');
+
+        // Argon model is only available on Pro and Ultra plans
+        if (isArgonModel && isFree) continue;
+
         const normId = normalizeModelKey(modelId);
         if (seenIds.has(normId)) continue;
         seenIds.add(normId);
 
-        const idLower = (modelId + ' ' + displayName).toLowerCase();
-        const isGemini = idLower.includes('gemini') || idLower.includes('flash');
-        const isClaudeGpt = idLower.includes('claude') || idLower.includes('gpt') || idLower.includes('opus') || idLower.includes('sonnet');
+        // On Pro plan, Argon is separated into its own weekly-only bucket.
+        // On Ultra plan, Argon is merged into the Gemini bucket.
+        const isProArgon = isArgonModel && isPro;
+        const isGemini = !isProArgon && (isArgonModel || idLower.includes('gemini') || idLower.includes('flash'));
+        const isClaudeGpt = !isArgonModel && (idLower.includes('claude') || idLower.includes('gpt') || idLower.includes('opus') || idLower.includes('sonnet'));
 
-        const knownWeeklyReset = isGemini ? geminiGroup?.weekly?.resetTime : isClaudeGpt ? claudeGptGroup?.weekly?.resetTime : undefined;
-        const known5HourReset = isGemini ? geminiGroup?.fiveHour?.resetTime : isClaudeGpt ? claudeGptGroup?.fiveHour?.resetTime : undefined;
+        const knownWeeklyReset = isProArgon
+          ? argonGroup?.weekly?.resetTime
+          : isGemini
+            ? geminiGroup?.weekly?.resetTime
+            : isClaudeGpt
+              ? claudeGptGroup?.weekly?.resetTime
+              : undefined;
+        const known5HourReset = isProArgon
+          ? undefined
+          : isGemini
+            ? geminiGroup?.fiveHour?.resetTime
+            : isClaudeGpt
+              ? claudeGptGroup?.fiveHour?.resetTime
+              : undefined;
         const resetTimeCandidate = modelData.quotaInfo?.resetTime || modelData.resetTime;
-        const { windowType, windowLabel } = classifyQuotaWindow(
+        const classified = classifyQuotaWindow(
           modelId,
           displayName,
           resetTimeCandidate,
@@ -287,9 +370,13 @@ export class QuotaParser {
           known5HourReset,
           isFree
         );
+        const windowType: '5h' | 'weekly' | 'tab' | 'general' = isProArgon ? 'weekly' : classified.windowType;
+        const windowLabel = isProArgon ? 'Weekly Quota' : classified.windowLabel;
 
         let targetBucket: QuotaBucket | undefined;
-        if (isGemini) {
+        if (isProArgon) {
+          targetBucket = argonGroup?.weekly;
+        } else if (isGemini) {
           targetBucket = windowType === '5h' ? (geminiGroup?.fiveHour || geminiGroup?.weekly) : (geminiGroup?.weekly || geminiGroup?.fiveHour);
         } else if (isClaudeGpt) {
           targetBucket = windowType === '5h' ? (claudeGptGroup?.fiveHour || claudeGptGroup?.weekly) : (claudeGptGroup?.weekly || claudeGptGroup?.fiveHour);
@@ -303,22 +390,31 @@ export class QuotaParser {
 
         if (hasModelQuota) {
           const rawModelResetTime = modelData.quotaInfo.resetTime;
-          const isDifferentCycle = targetBucket?.resetTime && rawModelResetTime
-            ? (new Date(targetBucket.resetTime).getTime() - new Date(rawModelResetTime).getTime() > 24 * 3600 * 1000)
-            : false;
-          const isModelResetExpired = (targetBucket?.remainingFraction === 1.0) && isDifferentCycle;
-          const modelQuotaFrac = isModelResetExpired ? 1.0 : Math.max(0, Math.min(1, modelData.quotaInfo.remainingFraction));
-          remainingFraction = targetBucket ? Math.min(modelQuotaFrac, targetBucket.remainingFraction) : modelQuotaFrac;
-          // IMPORTANT: Google returns the SAME resetTime for all models in a quota group (shared 5h rolling timestamp).
-          // For weekly-classified models we MUST use targetBucket.resetTime (the authentic weekly reset time).
-          // For 5h models, use raw model resetTime if it passes the 5h boundary check, otherwise fall back to bucket.
-          if (windowType === 'weekly' && targetBucket?.resetTime) {
-            resetTime = targetBucket.resetTime;
-          } else if (windowType === '5h' && rawModelResetTime && isResetTimeWithin5Hours(rawModelResetTime)) {
-            resetTime = isModelResetExpired ? undefined : rawModelResetTime;
+          const rawModelFrac = Math.max(0, Math.min(1, modelData.quotaInfo.remainingFraction));
+
+          if (isProArgon) {
+            // For Argon on Pro plan, the model's authentic quotaInfo from Google API is ground truth
+            remainingFraction = rawModelFrac;
+            resetTime = rawModelResetTime || targetBucket?.resetTime;
           } else {
-            resetTime = (isModelResetExpired ? undefined : rawModelResetTime) || targetBucket?.resetTime;
+            const isDifferentCycle = targetBucket?.resetTime && rawModelResetTime
+              ? (new Date(targetBucket.resetTime).getTime() - new Date(rawModelResetTime).getTime() > 24 * 3600 * 1000)
+              : false;
+            const isPastResetTime = rawModelResetTime ? (new Date(rawModelResetTime).getTime() <= Date.now()) : false;
+            const isModelResetExpired = isPastResetTime && isDifferentCycle;
+            const modelQuotaFrac = isModelResetExpired ? 1.0 : rawModelFrac;
+            remainingFraction = targetBucket ? Math.min(modelQuotaFrac, targetBucket.remainingFraction) : modelQuotaFrac;
+            if (windowType === 'weekly' && targetBucket?.resetTime) {
+              resetTime = targetBucket.resetTime;
+            } else if (windowType === '5h' && rawModelResetTime && isResetTimeWithin5Hours(rawModelResetTime)) {
+              resetTime = isModelResetExpired ? undefined : rawModelResetTime;
+            } else {
+              resetTime = (isModelResetExpired ? undefined : rawModelResetTime) || targetBucket?.resetTime;
+            }
           }
+        } else if (isProArgon && typeof modelFraction === 'number') {
+          remainingFraction = modelFraction;
+          resetTime = modelData.resetTime || targetBucket?.resetTime;
         } else if (targetBucket) {
           remainingFraction = targetBucket.remainingFraction;
           resetTime = targetBucket.resetTime;
@@ -338,7 +434,13 @@ export class QuotaParser {
         parsedQuotas.push({
           id: modelId,
           displayName,
-          groupName: isGemini ? 'Gemini Models' : isClaudeGpt ? 'Claude and GPT models' : (targetBucket?.displayName || 'Other Models'),
+          groupName: isProArgon
+            ? 'Argon Models'
+            : isGemini
+              ? 'Gemini Models'
+              : isClaudeGpt
+                ? 'Claude and GPT models'
+                : (targetBucket?.displayName || 'Other Models'),
           description: targetBucket?.description || modelData.description,
           remainingFraction,
           percentage,
@@ -352,7 +454,7 @@ export class QuotaParser {
       }
     }
 
-    if (parsedQuotas.length === 0 && (geminiGroup || claudeGptGroup)) {
+    if (parsedQuotas.length === 0 && (geminiGroup || claudeGptGroup || argonGroup)) {
       if (geminiGroup) {
         const g5h = geminiGroup.fiveHour;
         const gWk = geminiGroup.weekly;
@@ -381,6 +483,37 @@ export class QuotaParser {
           windowType: 'weekly',
           windowLabel: 'Weekly Quota',
           disabled: gWk?.disabled ?? false
+        });
+        if (isUltra) {
+          parsedQuotas.push({
+            id: 'gemini-4-argon',
+            displayName: 'Gemini 4 Argon',
+            groupName: 'Gemini Models',
+            description: gWk?.description || 'Frontier reasoning model (merged into Gemini bucket on Ultra)',
+            remainingFraction: gWk ? gWk.remainingFraction : (g5h ? g5h.remainingFraction : 1.0),
+            percentage: gWk ? gWk.percentage : (g5h ? g5h.percentage : 100),
+            resetTime: gWk?.resetTime,
+            resetCountdown: gWk?.resetCountdown,
+            windowType: 'weekly',
+            windowLabel: 'Weekly Quota',
+            disabled: gWk?.disabled ?? false
+          });
+        }
+      }
+      if (isPro && argonGroup) {
+        const aWk = argonGroup.weekly;
+        parsedQuotas.push({
+          id: 'gemini-4-argon',
+          displayName: 'Gemini 4 Argon',
+          groupName: 'Argon Models',
+          description: aWk?.description || 'Dedicated weekly quota bucket for Argon on Pro plan',
+          remainingFraction: aWk ? aWk.remainingFraction : 1.0,
+          percentage: aWk ? aWk.percentage : 100,
+          resetTime: aWk?.resetTime,
+          resetCountdown: aWk?.resetCountdown,
+          windowType: 'weekly',
+          windowLabel: 'Weekly Quota',
+          disabled: aWk?.disabled ?? false
         });
       }
       if (claudeGptGroup) {
@@ -547,7 +680,7 @@ export class QuotaParser {
               description: 'Weekly plan limit for Gemini models',
               disabled: false
             };
-          } else if (geminiGroup.weekly.remainingFraction === 1.0 && minGeminiWeeklyModel.remainingFraction < 1.0 && minGeminiWeeklyModel.resetTime && new Date(minGeminiWeeklyModel.resetTime).getTime() > Date.now()) {
+          } else if (minGeminiWeeklyModel.remainingFraction < geminiGroup.weekly.remainingFraction || geminiGroup.weekly.remainingFraction === 1.0) {
             geminiGroup.weekly.remainingFraction = minGeminiWeeklyModel.remainingFraction;
             geminiGroup.weekly.percentage = Math.round(minGeminiWeeklyModel.remainingFraction * 100);
             if (minGeminiWeeklyModel.resetTime) {
@@ -583,6 +716,17 @@ export class QuotaParser {
           disabled: false
         };
       }
+      if (!geminiGroup.fiveHour && !isFree) {
+        geminiGroup.fiveHour = {
+          bucketId: 'gemini-5h',
+          displayName: 'Five Hour Limit Remaining',
+          window: '5h',
+          remainingFraction: 1.0,
+          percentage: 100,
+          resetCountdown: 'Ready',
+          disabled: false
+        };
+      }
     }
     if (geminiGroup) {
       const bList: QuotaBucket[] = [];
@@ -613,7 +757,7 @@ export class QuotaParser {
             description: 'Weekly plan limit for Claude & GPT models',
             disabled: false
           };
-        } else if (claudeGptGroup.weekly.remainingFraction === 1.0 && minClaudeWeeklyModel.remainingFraction < 1.0 && minClaudeWeeklyModel.resetTime && new Date(minClaudeWeeklyModel.resetTime).getTime() > Date.now()) {
+        } else if ((minClaudeWeeklyModel.remainingFraction < claudeGptGroup.weekly.remainingFraction || claudeGptGroup.weekly.remainingFraction === 1.0) && minClaudeWeeklyModel.resetTime && new Date(minClaudeWeeklyModel.resetTime).getTime() > Date.now()) {
           claudeGptGroup.weekly.remainingFraction = minClaudeWeeklyModel.remainingFraction;
           claudeGptGroup.weekly.percentage = Math.round(minClaudeWeeklyModel.remainingFraction * 100);
           if (minClaudeWeeklyModel.resetTime) {
@@ -624,6 +768,96 @@ export class QuotaParser {
           claudeGptGroup.weekly.resetTime = minClaudeWeeklyModel.resetTime;
           claudeGptGroup.weekly.resetCountdown = formatCountdown(minClaudeWeeklyModel.resetTime);
         }
+      }
+    }
+
+    // Synchronize Argon Weekly bucket on Pro accounts (Argon is weekly-only on Pro, merged into Gemini on Ultra)
+    // ONLY if the Pro account actually has an Argon group or Argon models in its subscription
+    if (isPro) {
+      const argonModels = parsedQuotas.filter(
+        (q) => (q.groupName || '').toLowerCase().includes('argon') || (q.id + ' ' + q.displayName).toLowerCase().includes('argon')
+      );
+      const hasArgon = Boolean(argonGroup) || argonModels.length > 0;
+      if (hasArgon) {
+        if (!argonGroup) {
+          argonGroup = {
+            id: 'argon',
+            name: 'Argon Models',
+            description: 'Models within this group: Gemini 4 Argon (Weekly Quota)',
+            fiveHour: undefined,
+            buckets: []
+          };
+          quotaGroups.push(argonGroup);
+        }
+        if (argonModels.length > 0) {
+          const minArgonModel = argonModels.reduce((prev, curr) => (curr.remainingFraction < prev.remainingFraction ? curr : prev));
+          const rTime = minArgonModel.resetTime;
+          argonGroup.weekly = {
+            bucketId: 'argon-weekly',
+            displayName: 'Weekly Limit Remaining',
+            window: 'weekly',
+            remainingFraction: minArgonModel.remainingFraction,
+            percentage: Math.round(minArgonModel.remainingFraction * 100),
+            resetTime: rTime,
+            resetCountdown: rTime ? formatCountdown(rTime) : undefined,
+            description: 'Weekly plan limit for Argon models',
+            disabled: false
+          };
+        }
+        argonGroup.fiveHour = undefined;
+        argonGroup.buckets = argonGroup.weekly ? [argonGroup.weekly] : [];
+
+        // Ensure Gemini 4 Argon model entry exists in parsedQuotas for Pro accounts with Argon
+        if (argonGroup.weekly) {
+          const argonIdx = parsedQuotas.findIndex((q) => (q.id + ' ' + q.displayName).toLowerCase().includes('argon'));
+          if (argonIdx >= 0) {
+            parsedQuotas[argonIdx].remainingFraction = argonGroup.weekly.remainingFraction;
+            parsedQuotas[argonIdx].percentage = argonGroup.weekly.percentage;
+            parsedQuotas[argonIdx].resetTime = argonGroup.weekly.resetTime;
+            parsedQuotas[argonIdx].resetCountdown = argonGroup.weekly.resetCountdown;
+          } else {
+            parsedQuotas.push({
+              id: 'gemini-4-argon',
+              displayName: 'Gemini 4 Argon',
+              groupName: 'Argon Models',
+              description: argonGroup.weekly.description || 'Weekly plan limit for Argon models',
+              remainingFraction: argonGroup.weekly.remainingFraction,
+              percentage: argonGroup.weekly.percentage,
+              resetTime: argonGroup.weekly.resetTime,
+              resetCountdown: argonGroup.weekly.resetCountdown,
+              windowType: 'weekly',
+              windowLabel: 'Weekly Quota',
+              disabled: argonGroup.weekly.disabled ?? false
+            });
+            parsedQuotas = sortModelQuotas(parsedQuotas);
+          }
+        }
+      } else {
+        argonGroup = undefined;
+        const idx = quotaGroups.findIndex((g) => g.id === 'argon');
+        if (idx >= 0) quotaGroups.splice(idx, 1);
+      }
+    } else if (isUltra && geminiGroup) {
+      // On Ultra accounts, Argon is merged into the Gemini bucket
+      const hasArgonEntry = parsedQuotas.some((q) => (q.id + ' ' + q.displayName).toLowerCase().includes('argon'));
+      if (!hasArgonEntry) {
+        const gWk = geminiGroup.weekly;
+        const g5h = geminiGroup.fiveHour;
+        const targetB = gWk || g5h;
+        parsedQuotas.push({
+          id: 'gemini-4-argon',
+          displayName: 'Gemini 4 Argon',
+          groupName: 'Gemini Models',
+          description: targetB?.description || 'Merged into Gemini Models bucket on Ultra plan',
+          remainingFraction: targetB ? targetB.remainingFraction : 1.0,
+          percentage: targetB ? targetB.percentage : 100,
+          resetTime: targetB?.resetTime,
+          resetCountdown: targetB?.resetCountdown,
+          windowType: 'weekly',
+          windowLabel: 'Weekly Quota',
+          disabled: targetB?.disabled ?? false
+        });
+        parsedQuotas = sortModelQuotas(parsedQuotas);
       }
     }
 
@@ -760,6 +994,7 @@ export class QuotaParser {
       quotaGroups,
       geminiGroup,
       claudeGptGroup,
+      argonGroup: isPro ? argonGroup : undefined,
       averagePercentage,
       fiveHourPercentage,
       weeklyPercentage,

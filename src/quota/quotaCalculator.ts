@@ -33,7 +33,12 @@ export function calculateModulatedInstantQuota(
  */
 export function calculateAveragePercentage(quotas: ModelQuota[]): number {
   if (!quotas || quotas.length === 0) return 0;
-  const valid = quotas.filter((q) => !q.disabled && q.percentage >= 0);
+  const valid = quotas.filter((q) => {
+    if (q.disabled || q.percentage < 0) return false;
+    const nameLower = (q.id + ' ' + (q.displayName || '') + ' ' + (q.groupName || '')).toLowerCase();
+    if (nameLower.includes('argon')) return false;
+    return true;
+  });
   if (valid.length === 0) return 0;
   const sum = valid.reduce((acc, q) => acc + q.percentage, 0);
   return Math.round(sum / valid.length);

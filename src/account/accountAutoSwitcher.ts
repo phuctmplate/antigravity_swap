@@ -22,11 +22,21 @@ export interface AccountAutoSwitcherContext {
 export class AccountAutoSwitcher {
   private static readonly MAX_AUTO_SWITCH_ATTEMPTS = 2;
   private lastNotifiedDepletionKey?: string;
+  private temporarilyFailedCandidates = new Map<string, number>();
+  private _isAutoSwitchInProgress = false;
 
   constructor(
     private readonly storage: StorageService,
     private readonly ctx: AccountAutoSwitcherContext
   ) {}
+
+  public isAutoSwitchInProgress(): boolean {
+    return this._isAutoSwitchInProgress;
+  }
+
+  public clearFailedCandidate(email: string): void {
+    this.temporarilyFailedCandidates.delete(email.toLowerCase());
+  }
 
   public resetDepletionKey(): void {
     this.lastNotifiedDepletionKey = undefined;
@@ -47,7 +57,13 @@ export class AccountAutoSwitcher {
   public getAccountTargetQuota(account: AccountInfo, target: AutoSwitchTarget = 'instant'): number {
     const isFree = !account.tierBadge || account.tierBadge === 'STANDARD FREE' || account.accountType?.toLowerCase().includes('free') === true;
     const quotas = account.quotas || [];
-    const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
+    // Weekly quotas strictly exclude Argon (Argon is not counted towards target/average quotas)
+    const weeklyQuotas = quotas.filter((q) =>
+      q.windowType === 'weekly' &&
+      !q.disabled &&
+      q.percentage >= 0 &&
+      !((q.id || '') + ' ' + (q.displayName || '') + ' ' + (q.groupName || '')).toLowerCase().includes('argon')
+    );
     // 5h quotas only relevant for paid tiers
     const fiveHourQuotas = isFree ? [] : quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
 
@@ -180,166 +196,177 @@ export class AccountAutoSwitcher {
     const autoSwitch = this.storage.getAutoSwitchEnabled();
     if (!autoSwitch) return;
 
-    const active = this.ctx.getActiveAccount();
-    if (!active) return;
+    this._isAutoSwitchInProgress = true;
+    try {
+      const active = this.ctx.getActiveAccount();
+      if (!active) return;
 
-    const isAuthFailed = active.status === 'auth_failed';
-    const isBanned = active.isBanned || active.status === 'banned';
+      const isAuthFailed = active.status === 'auth_failed';
+      const isBanned = active.isBanned || active.status === 'banned';
 
-    // If account credentials are ok, wait until quota data is loaded before evaluating low quota
-    if (!isAuthFailed && !isBanned) {
-      if (!active.lastRefreshedAt || !active.quotas || active.quotas.length === 0) {
-        return;
-      }
-    }
-
-    const threshold = this.storage.getAutoSwitchThreshold();
-    const target = this.storage.getAutoSwitchTarget();
-
-    const activeQuota = this.getAccountTargetQuota(active, target);
-    const isDepleted = activeQuota <= threshold;
-    const isUnusable = isAuthFailed || isBanned;
-
-    if (isDepleted || isUnusable) {
-      const targetLabel = target === 'gemini' ? 'Gemini Instant' : target === 'claude' ? 'Claude & GPT Instant' : 'Account Instant';
-
-      let reason: string;
-      if (isAuthFailed) {
-        reason = 'authentication failed (token expired/invalid)';
-      } else if (isBanned) {
-        reason = 'account suspended/banned by Google';
-      } else {
-        reason = `low ${targetLabel} (${activeQuota}%)`;
-      }
-
-      // Maximum candidate attempts per auto-switch cycle
-      let attempts = 0;
-      let probeAttempts = 0;
-      let switchSuccess = false;
-      const failedCandidateEmails = new Set<string>();
-      const probedCandidateEmails = new Set<string>();
-
-      while (attempts < AccountAutoSwitcher.MAX_AUTO_SWITCH_ATTEMPTS && probeAttempts < 10) {
-        const accounts = this.ctx.getAccounts();
-
-        // Find candidates that have healthy quota for this target, excluding failed ones in this cycle
-        const candidates = accounts.filter((a) => {
-          if (a.email === active.email || a.isBanned || a.status === 'banned' || a.status === 'auth_failed' || failedCandidateEmails.has(a.email)) {
-            return false;
-          }
-          if (a.status !== 'healthy' && a.status !== 'active') return false;
-          return this.getAccountTargetQuota(a, target) > threshold;
-        });
-
-        // Best candidate: sort descending by that target's instant quota
-        candidates.sort((a, b) => {
-          return this.getAccountTargetQuota(b, target) - this.getAccountTargetQuota(a, target);
-        });
-
-        const candidate = candidates[0];
-        if (!candidate) {
-          // No more eligible candidates available
-          break;
-        }
-
-        // JIT Pre-Switch Verification Guard (Layer 4):
-        // Probe candidate in real-time (~150ms) to ensure quota wasn't burned on another machine
-        if (EXTENSION_DEFAULTS.ENABLE_JIT_PRE_SWITCH_CHECK && this.ctx.probeCandidate && !probedCandidateEmails.has(candidate.email)) {
-          probeAttempts++;
-          probedCandidateEmails.add(candidate.email);
-          try {
-            const probeResult = await this.ctx.probeCandidate(candidate.email);
-            if (probeResult && probeResult.ok) {
-              // Always update candidate's live probed numbers in memory and storage
-              if (this.ctx.onCandidateProbed) {
-                await this.ctx.onCandidateProbed(candidate.email, probeResult);
-              }
-
-              // 1. If completely depleted, mark as failed candidate in this cycle and bypass
-              if (probeResult.isDepleted) {
-                console.warn(
-                  `[AccountAutoSwitcher] JIT Guard detected ${candidate.email} is depleted externally (5h: ${probeResult.fiveHourPercentage}%, weekly: ${probeResult.weeklyPercentage}%). Bypassing candidate.`
-                );
-                failedCandidateEmails.add(candidate.email);
-                if (this.ctx.onCandidateDepletedExternally) {
-                  await this.ctx.onCandidateDepletedExternally(candidate.email, probeResult);
-                }
-                continue; // Try Candidate #2
-              }
-
-              // 2. Dynamic Demotion: If probed candidate's capacity decreased and is now
-              // lower than another candidate in the pool, demote it immediately without waiting for full depletion!
-              const currentAccounts = this.ctx.getAccounts();
-              const refreshedCandidate = currentAccounts.find((a) => a.email === candidate.email);
-              const probedQuota = refreshedCandidate ? this.getAccountTargetQuota(refreshedCandidate, target) : this.getAccountTargetQuota(candidate, target);
-
-              const higherCandidate = candidates.slice(1).find((other) => {
-                const otherAcc = currentAccounts.find((a) => a.email === other.email) || other;
-                return this.getAccountTargetQuota(otherAcc, target) > probedQuota;
-              });
-
-              if (higherCandidate) {
-                const higherQuota = this.getAccountTargetQuota(higherCandidate, target);
-                console.log(
-                  `[AccountAutoSwitcher] Candidate ${candidate.email} capacity dropped to ${probedQuota}% (lower than ${higherCandidate.email} with ${higherQuota}%). Demoting candidate rank immediately.`
-                );
-                // Continue without adding to failedCandidateEmails, so next while-iteration re-sorts and picks higherCandidate!
-                continue;
-              }
-            }
-          } catch (jitErr) {
-            console.warn(`[AccountAutoSwitcher] JIT probe failed for ${candidate.email}:`, jitErr);
-          }
-        }
-
-        attempts++;
-        const candidateQuota = this.getAccountTargetQuota(candidate, target);
-        const candidateDetails = `${targetLabel}: ${candidateQuota}%`;
-
-        // Extend distributed lease before attempting switch so other instances know we are active
-        this.storage.renewRefreshLease?.();
-
-        vscode.window.showWarningMessage(
-          `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
-        );
-
-        switchSuccess = await this.ctx.switchAccount(candidate.email);
-
-        // Immediately renew lease after switch attempt (whether succeeded or failed)
-        this.storage.renewRefreshLease?.();
-
-        if (switchSuccess) {
-          this.lastNotifiedDepletionKey = undefined;
+      // If account credentials are ok, wait until quota data is loaded before evaluating low quota
+      if (!isAuthFailed && !isBanned) {
+        if (!active.lastRefreshedAt || !active.quotas || active.quotas.length === 0) {
           return;
         }
-
-        // Switch to this candidate failed: record and try next candidate if under limit
-        failedCandidateEmails.add(candidate.email);
-        console.warn(`[Antigravity Swap] Auto-switch attempt ${attempts} to ${candidate.email} failed.`);
       }
 
-      // If we reach here, either no candidates existed or all attempts (up to 2) failed
-      const accounts = this.ctx.getAccounts();
-      if (!switchSuccess && accounts.length > 1) {
-        const depletionKey = `${active.email}:${target}:${isAuthFailed ? 'auth' : isBanned ? 'banned' : 'depleted'}:${attempts}`;
-        if (this.lastNotifiedDepletionKey !== depletionKey) {
-          this.lastNotifiedDepletionKey = depletionKey;
-          const msg = attempts > 0
-            ? `[Antigravity Swap] Auto-Switch: Failed to switch after ${attempts} candidate attempt(s). Staying on current account.`
-            : `[Antigravity Swap] Auto-Switch: No healthy standby accounts available for ${targetLabel}.`;
+      const threshold = this.storage.getAutoSwitchThreshold();
+      const target = this.storage.getAutoSwitchTarget();
 
-          vscode.window.showErrorMessage(msg, 'Add Account', 'Open Dashboard').then(async (selection) => {
-            if (selection === 'Add Account') {
-              await this.ctx.addAccountViaOAuth();
-            } else if (selection === 'Open Dashboard') {
-              await vscode.commands.executeCommand('antigravitySwap.openDashboard');
-            }
-          });
+      const activeQuota = this.getAccountTargetQuota(active, target);
+      const isDepleted = activeQuota <= threshold;
+      const isUnusable = isAuthFailed || isBanned;
+
+      if (isDepleted || isUnusable) {
+        const targetLabel = target === 'gemini' ? 'Gemini Instant' : target === 'claude' ? 'Claude & GPT Instant' : 'Account Instant';
+
+        let reason: string;
+        if (isAuthFailed) {
+          reason = 'authentication failed (token expired/invalid)';
+        } else if (isBanned) {
+          reason = 'account suspended/banned by Google';
+        } else {
+          reason = `low ${targetLabel} (${activeQuota}%)`;
         }
+
+        // Maximum candidate attempts per auto-switch cycle
+        let attempts = 0;
+        let probeAttempts = 0;
+        let switchSuccess = false;
+        const failedCandidateEmails = new Set<string>();
+        const probedCandidateEmails = new Set<string>();
+
+        while (attempts < AccountAutoSwitcher.MAX_AUTO_SWITCH_ATTEMPTS && probeAttempts < 10) {
+          const accounts = this.ctx.getAccounts();
+
+          // Find candidates that have healthy quota for this target, excluding failed ones in this cycle and quarantined ones
+          const candidates = accounts.filter((a) => {
+            if (a.email === active.email || a.isBanned || a.status === 'banned' || a.status === 'auth_failed' || failedCandidateEmails.has(a.email)) {
+              return false;
+            }
+            const failedAt = this.temporarilyFailedCandidates.get(a.email.toLowerCase());
+            if (failedAt && Date.now() - failedAt < EXTENSION_DEFAULTS.CANDIDATE_FAILURE_COOLDOWN_MS) {
+              return false;
+            }
+            if (a.status !== 'healthy' && a.status !== 'active') return false;
+            return this.getAccountTargetQuota(a, target) > threshold;
+          });
+
+          // Best candidate: sort descending by that target's instant quota
+          candidates.sort((a, b) => {
+            return this.getAccountTargetQuota(b, target) - this.getAccountTargetQuota(a, target);
+          });
+
+          const candidate = candidates[0];
+          if (!candidate) {
+            // No more eligible candidates available
+            break;
+          }
+
+          // JIT Pre-Switch Verification Guard (Layer 4):
+          // Probe candidate in real-time (~150ms) to ensure quota wasn't burned on another machine
+          if (EXTENSION_DEFAULTS.ENABLE_JIT_PRE_SWITCH_CHECK && this.ctx.probeCandidate && !probedCandidateEmails.has(candidate.email)) {
+            probeAttempts++;
+            probedCandidateEmails.add(candidate.email);
+            try {
+              const probeResult = await this.ctx.probeCandidate(candidate.email);
+              if (probeResult && probeResult.ok) {
+                // Always update candidate's live probed numbers in memory and storage
+                if (this.ctx.onCandidateProbed) {
+                  await this.ctx.onCandidateProbed(candidate.email, probeResult);
+                }
+
+                // 1. If completely depleted, mark as failed candidate in this cycle and bypass
+                if (probeResult.isDepleted) {
+                  console.warn(
+                    `[AccountAutoSwitcher] JIT Guard detected ${candidate.email} is depleted externally (5h: ${probeResult.fiveHourPercentage}%, weekly: ${probeResult.weeklyPercentage}%). Bypassing candidate.`
+                  );
+                  failedCandidateEmails.add(candidate.email);
+                  if (this.ctx.onCandidateDepletedExternally) {
+                    await this.ctx.onCandidateDepletedExternally(candidate.email, probeResult);
+                  }
+                  continue; // Try Candidate #2
+                }
+
+                // 2. Dynamic Demotion: If probed candidate's capacity decreased and is now
+                // lower than another candidate in the pool, demote it immediately without waiting for full depletion!
+                const currentAccounts = this.ctx.getAccounts();
+                const refreshedCandidate = currentAccounts.find((a) => a.email === candidate.email);
+                const probedQuota = refreshedCandidate ? this.getAccountTargetQuota(refreshedCandidate, target) : this.getAccountTargetQuota(candidate, target);
+
+                const higherCandidate = candidates.slice(1).find((other) => {
+                  const otherAcc = currentAccounts.find((a) => a.email === other.email) || other;
+                  return this.getAccountTargetQuota(otherAcc, target) > probedQuota;
+                });
+
+                if (higherCandidate) {
+                  const higherQuota = this.getAccountTargetQuota(higherCandidate, target);
+                  console.log(
+                    `[AccountAutoSwitcher] Candidate ${candidate.email} capacity dropped to ${probedQuota}% (lower than ${higherCandidate.email} with ${higherQuota}%). Demoting candidate rank immediately.`
+                  );
+                  // Continue without adding to failedCandidateEmails, so next while-iteration re-sorts and picks higherCandidate!
+                  continue;
+                }
+              }
+            } catch (jitErr) {
+              console.warn(`[AccountAutoSwitcher] JIT probe failed for ${candidate.email}:`, jitErr);
+            }
+          }
+
+          attempts++;
+          const candidateQuota = this.getAccountTargetQuota(candidate, target);
+          const candidateDetails = `${targetLabel}: ${candidateQuota}%`;
+
+          // Extend distributed lease before attempting switch so other instances know we are active
+          this.storage.renewRefreshLease?.();
+
+          vscode.window.showWarningMessage(
+            `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
+          );
+
+          switchSuccess = await this.ctx.switchAccount(candidate.email);
+
+          // Immediately renew lease after switch attempt (whether succeeded or failed)
+          this.storage.renewRefreshLease?.();
+
+          if (switchSuccess) {
+            this.lastNotifiedDepletionKey = undefined;
+            this.temporarilyFailedCandidates.delete(candidate.email.toLowerCase());
+            return;
+          }
+
+          // Switch to this candidate failed: record in temporary failure cooldown and try next candidate if under limit
+          this.temporarilyFailedCandidates.set(candidate.email.toLowerCase(), Date.now());
+          failedCandidateEmails.add(candidate.email);
+          console.warn(`[Antigravity Swap] Auto-switch attempt ${attempts} to ${candidate.email} failed. Quarantined for ${EXTENSION_DEFAULTS.CANDIDATE_FAILURE_COOLDOWN_MS / 1000}s.`);
+        }
+
+        // If we reach here, either no candidates existed or all attempts (up to 2) failed
+        const accounts = this.ctx.getAccounts();
+        if (!switchSuccess && accounts.length > 1) {
+          const depletionKey = `${active.email}:${target}:${isAuthFailed ? 'auth' : isBanned ? 'banned' : 'depleted'}:${attempts}`;
+          if (this.lastNotifiedDepletionKey !== depletionKey) {
+            this.lastNotifiedDepletionKey = depletionKey;
+            const msg = attempts > 0
+              ? `[Antigravity Swap] Auto-Switch: Failed to switch after ${attempts} candidate attempt(s). Staying on current account.`
+              : `[Antigravity Swap] Auto-Switch: No healthy standby accounts available for ${targetLabel}.`;
+
+            vscode.window.showErrorMessage(msg, 'Add Account', 'Open Dashboard').then(async (selection) => {
+              if (selection === 'Add Account') {
+                await this.ctx.addAccountViaOAuth();
+              } else if (selection === 'Open Dashboard') {
+                await vscode.commands.executeCommand('antigravitySwap.openDashboard');
+              }
+            });
+          }
+        }
+      } else {
+        // Account is healthy and within quota limits: reset depletion notification key
+        this.lastNotifiedDepletionKey = undefined;
       }
-    } else {
-      // Account is healthy and within quota limits: reset depletion notification key
-      this.lastNotifiedDepletionKey = undefined;
+    } finally {
+      this._isAutoSwitchInProgress = false;
     }
   }
 }

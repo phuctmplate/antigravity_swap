@@ -61,6 +61,9 @@ export class AccountQuotaSync {
     }
     this.refreshingEmails.add(email);
     this.storage.renewRefreshLease();
+    if (force && typeof (this.quotaService as any)?.invalidateCache === 'function') {
+      (this.quotaService as any).invalidateCache(email);
+    }
 
     try {
       const tokens = await this.storage.getAccountTokens(email);
@@ -124,6 +127,7 @@ export class AccountQuotaSync {
           quotaGroups: res.quotaGroups,
           geminiGroup: res.geminiGroup,
           claudeGptGroup: res.claudeGptGroup,
+          argonGroup: res.argonGroup,
           averageQuotaPercentage: res.averagePercentage,
           fiveHourQuotaPercentage: res.fiveHourPercentage,
           weeklyQuotaPercentage: res.weeklyPercentage,
@@ -185,6 +189,7 @@ export class AccountQuotaSync {
           quotaGroups: ref.quotaGroups,
           geminiGroup: ref.geminiGroup,
           claudeGptGroup: ref.claudeGptGroup,
+          argonGroup: ref.argonGroup,
           averageQuotaPercentage: ref.averageQuotaPercentage,
           fiveHourQuotaPercentage: ref.fiveHourQuotaPercentage,
           weeklyQuotaPercentage: ref.weeklyQuotaPercentage,

@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { parseUserStatusBytes } from './protoUtils';
 import { IdeStateDbService } from './ideStateDb';
+import { readAntigravityKeyringToken } from './winCredManager';
 
 export interface DiscoveredAccount {
   email: string;
@@ -70,7 +71,24 @@ export class AccountDiscoveryService {
    * Returns null if no active session is found (e.g. user is logged out).
    */
   public async getCurrentAntigravityAccount(): Promise<DiscoveredAccount | null> {
-    // 1. Prioritize live in-memory Unified State Sync
+    // 1. Antigravity IDE v2.6+ Windows Credential Manager (gemini:antigravity)
+    if (process.platform === 'win32') {
+      try {
+        const keyringPayload = await readAntigravityKeyringToken();
+        if (keyringPayload?.id_token_email && this.isValidEmail(keyringPayload.id_token_email)) {
+          return {
+            email: keyringPayload.id_token_email,
+            name: keyringPayload.id_token_email.split('@')[0],
+            accessToken: keyringPayload.token?.access_token,
+            refreshToken: keyringPayload.token?.refresh_token
+          };
+        }
+      } catch (keyringErr) {
+        console.warn('[AccountDiscoveryService] readAntigravityKeyringToken warning:', keyringErr);
+      }
+    }
+
+    // 2. Prioritize live in-memory Unified State Sync
     try {
       const unifiedSync = (vscode as any).antigravityUnifiedStateSync;
       if (unifiedSync?.OAuthPreferences?.getOAuthTokenInfo) {
@@ -101,7 +119,7 @@ export class AccountDiscoveryService {
       console.warn('[AccountDiscoveryService] Error reading live account from unifiedStateSync:', e);
     }
 
-    // 2. Fallback to state.vscdb structured query ONLY
+    // 3. Fallback to state.vscdb structured query
     const stateDbPath = path.join(
       os.homedir(),
       'AppData',
@@ -117,6 +135,19 @@ export class AccountDiscoveryService {
       const nativeDb = this.ideDbService.getSqliteDb(stateDbPath);
       if (nativeDb) {
         try {
+          // Check core Antigravity v2.6+ extension state row
+          const agyRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('google.google-antigravity');
+          let agyUsername: string | undefined;
+          if (agyRow?.value) {
+            try {
+              const parsedAgy = JSON.parse(agyRow.value);
+              const username = parsedAgy['antigravity-storage']?.['jetski.onboarding.lastLoginUsername'];
+              if (username && this.isValidEmail(username)) {
+                agyUsername = username;
+              }
+            } catch {}
+          }
+
           const userStatusRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityUnifiedStateSync.userStatus');
           const oauthRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityUnifiedStateSync.oauthToken');
           const authStatusRow = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('antigravityAuthStatus');
@@ -155,11 +186,14 @@ export class AccountDiscoveryService {
             } catch {}
           }
 
-          if (email && accessToken && this.isValidEmail(email)) {
+          // If agyUsername was found from google.google-antigravity, prefer it
+          const finalEmail = agyUsername || email;
+
+          if (finalEmail && this.isValidEmail(finalEmail)) {
             return {
-              email,
-              name: name || email.split('@')[0],
-              accessToken,
+              email: finalEmail,
+              name: name || finalEmail.split('@')[0],
+              accessToken: accessToken || undefined,
               avatarUrl
             };
           }

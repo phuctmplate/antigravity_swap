@@ -169,6 +169,38 @@ export class AccountSwitcher {
         console.warn('[Antigravity Swap] restartLanguageServer command warning:', lsErr?.message || lsErr);
       }
 
+      // 8. Post-Switch Active Account Verification Guard:
+      // Verify whether the Antigravity IDE / credential manager actually switched to the target account.
+      // If the IDE remained on previousEmail, roll back internal state and report failure so caller can try next candidate.
+      if (previousEmail && previousEmail.toLowerCase() !== email.toLowerCase()) {
+        await new Promise((r) => setTimeout(r, 600));
+        const verification = await this.storage.verifyIdeActiveAccount(email);
+        if (!verification.verified && verification.actualEmail && verification.actualEmail.toLowerCase() === previousEmail.toLowerCase()) {
+          console.warn(`[AccountSwitcher] Switch verification failed: IDE remained on ${previousEmail} instead of switching to ${email}. Rolling back.`);
+
+          // Rollback internal active account to previousEmail
+          const rolledBackAccounts = accounts.map((a) => ({
+            ...a,
+            isActive: a.email.toLowerCase() === previousEmail.toLowerCase(),
+            statusMessage: a.email === email ? 'Switch failed: IDE remained on previous account' : a.statusMessage
+          }));
+          this.ctx.setAccounts(rolledBackAccounts);
+          this.ctx.setActiveEmail(previousEmail);
+          await this.storage.saveAccounts(rolledBackAccounts);
+          await this.storage.setActiveAccountEmail(previousEmail);
+          await this.storage.syncGoogleAccountsJson(previousEmail);
+          this.ctx.notifyStateChange();
+
+          // Reset lastSwitchTime so immediate retry on next candidate is not rate-limited
+          this.lastSwitchTime = 0;
+
+          if (!isSilent) {
+            vscode.window.showErrorMessage(`Switch to ${email} failed: IDE remained on ${previousEmail}. Rollback complete.`);
+          }
+          return false;
+        }
+      }
+
       this.ctx.notifyStateChange();
       if (this.ctx.onPostSwitch) {
         this.ctx.onPostSwitch(email);

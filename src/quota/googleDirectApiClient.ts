@@ -1,6 +1,7 @@
 import * as https from 'https';
 import { API_ENDPOINTS, EXTENSION_DEFAULTS, OAUTH_CONFIG } from '../constants';
 import { is5HourBucket, isWeeklyBucket, isResetTimeWithin5Hours, isResetTimeBeyond5Hours } from './quotaClassifier';
+import { extractFraction } from './quotaFormatters';
 import { getIdeRuntimeMetadata } from './ideRuntimeMetadata';
 
 function refreshGoogleAccessToken(refreshToken: string): Promise<string | undefined> {
@@ -60,24 +61,32 @@ export interface JitProbeResult {
 
 /**
  * Enriches quota groups with real-time model quota metrics and reset times.
- * Differentiates cleanly between Free Tier (weekly only) and Paid Pro/Ultra (5h rolling + weekly + Claude/GPT).
+ * Differentiates cleanly between Free Tier (weekly only), Paid Pro (5h rolling + weekly + Claude/GPT + separate Weekly-only Argon bucket),
+ * and Paid Ultra (5h rolling + weekly + Claude/GPT, with Argon merged into the Gemini bucket).
  */
 export function enrichQuotaGroupsWithModels(
   groups: any[],
   modelsData: Record<string, any>,
-  isFreeAccount: boolean = false
+  isFreeAccount: boolean = false,
+  isUltraAccount: boolean = false
 ): any[] {
   const resultGroups = (groups || []).map((g: any) => ({
     ...g,
     buckets: (g.buckets || []).map((b: any) => ({ ...b }))
   }));
 
-  // If the account is Free Tier, it NEVER has 5-hour rolling windows or Claude/GPT models.
+  const isArgonModel = (id: string, m?: any) => {
+    const s = (id + ' ' + (m?.displayName || '') + ' ' + (m?.label || '')).toLowerCase();
+    return s.includes('argon');
+  };
+
+  // If the account is Free Tier, it NEVER has 5-hour rolling windows, Claude/GPT models, or Argon models.
   if (isFreeAccount) {
     let minWeeklyFraction = 1.0;
     let geminiWeeklyResetTime: string | undefined;
 
     for (const [id, m] of Object.entries(modelsData)) {
+      if (isArgonModel(id, m)) continue;
       const frac = m.quotaInfo?.remainingFraction;
       const rTime = m.quotaInfo?.resetTime;
       if (typeof frac === 'number' && frac < minWeeklyFraction) {
@@ -91,7 +100,7 @@ export function enrichQuotaGroupsWithModels(
     }
 
     let geminiGroup = resultGroups.find(
-      (g: any) => (g.displayName || '').toLowerCase().includes('gemini')
+      (g: any) => (g.displayName || '').toLowerCase().includes('gemini') && !(g.displayName || '').toLowerCase().includes('argon')
     );
 
     if (!geminiGroup) {
@@ -125,10 +134,10 @@ export function enrichQuotaGroupsWithModels(
       ];
     }
 
-    // Filter out any 3P Claude/GPT groups for free accounts
+    // Filter out any 3P Claude/GPT or Argon groups for free accounts
     return resultGroups.filter((g: any) => {
       const title = (g.displayName || '').toLowerCase();
-      return !title.includes('claude') && !title.includes('gpt');
+      return !title.includes('claude') && !title.includes('gpt') && !title.includes('argon');
     });
   }
 
@@ -138,18 +147,36 @@ export function enrichQuotaGroupsWithModels(
     return lower.includes('claude') || lower.includes('gpt') || lower.includes('opus') || lower.includes('sonnet');
   };
 
-  // 1. Enrich Gemini models (strictly exclude Claude, GPT, Opus, Sonnet 3P models)
+  // Find authentic plan weekly reset time from Claude & GPT 3p-weekly if available
+  const claudeGroup = resultGroups.find((g: any) =>
+    (g.displayName || '').toLowerCase().includes('claude') || (g.displayName || '').toLowerCase().includes('gpt')
+  );
+  const planWeeklyResetTime = claudeGroup?.buckets?.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName))?.resetTime;
+
+  // Find proEntry for pro-tier model metrics (gemini-2.5-pro, etc.)
+  const proEntry = Object.entries(modelsData).find(([id]) =>
+    /\bpro\b|[-_.]pro\b|\bpro[-_.]/i.test(id)
+  );
+  const proFraction = proEntry && typeof proEntry[1]?.quotaInfo?.remainingFraction === 'number'
+    ? proEntry[1].quotaInfo.remainingFraction
+    : undefined;
+  const proResetTime = proEntry?.[1]?.quotaInfo?.resetTime;
+
+  // 1. Enrich Gemini models (strictly exclude Claude/GPT 3P models; on Pro, also exclude Argon models since Argon has its own bucket)
   const flashModelEntries = Object.entries(modelsData).filter(
-    ([id]) =>
+    ([id, m]) =>
       !is3pModel(id) &&
+      (isUltraAccount || !isArgonModel(id, m)) &&
       (id.includes('flash') ||
        id.includes('gemini') ||
-       id.includes('exp'))
+       id.includes('exp') ||
+       (isUltraAccount && isArgonModel(id, m)))
   );
 
   let geminiGroup = resultGroups.find(
     (g: any) =>
       (g.displayName || '').toLowerCase().includes('gemini') &&
+      !(g.displayName || '').toLowerCase().includes('argon') &&
       !is3pModel(g.displayName || '')
   );
 
@@ -170,6 +197,7 @@ export function enrichQuotaGroupsWithModels(
         const isProOrUltra = /\bpro\b|[-_.]pro\b|\bpro[-_.]/i.test(idLower) || /\bultra\b|[-_.]ultra\b/i.test(idLower);
 
         if (rTime && isResetTimeWithin5Hours(rTime)) {
+          // 5-hour rolling bucket derives from Flash models (never contaminated by Pro weekly identity)
           if (!isProOrUltra) {
             has5hActiveLimit = true;
             if (frac < min5hFraction) min5hFraction = frac;
@@ -178,38 +206,47 @@ export function enrichQuotaGroupsWithModels(
             }
           }
         } else if (rTime && isResetTimeBeyond5Hours(rTime)) {
+          // Models with reset time > 5.5 hours belong to the Weekly Plan Limit
           hasWeeklyActiveLimit = true;
           if (frac < minWeeklyFraction) minWeeklyFraction = frac;
-          if (!geminiWeeklyResetTime || new Date(rTime).getTime() < new Date(geminiWeeklyResetTime).getTime()) {
+          if (!geminiWeeklyResetTime || (rTime && new Date(rTime).getTime() < new Date(geminiWeeklyResetTime).getTime())) {
             geminiWeeklyResetTime = rTime;
           }
         }
       }
     }
 
+    // Only allow pro-tier model metrics to update weekly limit if the pro model reset time is genuine weekly (> 5.5h)
+    if (proFraction !== undefined && proResetTime && isResetTimeBeyond5Hours(proResetTime)) {
+      if (proFraction < minWeeklyFraction) {
+        minWeeklyFraction = proFraction;
+        hasWeeklyActiveLimit = true;
+        geminiWeeklyResetTime = proResetTime;
+      }
+    }
+
     const effective5hFraction = has5hActiveLimit ? min5hFraction : 1.0;
     const effectiveWeeklyFraction = hasWeeklyActiveLimit ? minWeeklyFraction : 1.0;
+    const weeklyReset = (geminiWeeklyResetTime && isResetTimeBeyond5Hours(geminiWeeklyResetTime))
+      ? geminiWeeklyResetTime
+      : (hasWeeklyActiveLimit && effectiveWeeklyFraction < 1.0 ? planWeeklyResetTime : undefined);
 
     if (!geminiGroup) {
       const synthBuckets: any[] = [];
-      if (has5hActiveLimit) {
-        synthBuckets.push({
-          bucketId: 'gemini-5h',
-          displayName: 'Five Hour Limit Remaining',
-          window: '5h',
-          remainingFraction: effective5hFraction,
-          resetTime: gemini5hResetTime
-        });
-      }
-      if (hasWeeklyActiveLimit) {
-        synthBuckets.push({
-          bucketId: 'gemini-weekly',
-          displayName: 'Weekly Limit Remaining',
-          window: 'weekly',
-          remainingFraction: effectiveWeeklyFraction,
-          resetTime: geminiWeeklyResetTime
-        });
-      }
+      synthBuckets.push({
+        bucketId: 'gemini-5h',
+        displayName: 'Five Hour Limit Remaining',
+        window: '5h',
+        remainingFraction: effective5hFraction,
+        resetTime: gemini5hResetTime
+      });
+      synthBuckets.push({
+        bucketId: 'gemini-weekly',
+        displayName: 'Weekly Limit Remaining',
+        window: 'weekly',
+        remainingFraction: effectiveWeeklyFraction,
+        resetTime: weeklyReset
+      });
       geminiGroup = {
         displayName: 'Gemini Models',
         description: 'Models within this group: Gemini Flash, Gemini Pro',
@@ -230,7 +267,7 @@ export function enrichQuotaGroupsWithModels(
         } else if (existing5h.resetTime && isResetTimeBeyond5Hours(existing5h.resetTime)) {
           delete existing5h.resetTime;
         }
-      } else if (has5hActiveLimit) {
+      } else {
         geminiGroup.buckets.push({
           bucketId: 'gemini-5h',
           displayName: 'Five Hour Limit Remaining',
@@ -243,30 +280,25 @@ export function enrichQuotaGroupsWithModels(
       const existingWeekly = geminiGroup.buckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName));
       if (existingWeekly) {
         // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
-        if (typeof existingWeekly.remainingFraction !== 'number' && hasWeeklyActiveLimit) {
-          existingWeekly.remainingFraction = minWeeklyFraction;
+        if (typeof existingWeekly.remainingFraction !== 'number' || (hasWeeklyActiveLimit && effectiveWeeklyFraction < existingWeekly.remainingFraction)) {
+          existingWeekly.remainingFraction = effectiveWeeklyFraction;
         }
-        if (!existingWeekly.resetTime && geminiWeeklyResetTime) {
-          existingWeekly.resetTime = geminiWeeklyResetTime;
+        if (!existingWeekly.resetTime && weeklyReset) {
+          existingWeekly.resetTime = weeklyReset;
         }
-      } else if (hasWeeklyActiveLimit) {
+      } else {
         geminiGroup.buckets.push({
           bucketId: 'gemini-weekly',
           displayName: 'Weekly Limit Remaining',
           window: 'weekly',
           remainingFraction: effectiveWeeklyFraction,
-          resetTime: geminiWeeklyResetTime
+          resetTime: weeklyReset
         });
       }
     }
   }
 
   // 2. Enrich Claude and GPT 3P models
-  const claudeGroup = resultGroups.find(
-    (g: any) =>
-      (g.displayName || '').toLowerCase().includes('claude') ||
-      (g.displayName || '').toLowerCase().includes('gpt')
-  );
   const claudeModelEntries = Object.entries(modelsData).filter(
     ([id]) => is3pModel(id)
   );
@@ -327,6 +359,106 @@ export function enrichQuotaGroupsWithModels(
         existing3p5h.resetTime = min3p5hResetTime;
       } else if (existing3p5h.resetTime && isResetTimeBeyond5Hours(existing3p5h.resetTime)) {
         delete existing3p5h.resetTime;
+      }
+    }
+  }
+
+  // 3. Handle Argon model bucket flow (Pro vs Ultra):
+  // - Pro plan: Argon is separated into its own dedicated bucket that ONLY has a Weekly window.
+  // - Ultra plan: Argon is merged into the Gemini bucket.
+  const argonGroupIdx = resultGroups.findIndex((g: any) => (g.displayName || '').toLowerCase().includes('argon'));
+  const argonModelEntries = Object.entries(modelsData).filter(([id, m]) => isArgonModel(id, m));
+
+  if (isUltraAccount) {
+    // On Ultra, merge any standalone Argon group into geminiGroup and remove the separate Argon group
+    if (argonGroupIdx >= 0) {
+      const standaloneArgon = resultGroups[argonGroupIdx];
+      if (geminiGroup && Array.isArray(standaloneArgon.buckets)) {
+        geminiGroup.buckets = geminiGroup.buckets || [];
+        for (const ab of standaloneArgon.buckets) {
+          const isWk = isWeeklyBucket(ab.window, ab.bucketId, ab.displayName) || !is5HourBucket(ab.window, ab.bucketId, ab.displayName);
+          const target = geminiGroup.buckets.find((b: any) =>
+            isWk ? isWeeklyBucket(b.window, b.bucketId, b.displayName) : is5HourBucket(b.window, b.bucketId, b.displayName)
+          );
+          if (target && typeof ab.remainingFraction === 'number') {
+            if (typeof target.remainingFraction !== 'number' || ab.remainingFraction < target.remainingFraction) {
+              target.remainingFraction = ab.remainingFraction;
+            }
+            if (!target.resetTime && ab.resetTime) {
+              target.resetTime = ab.resetTime;
+            }
+          }
+        }
+      }
+      resultGroups.splice(argonGroupIdx, 1);
+    }
+  } else {
+    // On Pro plan: Only process Argon if the subscription actually includes Argon group or Argon models
+    const hasArgonData = argonGroupIdx >= 0 || argonModelEntries.length > 0;
+    if (hasArgonData) {
+      let minArgonWeeklyFraction = 1.0;
+      let hasArgonConsumption = false;
+      let argonWeeklyResetTime: string | undefined;
+
+      for (const [, m] of argonModelEntries) {
+        const frac = m.quotaInfo?.remainingFraction;
+        const rTime = m.quotaInfo?.resetTime;
+        if (typeof frac === 'number') {
+          hasArgonConsumption = true;
+          if (frac < minArgonWeeklyFraction) {
+            minArgonWeeklyFraction = frac;
+          }
+        }
+        if (rTime && isResetTimeBeyond5Hours(rTime)) {
+          if (!argonWeeklyResetTime || new Date(rTime).getTime() > new Date(argonWeeklyResetTime).getTime()) {
+            argonWeeklyResetTime = rTime;
+          }
+        }
+      }
+
+      const effRemaining = hasArgonConsumption ? minArgonWeeklyFraction : (argonGroupIdx >= 0 ? 1.0 : undefined);
+      const finalArgonResetTime = (argonWeeklyResetTime && isResetTimeBeyond5Hours(argonWeeklyResetTime))
+        ? argonWeeklyResetTime
+        : (effRemaining !== undefined && effRemaining < 1.0 ? planWeeklyResetTime : undefined);
+
+      if (argonGroupIdx >= 0) {
+        const argonGroup = resultGroups[argonGroupIdx];
+        const existingBuckets: any[] = argonGroup.buckets || [];
+        const existingWeekly = existingBuckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName)) || existingBuckets[0];
+        argonGroup.displayName = argonGroup.displayName || 'Argon Models';
+        const authoritativeFraction = typeof existingWeekly?.remainingFraction === 'number'
+          ? existingWeekly.remainingFraction
+          : effRemaining;
+        argonGroup.buckets = [
+          {
+            bucketId: existingWeekly?.bucketId || 'argon-weekly',
+            displayName: existingWeekly?.displayName || 'Weekly Limit Remaining',
+            window: 'weekly',
+            remainingFraction: authoritativeFraction,
+            resetTime: existingWeekly?.resetTime || finalArgonResetTime,
+            description: existingWeekly?.description || 'Weekly plan limit for Argon models'
+          }
+        ];
+      } else if (effRemaining !== undefined) {
+        resultGroups.push({
+          displayName: 'Argon Models',
+          description: 'Models within this group: Gemini 4 Argon (Weekly Quota)',
+          buckets: [
+            {
+              bucketId: 'argon-weekly',
+              displayName: 'Weekly Limit Remaining',
+              window: 'weekly',
+              remainingFraction: effRemaining,
+              resetTime: finalArgonResetTime,
+              description: 'Weekly plan limit for Argon models'
+            }
+          ]
+        });
+      }
+    } else {
+      // Pro subscription does NOT include Argon
+      if (argonGroupIdx >= 0) {
+        resultGroups.splice(argonGroupIdx, 1);
       }
     }
   }
@@ -575,6 +707,13 @@ export class GoogleDirectApiClient {
       (typeof tierData?.paidTier?.id === 'string' && tierData.paidTier.id.toLowerCase().includes('free'))
     );
 
+    const tierRawStr = JSON.stringify({
+      paidTier: tierData?.paidTier,
+      userTier: tierData?.userTier,
+      currentTier: tierData?.currentTier
+    }).toLowerCase();
+    const isUltraAccount = !isFreeAccount && (tierRawStr.includes('ultra') || tierRawStr.includes('enterprise'));
+
     const isPooled = !projectId || projectId === 'aicode-consumers';
     const body = isPooled ? {} : { project: projectId };
 
@@ -591,12 +730,15 @@ export class GoogleDirectApiClient {
       );
       if (rawQuotaProd && rawQuotaProd.buckets) {
         for (const b of rawQuotaProd.buckets) {
-          if (b.modelId) {
-            modelsData[b.modelId] = {
-              displayName: b.modelId,
+          const mId = b.modelId || b.model || b.id || b.name;
+          if (mId) {
+            const frac = extractFraction(b);
+            const rTime = b.resetTime || b.quotaInfo?.resetTime || b.quotaResetUTCTimestamp;
+            modelsData[mId] = {
+              displayName: mId,
               quotaInfo: {
-                remainingFraction: b.remainingFraction,
-                resetTime: b.resetTime
+                remainingFraction: frac,
+                resetTime: rTime
               }
             };
           }
@@ -613,12 +755,15 @@ export class GoogleDirectApiClient {
         );
         if (rawQuotaDaily && rawQuotaDaily.buckets) {
           for (const b of rawQuotaDaily.buckets) {
-            if (b.modelId) {
-              modelsData[b.modelId] = {
-                displayName: b.modelId,
+            const mId = b.modelId || b.model || b.id || b.name;
+            if (mId) {
+              const frac = extractFraction(b);
+              const rTime = b.resetTime || b.quotaInfo?.resetTime || b.quotaResetUTCTimestamp;
+              modelsData[mId] = {
+                displayName: mId,
                 quotaInfo: {
-                  remainingFraction: b.remainingFraction,
-                  resetTime: b.resetTime
+                  remainingFraction: frac,
+                  resetTime: rTime
                 }
               };
             }
@@ -704,7 +849,7 @@ export class GoogleDirectApiClient {
     }
 
     const groups: any[] = groupsData?.response?.groups || groupsData?.groups || [];
-    const enrichedGroups = enrichQuotaGroupsWithModels(groups, modelsData, isFreeAccount);
+    const enrichedGroups = enrichQuotaGroupsWithModels(groups, modelsData, isFreeAccount, isUltraAccount);
 
     return {
       ...tierData,

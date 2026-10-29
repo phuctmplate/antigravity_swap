@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Account } from '../types';
 import { getVsCodeApi } from '../vscode';
 import { Card, CardContent } from './ui/card';
@@ -39,28 +39,33 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const [isSwitching, setIsSwitching] = useState(false);
   const vscode = getVsCodeApi();
 
-  React.useEffect(() => {
+  useEffect(() => {
     setIsSwitching(false);
   }, [isActive, account.lastUsedAt]);
 
   const isBanned = account.isBanned || account.status === 'banned';
   const isAuthFailed = account.status === 'auth_failed';
   const isFree = !account.tierBadge || account.tierBadge === 'STANDARD FREE';
+  const isPro = account.tierBadge === 'PRO' || account.tierBadge === 'AI PREMIUM';
+  const isUltra = account.tierBadge === 'ULTRA' || account.tierBadge === 'ENTERPRISE';
   const isProOrAbove = !isFree;
 
   // Group resolution
-  const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+  const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || (g.name.toLowerCase().includes('gemini') && !g.name.toLowerCase().includes('argon')));
   const claudeGptGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+  const argonGroup = isPro ? (account.argonGroup || account.quotaGroups?.find((g) => g.id === 'argon' || g.name.toLowerCase().includes('argon'))) : undefined;
 
   const quotas = account.quotas || [];
   // 5h quotas only exist for paid tiers (Free tier strictly has no 5h bucket)
   const fiveHourQuotas = isFree ? [] : quotas.filter((q) => q.windowType === '5h' && !q.disabled && q.percentage >= 0);
   const weeklyQuotas = quotas.filter((q) => q.windowType === 'weekly' && !q.disabled && q.percentage >= 0);
 
-  // Resolve bucket with real-time expiration guard: If a bucket has a resetTime that has passed, it has reset to 100%
+  // Resolve bucket with real-time expiration guard: Only auto-expire to 100% if data is stale (> 15m)
   const resolveBucket = (b?: any) => {
     if (!b || b.disabled) return undefined;
-    const isExpired = b.resetTime && new Date(b.resetTime).getTime() <= Date.now();
+    const lastRefreshTime = account.lastRefreshedAt ? new Date(account.lastRefreshedAt).getTime() : 0;
+    const isDataStale = (Date.now() - lastRefreshTime) > 15 * 60 * 1000;
+    const isExpired = isDataStale && b.resetTime && new Date(b.resetTime).getTime() <= Date.now();
     if (isExpired) {
       return {
         ...b,
@@ -73,19 +78,34 @@ export const AccountCard: React.FC<AccountCardProps> = ({
     return b;
   };
 
-  // Gemini buckets: Free tier strictly has no 5h bucket
-  const gemini5h = isFree ? undefined : resolveBucket(geminiGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')));
-  const geminiWeekly = resolveBucket(geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro')));
+  // Gemini buckets: Free tier strictly has no 5h bucket (exclude Argon on Pro)
+  const isArgonQuota = (q: any) => (q.groupName || '').toLowerCase().includes('argon') || (q.id + ' ' + q.displayName).toLowerCase().includes('argon');
+  const gemini5h = isFree
+    ? undefined
+    : resolveBucket(
+        geminiGroup?.fiveHour ||
+        fiveHourQuotas.find((q) => (!isPro || !isArgonQuota(q)) && (q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash')))
+      );
+  const geminiWeekly = resolveBucket(
+    geminiGroup?.weekly ||
+    weeklyQuotas.find((q) => (!isPro || !isArgonQuota(q)) && (q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro')))
+  );
 
   // Claude & GPT buckets: Free tier strictly has no 5h bucket
   const claude5h = isFree ? undefined : resolveBucket(claudeGptGroup?.fiveHour || fiveHourQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
   const claudeWeekly = resolveBucket(claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
+
+  // Argon bucket: Dedicated weekly-only bucket on Pro plan (merged into Gemini bucket on Ultra)
+  const argonWeekly = isPro
+    ? resolveBucket(argonGroup?.weekly || argonGroup?.buckets?.[0] || weeklyQuotas.find((q) => isArgonQuota(q)))
+    : undefined;
 
   // Validity checks for buckets
   const validGemini5h = gemini5h && !gemini5h.disabled && gemini5h.percentage >= 0;
   const validGeminiWk = geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0;
   const validClaude5h = claude5h && !claude5h.disabled && claude5h.percentage >= 0;
   const validClaudeWk = claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0;
+  const validArgonWk = argonWeekly && !argonWeekly.disabled && argonWeekly.percentage >= 0;
 
   // Instant quota calculations
   let geminiInstant: number | undefined;
@@ -125,6 +145,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
       claudeInstant = claudeGptGroup.buckets[0].percentage;
     }
   }
+
 
   // Account Instant Quota: combines available models without dragging missing models down to 0
   let accountInstant: number | undefined;
@@ -414,7 +435,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
           </div>
         </div>
 
-        {/* Quota Section: Separate Gemini and Claude & GPT, separate 5h and Weekly */}
+        {/* Quota Section: Separate Gemini, Argon (on Pro), and Claude & GPT */}
         <div className="mt-1 mb-2 flex-1 flex flex-col gap-2">
           {isBanned ? (
             <div className="text-[10px] font-medium text-destructive py-1 flex items-center gap-1">
@@ -428,7 +449,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             </div>
           ) : (
             <>
-              {/* Group 1: Gemini Models */}
+              {/* Group 1: Gemini Models (merged with Argon on Ultra) */}
               <div className="flex flex-col gap-1 rounded-md bg-accent/25 p-1.5 border border-border/40">
                 <div className="flex items-center justify-between text-[10px]">
                   <span className="font-semibold text-foreground flex items-center gap-1">
@@ -437,6 +458,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   </span>
                   {isFree && (
                     <span className="text-[9px] text-muted-foreground font-medium">Free Tier</span>
+                  )}
+                  {isUltra && (
+                    <span className="text-[9px] text-purple-400/90 font-medium" title="On Ultra plan, Gemini 4 Argon is merged into the Gemini Models bucket">
+                      incl. Argon
+                    </span>
                   )}
                 </div>
 
@@ -625,6 +651,48 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Group 3 (Pro Plan Only): Argon Models - only rendered if the account's Pro plan actually includes Argon */}
+              {Boolean(isPro && argonWeekly && validArgonWk) && (
+                <div className="flex flex-col gap-1 rounded-md bg-accent/25 p-1.5 border border-border/40">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-semibold text-foreground flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                      Argon Models
+                    </span>
+                  </div>
+
+                  {/* Argon Weekly Window Slot */}
+                  <div className="flex flex-col gap-0.5">
+                    <div
+                      className="flex items-center justify-between text-[9px] text-muted-foreground hover:text-foreground/90 transition-colors"
+                      title={validArgonWk ? `Argon Weekly: ${argonWeekly.percentage}% ${bucketNote(argonWeekly)}` : 'Argon Weekly limit: No data'}
+                    >
+                      <span className="flex items-center gap-1 min-w-0">
+                        <Calendar className={cn("w-2.5 h-2.5 shrink-0", validArgonWk ? "text-violet-400" : "text-muted-foreground/40")} />
+                        <span className={cn("font-medium", validArgonWk ? "text-foreground/80" : "text-muted-foreground/50")}>Weekly</span>
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0 font-mono text-[9px]">
+                        {validArgonWk && getCountdown(argonWeekly) && (
+                          <span className="text-muted-foreground/80 font-normal">
+                            {getCountdown(argonWeekly)!.toLowerCase().includes('ready') ? 'resets 6d 23h' : `resets ${getCountdown(argonWeekly)}`}
+                          </span>
+                        )}
+                        {validArgonWk && getCountdown(argonWeekly) && <span className="text-muted-foreground/50 font-normal">•</span>}
+                        <span className={cn("font-bold", validArgonWk ? getTextColor(argonWeekly.percentage) : "text-muted-foreground")}>
+                          {validArgonWk ? `${argonWeekly.percentage}%` : '-%'}
+                        </span>
+                      </div>
+                    </div>
+                    <DashedProgress
+                      value={validArgonWk ? argonWeekly.percentage : 0}
+                      disabled={!validArgonWk || argonWeekly.disabled}
+                      indicatorClassName={validArgonWk ? getFillClass(argonWeekly.percentage) : "bg-transparent"}
+                      className="h-1.5 w-full"
+                    />
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

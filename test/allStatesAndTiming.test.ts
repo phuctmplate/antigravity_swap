@@ -195,6 +195,115 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
     const crossRefPro = quotaService.classifyQuotaWindow('gemini-2.5-pro', 'Gemini 2.5 Pro', weeklyResetNear, undefined, weeklyResetNear, fiveHourReset);
     assert.strictEqual(crossRefPro.windowType, 'weekly');
   });
+
+  await t.test('Timing T8: Argon weekly quota accurately tracks Pro weekly model burn (e.g. 3%) on Pro accounts with Argon', () => {
+    const weeklyReset = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    const raw = {
+      paidTier: { id: 'g1-pro' },
+      models: {
+        'gemini-2.5-pro': {
+          displayName: 'Gemini 2.5 Pro',
+          quotaInfo: { remainingFraction: 0.026959257, resetTime: weeklyReset }
+        },
+        'gemini-4-argon': {
+          displayName: 'Gemini 4 Argon',
+          quotaInfo: { remainingFraction: 0.026959257, resetTime: weeklyReset }
+        }
+      }
+    };
+
+    const res = quotaService.processQuotaData(raw, { id: 'acc-pro-burned', email: 'pro.burned@example.com', tierBadge: 'PRO', status: 'healthy' });
+
+    // Argon group must accurately reflect the burned Pro quota (3%)
+    assert.strictEqual(res.argonGroup?.weekly?.percentage, 3);
+    assert.strictEqual(res.argonGroup?.weekly?.remainingFraction, 0.026959257);
+    assert.strictEqual(res.argonGroup?.weekly?.resetTime, weeklyReset);
+
+    // gemini-4-argon model entry must exist and show 3%
+    const argonModel = res.quotas.find((q) => q.id === 'gemini-4-argon');
+    assert.ok(argonModel);
+    assert.strictEqual(argonModel?.percentage, 3);
+    assert.strictEqual(argonModel?.groupName, 'Argon Models');
+    assert.strictEqual(argonModel?.windowType, 'weekly');
+  });
+
+  await t.test('Timing T9: Pro account without Argon subscription has argonGroup undefined and no fake gemini-4-argon', () => {
+    const fiveHourReset = new Date(Date.now() + 4 * 3600 * 1000).toISOString();
+    const weeklyReset = new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString();
+    const raw = {
+      paidTier: { id: 'g1-pro' },
+      response: {
+        groups: [
+          {
+            displayName: 'Claude and GPT models',
+            buckets: [
+              { displayName: 'Weekly Limit Remaining', window: 'weekly', remainingFraction: 1.0, resetTime: weeklyReset },
+              { displayName: 'Five Hour Limit Remaining', window: '5h', remainingFraction: 1.0, resetTime: fiveHourReset }
+            ]
+          }
+        ]
+      },
+      models: {
+        'gemini-2.5-flash': {
+          displayName: 'Gemini 2.5 Flash',
+          quotaInfo: { remainingFraction: 0.96, resetTime: fiveHourReset }
+        },
+        'gemini-2.5-pro': {
+          displayName: 'Gemini 2.5 Pro',
+          quotaInfo: { remainingFraction: 0.96, resetTime: fiveHourReset }
+        }
+      }
+    };
+
+    const res = quotaService.processQuotaData(raw, { id: 'acc-pro-no-argon', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' });
+
+    // Must strictly be undefined: Pro accounts without Argon do NOT show an Argon group
+    assert.strictEqual(res.argonGroup, undefined);
+    assert.strictEqual(res.quotaGroups?.some((g) => g.id === 'argon'), false);
+
+    // No gemini-4-argon model entry synthesized
+    const argonModel = res.quotas.find((q) => q.id === 'gemini-4-argon');
+    assert.strictEqual(argonModel, undefined);
+  });
+
+  await t.test('Timing T10: Gemini 5h rolling model (96%) never overwrites Gemini weekly quota (74%)', () => {
+    const fiveHourReset = new Date(Date.now() + 4.5 * 3600 * 1000).toISOString();
+    const weeklyReset = new Date(Date.now() + 6.5 * 24 * 3600 * 1000).toISOString();
+    const raw = {
+      paidTier: { id: 'g1-pro' },
+      response: {
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              { bucketId: 'gemini-weekly', displayName: 'Weekly Limit Remaining', window: 'weekly', remainingFraction: 0.74, resetTime: weeklyReset },
+              { bucketId: 'gemini-5h', displayName: 'Five Hour Limit Remaining', window: '5h', remainingFraction: 1.0 }
+            ]
+          }
+        ]
+      },
+      models: {
+        'gemini-2.5-flash': {
+          displayName: 'Gemini 2.5 Flash',
+          quotaInfo: { remainingFraction: 0.96, resetTime: fiveHourReset }
+        },
+        'gemini-2.5-pro': {
+          displayName: 'Gemini 2.5 Pro',
+          quotaInfo: { remainingFraction: 0.96, resetTime: fiveHourReset }
+        }
+      }
+    };
+
+    const res = quotaService.processQuotaData(raw, { id: 'acc-decoupled', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' });
+
+    // Weekly MUST strictly remain 74% and NOT be overwritten by the 96% 5h consumption!
+    assert.strictEqual(res.geminiGroup?.weekly?.percentage, 74);
+    assert.strictEqual(res.geminiGroup?.weekly?.remainingFraction, 0.74);
+
+    // 5h rolling limit MUST take the 96% from the 5h models
+    assert.strictEqual(res.geminiGroup?.fiveHour?.percentage, 96);
+    assert.strictEqual(res.geminiGroup?.fiveHour?.remainingFraction, 0.96);
+  });
 });
 
 test('Comprehensive Account States and Tier Calculations', async (t) => {

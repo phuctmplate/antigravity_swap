@@ -88,10 +88,23 @@ export function synthesizeResetTimeFromDescription(desc?: string): string | unde
 
 /**
  * Formats model display names to match the Antigravity IDE model picker exactly:
- * Gemini 3.8 / 3.7 / 3.6 / 3.1 Flash, Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B.
+ * Gemini 4 Argon, Gemini 3.8 / 3.7 / 3.6 / 3.1 Flash, Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B.
  */
 export function formatModelDisplayName(id: string, apiDisplayName?: string): string {
   const lower = id.toLowerCase();
+  const apiLower = (apiDisplayName || '').toLowerCase();
+
+  // 0. Gemini Argon (Pro & Ultra plans)
+  if (lower.includes('argon') || apiLower.includes('argon')) {
+    const argonVer = id.match(/gemini-(\d+(?:\.\d+)?)-argon/i);
+    if (argonVer) {
+      return `Gemini ${argonVer[1]} Argon`;
+    }
+    if (apiDisplayName && apiLower.includes('argon') && !apiLower.includes('thinking')) {
+      return apiDisplayName;
+    }
+    return 'Gemini 4 Argon';
+  }
 
   // 1. Claude Sonnet
   if (lower.includes('claude-sonnet-4-6') || lower.includes('sonnet-4-6') || lower.includes('claude-3-7-sonnet') || lower.includes('claude-3.7-sonnet')) {
@@ -142,7 +155,7 @@ export function normalizeModelKey(id: string): string {
 
 /**
  * Enforces a fixed, deterministic order matching Antigravity IDE standard model picker:
- * 1. Gemini Flash models (highest version first)
+ * 1. Gemini / Argon models (highest version first)
  * 2. Claude models (highest version first)
  * 3. GPT models
  */
@@ -154,14 +167,15 @@ export function sortModelQuotas(quotas: ModelQuota[]): ModelQuota[] {
 
   const getRank = (q: ModelQuota): number => {
     const s = (q.id + ' ' + (q.displayName || '')).toLowerCase();
-    const isGemini = s.includes('gemini') || s.includes('flash');
+    const isArgon = s.includes('argon');
+    const isGemini = isArgon || s.includes('gemini') || s.includes('flash');
     const isClaude = s.includes('claude') || s.includes('opus') || s.includes('sonnet') || s.includes('haiku');
     const isGpt = s.includes('gpt');
 
-    const ver = extractVersion(s);
+    const ver = extractVersion(s) || (isArgon ? 4 : 0);
 
     if (isGemini) {
-      const typeBonus = s.includes('pro') ? 0.05 : 0;
+      const typeBonus = isArgon ? 0.08 : s.includes('pro') ? 0.05 : 0;
       return 1000 - (ver * 100 + typeBonus);
     }
 

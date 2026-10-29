@@ -13,6 +13,7 @@ export interface AccountLifecycleContext {
   switchAccount: (email: string) => Promise<boolean>;
   refreshAccountQuota: (email: string, force?: boolean) => Promise<void>;
   isSwitching?: () => boolean;
+  isAutoSwitching?: () => boolean;
   notifyStateChange: () => void;
 }
 
@@ -44,10 +45,10 @@ export class AccountLifecycle {
    * Handles real-time IDE auth session changes (login / logout / switch).
    */
   public async handleIdeSessionChange(): Promise<void> {
-    // 1. Guard against race conditions during manual or programmatic account switches.
+    // 1. Guard against race conditions during manual, programmatic, or auto account switches.
     // If a switch is in progress or occurred within the last 15 seconds, ignore IDE session flutter.
-    if (this.ctx.isSwitching?.() || (Date.now() - this.lastManualSwitchTime < 15000)) {
-      console.log('[AccountLifecycle] Switch in progress or recently completed. Ignoring IDE session event.');
+    if (this.ctx.isSwitching?.() || this.ctx.isAutoSwitching?.() || (Date.now() - this.lastManualSwitchTime < 15000)) {
+      console.log('[AccountLifecycle] Switch or auto-switch in progress or recently completed. Ignoring IDE session event.');
       return;
     }
 
@@ -65,11 +66,28 @@ export class AccountLifecycle {
     const activeSessionEmail = liveLsEmail?.trim().toLowerCase() ||
       (currentSession?.email && this.storage.isValidEmail(currentSession.email) ? currentSession.email.trim().toLowerCase() : undefined);
 
-    // If Antigravity Swap already has an authoritative active account selected,
-    // and this external report differs from it, DO NOT hijack or revert the active account!
-    // Stale or multi-window Language Server processes must never override the user's explicit choice.
+    // If Antigravity Swap active account differs from IDE session:
+    // If user changed accounts directly in the Antigravity IDE UI to an existing registered account, sync active state.
+    // If external report is an unregistered/unknown account or spurious flutter, ignore it to protect authoritative state.
     if (activeEmail && activeSessionEmail && activeSessionEmail !== activeEmail.toLowerCase()) {
-      console.log(`[AccountLifecycle] Active account is authoritative (${activeEmail}). Ignoring external session report: ${activeSessionEmail}`);
+      const matched = accounts.find((a) => a.email.toLowerCase() === activeSessionEmail);
+      if (matched) {
+        console.log(`[AccountLifecycle] Detected direct account change in Antigravity IDE UI to ${matched.email}. Synchronizing active account.`);
+        const updated = accounts.map((a) => ({
+          ...a,
+          isActive: a.email.toLowerCase() === matched.email.toLowerCase(),
+          lastUsedAt: a.email.toLowerCase() === matched.email.toLowerCase() ? new Date().toISOString() : a.lastUsedAt
+        }));
+        this.ctx.setActiveEmail(matched.email);
+        this.ctx.setAccounts(updated);
+        await this.storage.setActiveAccountEmail(matched.email);
+        await this.storage.saveAccounts(updated);
+        this.ctx.notifyStateChange();
+        this.ctx.refreshAccountQuota(matched.email).catch(() => {});
+        return;
+      }
+
+      console.log(`[AccountLifecycle] Active account is authoritative (${activeEmail}). External session ${activeSessionEmail} is not in account list. Ignoring.`);
       return;
     }
 

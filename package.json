@@ -2,7 +2,7 @@
   "name": "antigravity-swap",
   "displayName": "Antigravity Swap",
   "description": "Seamless multi-account switcher and real-time model quota tracker for Antigravity IDE without reload.",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "publisher": "phuctmplate",
   "license": "MIT",
   "repository": {

@@ -184,6 +184,19 @@ export class StorageService {
     return this.discoveryService.syncGoogleAccountsJson(email);
   }
 
+  public async verifyIdeActiveAccount(expectedEmail: string): Promise<{ verified: boolean; actualEmail?: string }> {
+    const current = await this.getCurrentAntigravityAccount().catch(() => null);
+    if (!current?.email) {
+      return { verified: false, actualEmail: undefined };
+    }
+    const actualEmail = current.email.trim().toLowerCase();
+    const exp = expectedEmail.trim().toLowerCase();
+    return {
+      verified: actualEmail === exp,
+      actualEmail
+    };
+  }
+
   // ── USS In-Memory Hot Switching ──
 
   public async liveSwitchOAuthToken(account: AccountInfo, tokens: OAuthTokens): Promise<boolean> {

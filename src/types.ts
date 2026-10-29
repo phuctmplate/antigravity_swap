@@ -15,8 +15,8 @@ export interface QuotaBucket {
 }
 
 export interface QuotaGroup {
-  id: string; // 'gemini' | 'claude_gpt'
-  name: string; // 'Gemini Models' | 'Claude and GPT models'
+  id: string; // 'gemini' | 'claude_gpt' | 'argon'
+  name: string; // 'Gemini Models' | 'Claude and GPT models' | 'Argon Models'
   description?: string;
   fiveHour?: QuotaBucket;
   weekly?: QuotaBucket;
@@ -26,7 +26,7 @@ export interface QuotaGroup {
 export interface ModelQuota {
   id: string;
   displayName: string;
-  groupName?: string; // 'Gemini Models' | 'Claude and GPT models'
+  groupName?: string; // 'Gemini Models' | 'Claude and GPT models' | 'Argon Models'
   description?: string;
   remainingFraction: number; // 0.0 to 1.0
   percentage: number; // 0 to 100
@@ -60,10 +60,11 @@ export interface AccountInfo {
   banReason?: string;
   quotas: ModelQuota[];
 
-  // Separated Quota Groups (Gemini Models vs Claude and GPT models)
+  // Separated Quota Groups (Gemini Models vs Claude and GPT models vs Argon Models on Pro)
   quotaGroups?: QuotaGroup[];
   geminiGroup?: QuotaGroup;
   claudeGptGroup?: QuotaGroup;
+  argonGroup?: QuotaGroup;
 
   averageQuotaPercentage?: number;
   fiveHourQuotaPercentage?: number;

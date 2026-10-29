@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { getVsCodeApi } from "../vscode";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
@@ -46,7 +46,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
   const lastRefreshRef = useRef<number>(0);
   const vscode = getVsCodeApi();
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!isInputFocusedRef.current) {
       setThresholdInput(
         String(autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT),
@@ -54,7 +54,7 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
     }
   }, [autoSwitchThreshold]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);

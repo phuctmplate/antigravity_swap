@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Account } from "../types";
 import { AccountCard } from "./AccountCard";
 import { getVsCodeApi } from "../vscode";
@@ -78,6 +78,28 @@ export const AccountList: React.FC<AccountListProps> = ({
 
   const lastRefreshMap = useRef<Map<string, number>>(new Map());
   const vscode = getVsCodeApi();
+
+  // Stop spinning refresh icon the exact millisecond the backend responds (via toast or stateUpdate)
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (!msg) return;
+      if (msg.type === "toast" || msg.type === "stateUpdate") {
+        setRefreshingEmails(new Set());
+        setIsBulkRefreshing(false);
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  // Also clear spinning state when accounts prop updates with new data from backend
+  useEffect(() => {
+    if (refreshingEmails.size > 0) {
+      setRefreshingEmails(new Set());
+      setIsBulkRefreshing(false);
+    }
+  }, [accounts]);
 
   const lastImportRef = useRef<number>(0);
   const handleImport = () => {
@@ -312,13 +334,15 @@ export const AccountList: React.FC<AccountListProps> = ({
     vscode.postMessage({ command: "refreshAccount", email });
     toast.info(`Refreshing quota for ${email}...`);
 
+    // Safety fallback timeout only in case network/extension never responded
     setTimeout(() => {
       setRefreshingEmails((prev) => {
+        if (!prev.has(email)) return prev;
         const next = new Set(prev);
         next.delete(email);
         return next;
       });
-    }, 2000);
+    }, 4000);
   };
 
   // Bulk Refresh with Cooldown check

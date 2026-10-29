@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Account } from '../types';
+import { Account, ModelQuota } from '../types';
 import { Card, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { Progress } from './ui/progress';
@@ -25,7 +25,55 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
 
   const isBanned = targetAcc.isBanned || targetAcc.status === 'banned';
   const isAuthFailed = targetAcc.status === 'auth_failed';
-  const quotas = targetAcc.quotas || [];
+  const isFree = !targetAcc.tierBadge || targetAcc.tierBadge === 'STANDARD FREE';
+  const isPro = targetAcc.tierBadge === 'PRO' || targetAcc.tierBadge === 'AI PREMIUM';
+  const isUltra = targetAcc.tierBadge === 'ULTRA' || targetAcc.tierBadge === 'ENTERPRISE';
+
+  const isArgonModel = (q: { id?: string; displayName?: string; groupName?: string }) => {
+    const s = ((q.id || '') + ' ' + (q.displayName || '') + ' ' + (q.groupName || '')).toLowerCase();
+    return s.includes('argon');
+  };
+
+  // Build effective model list with tier-aware Argon handling:
+  // - Free tier: Argon is never available
+  // - Pro tier: Argon is in its own dedicated weekly-only bucket ('Argon Models')
+  // - Ultra tier: Argon is merged into 'Gemini Models'
+  const rawQuotas = (targetAcc.quotas || []).filter((q) => !(isFree && isArgonModel(q)));
+  const quotas: ModelQuota[] = [...rawQuotas];
+
+  if (!isFree && quotas.length > 0 && !quotas.some((q) => isArgonModel(q))) {
+    if (isPro && targetAcc.argonGroup?.weekly) {
+      const argonWk = targetAcc.argonGroup.weekly;
+      quotas.push({
+        id: 'gemini-4-argon',
+        displayName: 'Gemini 4 Argon',
+        groupName: 'Argon Models',
+        description: argonWk.description || 'Dedicated weekly quota bucket for Argon on Pro plan',
+        remainingFraction: argonWk.remainingFraction,
+        percentage: argonWk.percentage,
+        resetTime: argonWk.resetTime,
+        resetCountdown: argonWk.resetCountdown,
+        windowType: 'weekly',
+        windowLabel: 'Weekly Quota',
+        disabled: argonWk.disabled ?? false
+      });
+    } else if (isUltra) {
+      const gemWk = targetAcc.geminiGroup?.weekly || targetAcc.geminiGroup?.fiveHour;
+      quotas.unshift({
+        id: 'gemini-4-argon',
+        displayName: 'Gemini 4 Argon',
+        groupName: 'Gemini Models',
+        description: gemWk?.description || 'Merged into Gemini Models bucket on Ultra plan',
+        remainingFraction: gemWk ? gemWk.remainingFraction : 1.0,
+        percentage: gemWk ? gemWk.percentage : 100,
+        resetTime: gemWk?.resetTime,
+        resetCountdown: gemWk?.resetCountdown,
+        windowType: 'weekly',
+        windowLabel: 'Weekly Quota',
+        disabled: gemWk?.disabled ?? false
+      });
+    }
+  }
 
   const quotaLabel = (q: { displayName?: string; id?: string }) => q.displayName || q.id || 'Unknown model';
 
@@ -37,6 +85,10 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
   const getTextColor = quotaTextClass;
 
   const isSelectedActive = activeAccount && selectedAccount && activeAccount.email === selectedAccount.email;
+
+  const groupTitles = isPro
+    ? ['Gemini Models', 'Claude and GPT models', 'Argon Models']
+    : ['Gemini Models', 'Claude and GPT models'];
 
   return (
     <div className="flex flex-col gap-2">
@@ -91,29 +143,56 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
         </Card>
       ) : (
         <div className="flex flex-col gap-4">
-          {['Gemini Models', 'Claude and GPT models'].map((groupTitle) => {
-            const isGem = groupTitle.includes('Gemini');
+          {groupTitles.map((groupTitle) => {
+            const isGem = groupTitle === 'Gemini Models';
+            const isArgonGroup = groupTitle === 'Argon Models';
             const groupModels = filteredQuotas.filter((q) => {
               const gName = (q.groupName || '').toLowerCase();
-              if (isGem) {
-                return gName.includes('gemini') || q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('flash');
-              } else {
-                return gName.includes('claude') || gName.includes('gpt') || q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt');
+              const qIsArgon = isArgonModel(q);
+              if (isArgonGroup) {
+                return qIsArgon;
               }
+              if (isGem) {
+                if (isPro && qIsArgon) return false;
+                return (
+                  (isUltra && qIsArgon) ||
+                  gName.includes('gemini') ||
+                  q.displayName.toLowerCase().includes('gemini') ||
+                  q.displayName.toLowerCase().includes('flash')
+                );
+              }
+              return (
+                !qIsArgon &&
+                (gName.includes('claude') ||
+                  gName.includes('gpt') ||
+                  q.displayName.toLowerCase().includes('claude') ||
+                  q.displayName.toLowerCase().includes('gpt'))
+              );
             });
 
             if (groupModels.length === 0) return null;
 
+            const dotClass = isArgonGroup
+              ? 'bg-violet-500'
+              : isGem
+                ? 'bg-blue-500'
+                : 'bg-amber-500';
+
             return (
               <div key={groupTitle} className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-foreground">
-                  <span className={`w-2 h-2 rounded-full ${isGem ? 'bg-blue-500' : 'bg-amber-500'}`} />
-                  <span>{groupTitle}</span>
+                <div className="flex items-center justify-between text-xs font-bold text-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+                    <span>{groupTitle}</span>
+                  </div>
                 </div>
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2">
                   {groupModels.map((q, idx) => {
                     const isPlaceholder = q.percentage === -1;
                     const pct = isPlaceholder ? 100 : Math.max(0, Math.min(100, q.percentage || 0));
+                    const effectiveWindowLabel = (isPro && isArgonModel(q))
+                      ? 'Weekly Quota'
+                      : (q.windowLabel || q.windowType);
 
                     return (
                       <Card
@@ -137,7 +216,7 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
 
                           {/* Footer metadata: remaining & window type */}
                           <div className="flex items-center justify-between text-[9px] text-muted-foreground gap-1">
-                            <span className="truncate">{q.windowLabel || q.windowType}</span>
+                            <span className="truncate">{effectiveWindowLabel}</span>
                             {q.disabled ? (
                               <span className="text-amber-400 font-medium shrink-0">Limit reached</span>
                             ) : (q.resetCountdown || (q.windowType === '5h' ? parseCountdownFromDescription(q.description) : (/\b\d+\s*d\b/i.test(parseCountdownFromDescription(q.description) || '') ? parseCountdownFromDescription(q.description) : undefined))) ? (

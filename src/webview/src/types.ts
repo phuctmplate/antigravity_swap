@@ -12,8 +12,8 @@ export interface QuotaBucket {
 }
 
 export interface QuotaGroup {
-  id: string; // 'gemini' | 'claude_gpt'
-  name: string; // 'Gemini Models' | 'Claude and GPT models'
+  id: string; // 'gemini' | 'claude_gpt' | 'argon'
+  name: string; // 'Gemini Models' | 'Claude and GPT models' | 'Argon Models'
   description?: string;
   fiveHour?: QuotaBucket;
   weekly?: QuotaBucket;
@@ -56,6 +56,7 @@ export interface Account {
   quotaGroups?: QuotaGroup[];
   geminiGroup?: QuotaGroup;
   claudeGptGroup?: QuotaGroup;
+  argonGroup?: QuotaGroup;
   averageQuotaPercentage?: number;
   fiveHourQuotaPercentage?: number;
   weeklyQuotaPercentage?: number;

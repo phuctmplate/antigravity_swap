@@ -421,6 +421,31 @@ main().catch(() => process.exit(1));
           apiKey: tokens.accessToken
         });
         await this.execSqliteUpsert(stateDbPath, 'antigravityAuthStatus', authStatus);
+
+        // 4. Update Antigravity IDE v2.6+ core extension state ('google.google-antigravity')
+        try {
+          const nativeDb = this.getSqliteDb(stateDbPath);
+          if (nativeDb) {
+            const row = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('google.google-antigravity');
+            let agyState: any = {};
+            if (row?.value) {
+              try {
+                agyState = JSON.parse(row.value);
+              } catch {}
+            }
+            if (!agyState['antigravity-storage'] || typeof agyState['antigravity-storage'] !== 'object') {
+              agyState['antigravity-storage'] = {};
+            }
+            agyState['antigravity-storage']['jetski.onboarding.lastLoginUsername'] = account.email;
+            agyState['antigravity-storage']['jetski.onboarding.lastLoginIsGcpTos'] = 'false';
+            nativeDb.prepare(
+              'INSERT INTO ItemTable (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+            ).run('google.google-antigravity', JSON.stringify(agyState));
+            nativeDb.close();
+          }
+        } catch (agyDbErr) {
+          console.warn('[Antigravity Swap] google.google-antigravity sync warning:', agyDbErr);
+        }
       }
 
       // Pre-grant extension authentication access to avoid access prompts

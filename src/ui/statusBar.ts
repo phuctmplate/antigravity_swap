@@ -126,6 +126,10 @@ export class StatusBarService implements vscode.Disposable {
       !active.tierBadge ||
       active.tierBadge === "STANDARD FREE" ||
       active.accountType?.toLowerCase().includes("free") === true;
+    const isPro =
+      active.tierBadge === "PRO" || active.tierBadge === "AI PREMIUM";
+    const isUltra =
+      active.tierBadge === "ULTRA" || active.tierBadge === "ENTERPRISE";
     const quotas = active.quotas ?? [];
     const weeklyQuotas = quotas.filter(
       (q) => q.windowType === "weekly" && !q.disabled && q.percentage >= 0,
@@ -137,22 +141,42 @@ export class StatusBarService implements vscode.Disposable {
     const geminiGroup =
       active.geminiGroup ||
       active.quotaGroups?.find(
-        (g) => g.id === "gemini" || g.name.toLowerCase().includes("gemini"),
+        (g) =>
+          g.id === "gemini" ||
+          (g.name.toLowerCase().includes("gemini") &&
+            !g.name.toLowerCase().includes("argon")),
       );
     const geminiWeekly =
       geminiGroup?.weekly ||
       weeklyQuotas.find(
         (q) =>
-          q.displayName.toLowerCase().includes("gemini") ||
-          q.displayName.toLowerCase().includes("pro"),
+          (!isPro || !q.displayName.toLowerCase().includes("argon")) &&
+          (q.displayName.toLowerCase().includes("gemini") ||
+            q.displayName.toLowerCase().includes("pro")),
       );
     const gemini5h =
       geminiGroup?.fiveHour ||
       fiveHourQuotas.find(
         (q) =>
-          q.displayName.toLowerCase().includes("gemini") ||
-          q.displayName.toLowerCase().includes("flash"),
+          (!isPro || !q.displayName.toLowerCase().includes("argon")) &&
+          (q.displayName.toLowerCase().includes("gemini") ||
+            q.displayName.toLowerCase().includes("flash")),
       );
+
+    const argonGroup = isPro
+      ? active.argonGroup ||
+        active.quotaGroups?.find(
+          (g) => g.id === "argon" || g.name.toLowerCase().includes("argon"),
+        )
+      : undefined;
+    const argonWeekly = isPro
+      ? argonGroup?.weekly ||
+        weeklyQuotas.find((q) =>
+          (q.id + " " + q.displayName + " " + (q.groupName || ""))
+            .toLowerCase()
+            .includes("argon"),
+        )
+      : undefined;
 
     const claudeGroup =
       active.claudeGptGroup ||
@@ -191,7 +215,7 @@ export class StatusBarService implements vscode.Disposable {
       const reset = b.resetCountdown ? ` *(resets ${b.resetCountdown})*` : "";
       return `**${pct}**${reset}`;
     };
-    if (geminiWeekly || gemini5h || claudeWeekly || claude5h) {
+    if (geminiWeekly || gemini5h || claudeWeekly || claude5h || argonWeekly) {
       md.appendMarkdown(
         `**$(zap) Account Instant Quota:** **${accountInstantPct}%** (Gemini Instant Quota: **${geminiPct}%** · Claude & GPT Instant Quota: **${claudePct}%**)\n\n`,
       );
@@ -231,7 +255,15 @@ export class StatusBarService implements vscode.Disposable {
           geminiWeekly?.percentage ?? 100,
         );
         const gIcon = gMin < 20 ? "$(warning)" : "$(check)";
-        md.appendMarkdown(`* ${gIcon} **Gemini:** ${parts.join(" · ")}\n\n`);
+        const gLabel = isUltra ? "Gemini (incl. Argon)" : "Gemini";
+        md.appendMarkdown(`* ${gIcon} **${gLabel}:** ${parts.join(" · ")}\n\n`);
+      }
+
+      if (isPro && argonWeekly && !argonWeekly.disabled && typeof argonWeekly.percentage === "number") {
+        const aIcon = (argonWeekly.percentage ?? 100) < 20 ? "$(warning)" : "$(check)";
+        md.appendMarkdown(
+          `* ${aIcon} **Argon (Weekly Only):** Weekly: ${formatBucket(argonWeekly)}\n\n`,
+        );
       }
 
       if (claude5h || claudeWeekly) {

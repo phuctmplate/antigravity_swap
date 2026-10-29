@@ -67,6 +67,13 @@ export class QuotaService {
   }
 
   /**
+   * Invalidates in-memory quota cache for a specific account or all accounts.
+   */
+  public invalidateCache(email?: string): void {
+    this.apiClient.invalidateCache(email);
+  }
+
+  /**
    * Returns the email address of the active account in the running Language Server.
    */
   public async getLiveLanguageServerEmail(): Promise<string | undefined> {
@@ -137,6 +144,7 @@ export class QuotaService {
             quotaGroups: account.quotaGroups,
             geminiGroup: account.geminiGroup,
             claudeGptGroup: account.claudeGptGroup,
+            argonGroup: account.argonGroup,
             averagePercentage: account.averageQuotaPercentage ?? 0,
             hasWeeklyQuota: account.hasWeeklyQuota ?? false,
             has5HourQuota: account.has5HourQuota ?? false,
@@ -190,7 +198,6 @@ export class QuotaService {
         } catch {}
       }
 
-
       const parsedResult = this.parser.processQuotaData(quotaData, account);
 
       // Detailed debug log of fetched quotas and resets time requested by user
@@ -217,6 +224,7 @@ export class QuotaService {
           quotaGroups: account.quotaGroups,
           geminiGroup: account.geminiGroup,
           claudeGptGroup: account.claudeGptGroup,
+          argonGroup: account.argonGroup,
           averagePercentage: account.averageQuotaPercentage ?? 0,
           fiveHourPercentage: account.fiveHourQuotaPercentage,
           weeklyPercentage: account.weeklyQuotaPercentage,
@@ -239,6 +247,7 @@ export class QuotaService {
         quotaGroups: account.quotaGroups,
         geminiGroup: account.geminiGroup,
         claudeGptGroup: account.claudeGptGroup,
+        argonGroup: account.argonGroup,
         averagePercentage: account.averageQuotaPercentage ?? 0,
         fiveHourPercentage: account.fiveHourQuotaPercentage,
         weeklyPercentage: account.weeklyQuotaPercentage,

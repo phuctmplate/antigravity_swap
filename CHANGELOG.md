@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.0 (2026-10-29)
+
+- **Seamless Switching for New Antigravity IDE**: Fixed and restored zero-reload seamless account switching for the new Antigravity IDE versions.
+- **Reliable Auto-Switch**: Smarter candidate failover with automatic verification and rollback.
+
 ## 2.0.1 (2026-10-28)
 
 - **Quota Accuracy**: Fix quota calculation

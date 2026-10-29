@@ -61,9 +61,13 @@ export class AccountService {
         }
         const acc = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
         if (!acc) return { ok: false, isDepleted: true, error: 'Account not found' };
-        return this.quotaService.probeJitCandidate(acc, tokens, async (newTokens) => {
+        const probeRes = await this.quotaService.probeJitCandidate(acc, tokens, async (newTokens) => {
           await this.storage.saveAccountTokens(email, newTokens);
         });
+        if (probeRes.ok && !probeRes.isDepleted) {
+          this.autoSwitcher.clearFailedCandidate(email);
+        }
+        return probeRes;
       },
       onCandidateProbed: async (email: string, probeResult) => {
         const latestAccounts = this.accounts;
@@ -133,6 +137,7 @@ export class AccountService {
       switchAccount: (email) => this.switchAccount(email),
       refreshAccountQuota: (email, force) => this.refreshAccountQuota(email, force),
       isSwitching: () => this.switcher.isSwitchInProgress(),
+      isAutoSwitching: () => this.autoSwitcher.isAutoSwitchInProgress(),
       notifyStateChange
     });
   }
@@ -306,7 +311,11 @@ export class AccountService {
     if (isManual) {
       this.lifecycle.recordManualSwitch();
     }
-    return this.switcher.switchAccount(email, isManual, isSilent);
+    const ok = await this.switcher.switchAccount(email, isManual, isSilent);
+    if (ok) {
+      this.autoSwitcher.clearFailedCandidate(email);
+    }
+    return ok;
   }
 
   public async reloginAccount(email: string): Promise<boolean> {
@@ -342,7 +351,11 @@ export class AccountService {
   }
 
   public async refreshAccountQuota(email: string, force = false, skipSave = false): Promise<void> {
-    return this.quotaSync.refreshAccountQuota(email, force, skipSave);
+    await this.quotaSync.refreshAccountQuota(email, force, skipSave);
+    const acc = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
+    if (acc && acc.status === 'healthy') {
+      this.autoSwitcher.clearFailedCandidate(email);
+    }
   }
 
   public isBackgroundRefreshingState(): boolean {

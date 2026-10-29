@@ -1,99 +1,113 @@
-# Antigravity Swap ⚡
-
-**Antigravity Swap** is a high-performance extension for **Antigravity IDE** that enables **seamless multi-account switching without reloading the IDE window**, provides **real-time per-model quota tracking**, and displays **overall combined capacity across all accounts**.
+<div align="center">
+  <img src="media/icon.png" width="128" height="128" alt="Antigravity Swap Logo" />
+  <h1>Antigravity Swap</h1>
+  <p><b>Seamless multi-account hot-switching and real-time per-model quota tracking for Antigravity IDE</b></p>
+</div>
 
 ---
 
-## 📸 Preview
+**Antigravity Swap** is a high-performance extension for **Antigravity IDE** that enables **seamless multi-account switching without reloading the IDE window**, provides **real-time per-model quota tracking**, and features **intelligent auto-switching** to keep you in the flow.
+
+---
+
+## Preview
 
 ### Sidebar Integration & Fast Switch
 Integrated directly into the Antigravity IDE sidebar with account overview and instant switching:
 
-![Antigravity Swap Sidebar Preview](media/preview-sidebar.png)
+<img src="media/preview-sidebar.png" width="100%" alt="Antigravity Swap Sidebar Preview" />
 
 ### Wide Quota Dashboard & Per-Model Breakdown
-Full dashboard view with responsive side-by-side account management and real-time per-model quota monitors:
+Full dashboard view with responsive side-by-side account management, Instant quota health gauges, and real-time per-model monitors:
 
-![Antigravity Swap Dashboard Preview](media/preview-dashboard.png)
-
----
-
-## ✨ Key Features
-
-- 🔄 **Zero-Reload Account Switching**: Switch between multiple Google / Antigravity accounts instantly without reloading windows or restarting your IDE.
-- 🪟 **Real-Time Multi-Instance Sync**: Seamlessly synchronizes accounts, active status, and preferences across all your open IDE windows in real-time.
-- 🤖 **Smart Auto-Switch on Low Quota**: Automatically switches to the healthiest account with the highest remaining balance when your active quota runs low.
-- 🪟 **Detachable Floating Dashboard**: Pop out the dashboard into an independent native floating window to monitor quotas alongside your workspace.
-
-> [!TIP]
-> **Recommended Account Capacity**: To ensure optimal synchronization performance and avoid automated spam or rate-limiting flags from upstream services, we recommend adding a maximum of **70 accounts**.
+<img src="media/preview-dashboard.png" width="100%" alt="Antigravity Swap Dashboard Preview" />
 
 ---
 
-## 🛠 Available Commands
+## Key Features
 
-| Command | Title | Description |
-| :--- | :--- | :--- |
-| `antigravitySwap.openDashboard` | **Open Quota Dashboard** | Open the rich dashboard in the sidebar |
-| `antigravitySwap.popOutDashboard` | **Pop Out Dashboard** | Detach the dashboard into a native floating window |
-| `antigravitySwap.switchAccount` | **Switch Active Account** | Switch between accounts instantly without reloading |
-| `antigravitySwap.importCurrentAntigravity` | **Import Active Antigravity Account** | 1-click import of the active session from Antigravity IDE |
-| `antigravitySwap.reloginAccount` | **Re-login / Reconnect Account** | Re-authenticate or reconnect an expired account |
-| `antigravitySwap.addAccount` | **Add Account (Google OAuth)** | Connect a new account via Google OAuth web flow |
-| `antigravitySwap.refreshQuotas` | **Refresh All Account Quotas** | Fetch fresh quota balances from cloud server |
-| `antigravitySwap.importExistingAccounts` | **Import Detected Accounts** | Auto-detect accounts from local IDE database |
-| `antigravitySwap.restoreOriginalIdeExtension` | **Restore Original IDE Extension** | Revert IDE session bridge back to original pristine backup |
-| `antigravitySwap.enableIdeExtensionPatch` | **Enable IDE Extension Optimization** | Re-enable zero-reload session synchronization |
-
----
-## ⚙️ Configuration Settings
-
-- `antigravitySwap.enableIdePatch`: (Default: `true`) Enables automated session synchronization for seamless zero-reload switching.
-- `antigravitySwap.heartbeatIntervalSeconds`: (Default: `30`) Heartbeat interval in seconds to poll quota health and detect expired/banned accounts.
-- `antigravitySwap.autoSwitchWhenQuotaLow`: (Default: `false`) Automatically switch to another account when current active quota is exhausted.
-- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `2`) Percentage threshold below which the active account triggers auto-switching to another healthy account.
-- `antigravitySwap.autoSwitchTarget`: (Default: `"gemini"`) Quota target to monitor for auto-switch (`"gemini"`, `"claude"`, or `"total"`). When a model family is selected, it monitors the 5-Hour window for Pro/Ultra accounts or Weekly balance for Free accounts.
+- **Zero-Reload Seamless Switching**: Switch between multiple accounts instantly with zero window reload or IDE restart, fully compatible with the latest Antigravity IDE releases.
+- **High-Speed Direct Cloud Tracking**: Fast and lightweight quota synchronization directly over secure HTTPS.
+- **Decoupled Quota Windows**: Accurately tracks short-term rolling limits and long-term weekly capacity across all supported models.
+- **Instant Quota Health**: Intelligently calculates usable capacity to keep your workflow uninterrupted and prevent sudden lockouts.
+- **Smart Auto-Switch on Low Quota**: Automatically fails over to the healthiest account with candidate verification and self-healing rollback.
+- **Real-Time Multi-Instance Sync**: Synchronizes active credentials, quotas, and state across multiple open IDE windows in real-time.
+- **Detachable Floating Dashboard**: Pop out the dashboard into an independent native floating window to monitor quotas alongside your workspace.
 
 ---
 
-## 🔄 IDE Session Integration & Manual Restoration
+## Available Commands
 
-### ❓ Why is IDE Session Optimization Needed?
-By default, **Antigravity IDE** is designed around a single static account login. When switching accounts dynamically, the default session listener in the IDE would normally require a full window reload, or cause multiple inactive sessions to accumulate and conflict in the IDE's account menu.
+| Command | Description |
+| :--- | :--- |
+| **Open Quota Dashboard**<br>`antigravitySwap.openDashboard` | Open the rich dashboard in the sidebar |
+| **Pop Out Dashboard**<br>`antigravitySwap.popOutDashboard` | Detach the dashboard into a native floating window |
+| **Switch Active Account**<br>`antigravitySwap.switchAccount` | Switch between accounts instantly without reloading |
+| **Import Active Antigravity Account**<br>`antigravitySwap.importCurrentAntigravity` | 1-click import of the active session from Antigravity IDE |
+| **Re-login / Reconnect Account**<br>`antigravitySwap.reloginAccount` | Re-authenticate or reconnect an expired account |
+| **Add Account (Google OAuth)**<br>`antigravitySwap.addAccount` | Connect a new account via Google OAuth web flow |
+| **Refresh All Account Quotas**<br>`antigravitySwap.refreshQuotas` | Fetch fresh quota balances from cloud services |
+| **Import Detected Accounts**<br>`antigravitySwap.importExistingAccounts` | Auto-detect accounts from local IDE database |
+| **Restore Original IDE Extension**<br>`antigravitySwap.restoreOriginalIdeExtension` | Revert IDE session bridge back to original pristine backup |
+| **Enable IDE Extension Optimization**<br>`antigravitySwap.enableIdeExtensionPatch` | Re-enable zero-reload session synchronization |
 
-The built-in session bridge seamlessly handles session transitions:
-- **Instant Live Switching**: Updates authentication state in real time so the Language Server and AI Agent immediately accept the new account with **zero window reload**.
-- **Clean Session Management**: Evicts previous inactive sessions to prevent account stacking and ensure only your currently active account is bound to IDE services.
+---
+
+## Configuration Settings
+
+Configure these options in your VS Code / Antigravity IDE `settings.json`:
+
+- `antigravitySwap.enableIdeExtensionPatch`: (Default: `true`) Enables self-healing session synchronization for seamless zero-reload switching.
+- `antigravitySwap.autoSwitchWhenQuotaLow`: (Default: `false`) Automatically switch to another healthy account when current active quota is exhausted.
+- `antigravitySwap.lowQuotaThresholdPercent`: (Default: `5`) Percentage threshold (0-100%) at or below which auto-switch is triggered.
+- `antigravitySwap.autoSwitchTarget`: (Default: `"gemini"`) Quota target to monitor for auto-switching:
+  - `"instant"`: Overall account usable burst quota across all models.
+  - `"gemini"`: Gemini Instant Quota (5-hour window modulated by weekly capacity).
+  - `"claude"`: Claude & GPT Instant Quota (5-hour window modulated by weekly capacity).
+
+---
+
+## IDE Session Integration & Manual Restoration
+
+### How Does Zero-Reload Hot-Switching Work?
+Antigravity IDE was originally designed for a single static login session. When dynamically switching accounts, the default session listener would normally require a full window reload.
+
+Antigravity Swap integrates seamlessly with Antigravity IDE:
+- **Instant Live Switching**: Automatically synchronizes account credentials and session state in real time so the Language Server and AI Agent immediately accept the new account with **zero window reload**.
+- **Fail-Safe Verification & Rollback**: Verifies the active session after switching; automatically restores the previous account if a switch encounters an unexpected issue.
+- **Zero Window Reload**: Continue editing code and chatting with the AI agent immediately with no interruption or window reloading.
 
 > [!NOTE]
-> **Top-Right Avatar & Display Name Behavior upon Switching**
+> **Top-Right Avatar & Profile Display**
 > When switching accounts without reloading the window, the active account's **display name, email, credentials, and model quotas switch immediately**.
-> The avatar icon in the top-right corner of the IDE header may retain the cached profile image of the previous session until the IDE is completely restarted / re-launched — this is purely cosmetic. As long as the account display name and email reflect the switched account, your AI prompts, quota tracking, and Language Server services are 100% operating under the new account.
+> The avatar icon in the top-right corner of the IDE header may retain the cached profile image of the previous session until the IDE is completely restarted — this is purely cosmetic. Your AI prompts, quota tracking, and Language Server services are 100% operating under the new account.
 
-> [!IMPORTANT]
-> **Pristine Backup Location & Manual Restoration Guide**
-> 
-> Before applying session optimization, an untouched pristine backup (`extension.js.bak`) is **always created automatically**.
-> 
-> - **Original Backup File Location**:
->   - **Windows**: `%LOCALAPPDATA%\Programs\Antigravity IDE\resources\app\extensions\antigravity\dist\extension.js.bak`
->   - **macOS / Linux**: `~/.local/share/antigravity/resources/app/extensions/antigravity/dist/extension.js.bak` (or `/usr/share/antigravity/resources/app/extensions/antigravity/dist/extension.js.bak`)
-> 
-> **How to restore original files**:
-> 1. **1-Click (Recommended)**: Open Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`), run **`Antigravity Swap: Restore Original IDE Extension`**, then reload window.
-> 2. **Manual Restoration**: Navigate to the directory path above, delete `extension.js`, and rename `extension.js.bak` back to `extension.js`.
-> 
-> *Note: The session bridge is completely self-contained and safe for normal IDE usage even if Antigravity Swap is uninstalled. Official Antigravity IDE software updates will also automatically refresh all files.*
+### Pristine Backup & Restoration Guide
+Before applying session optimization, an untouched pristine backup (`extension.js.bak`) is **always created automatically**.
 
----
+**Default Backup Paths:**
+- **Windows**:
+  ```plaintext
+  %LOCALAPPDATA%\Programs\Antigravity IDE\resources\app\extensions\antigravity\dist\extension.js.bak
+  ```
+- **macOS / Linux**:
+  ```plaintext
+  ~/.local/share/antigravity/resources/app/extensions/antigravity/dist/extension.js.bak
+  ```
 
-## 🔒 Security & Privacy
-
-All OAuth tokens and credentials are encrypted and stored inside VS Code's native secure storage (`SecretStorage`), which uses OS-level DPAPI / Keytar encryption. No sensitive tokens are exposed or written to disk in plain text.
+**How to restore original files:**
+1. **1-Click (Recommended)**: Open Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`), run **`Antigravity Swap: Restore Original IDE Extension`**, then reload window.
+2. **Manual Restoration**: Navigate to the directory above, delete `extension.js`, and rename `extension.js.bak` back to `extension.js`.
 
 ---
 
-## ⚠️ Disclaimer & Limitation of Liability
+## Security & Privacy
+
+All OAuth tokens and credentials are encrypted and stored inside native OS secure storage (`SecretStorage` via DPAPI / Keytar). Direct quota requests connect strictly over authenticated HTTPS. No sensitive tokens or private configurations are ever sent to third parties or written unencrypted to disk.
+
+---
+
+## Disclaimer & Limitation of Liability
 
 > [!CAUTION]
 > **Use at Your Own Discretion**

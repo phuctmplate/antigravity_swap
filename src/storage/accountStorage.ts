@@ -59,7 +59,9 @@ export class AccountStorage {
       let accModified = false;
       let geminiGroup = acc.geminiGroup;
       let claudeGptGroup = acc.claudeGptGroup;
+      let argonGroup = acc.argonGroup;
       let statusMessage = acc.statusMessage;
+      const isPro = acc.tierBadge === 'PRO' || acc.tierBadge === 'AI PREMIUM';
 
       const normalizeBucket = (b?: any) => {
         if (!b) return b;
@@ -70,14 +72,7 @@ export class AccountStorage {
             remainingFraction: 1.0,
             percentage: 100,
             resetTime: undefined,
-            resetCountdown: b.window === 'weekly' ? '6d 23h' : 'Ready'
-          };
-        }
-        if (b.window === 'weekly' && b.resetCountdown === 'Ready') {
-          accModified = true;
-          return {
-            ...b,
-            resetCountdown: '6d 23h'
+            resetCountdown: 'Ready'
           };
         }
         return b;
@@ -105,6 +100,22 @@ export class AccountStorage {
             fiveHour: new5h,
             weekly: newWk,
             buckets: [new5h, newWk].filter(Boolean)
+          };
+        }
+      }
+
+      if (!isPro && argonGroup) {
+        argonGroup = undefined;
+        accModified = true;
+      } else if (isPro && argonGroup) {
+        const newWk = normalizeBucket(argonGroup.weekly);
+        if (argonGroup.fiveHour !== undefined || newWk !== argonGroup.weekly) {
+          accModified = true;
+          argonGroup = {
+            ...argonGroup,
+            fiveHour: undefined,
+            weekly: newWk,
+            buckets: [newWk].filter(Boolean)
           };
         }
       }
@@ -142,6 +153,7 @@ export class AccountStorage {
           ...acc,
           geminiGroup,
           claudeGptGroup,
+          argonGroup,
           weeklyQuotaPercentage: weeklyPercentage,
           fiveHourQuotaPercentage: fiveHourPercentage,
           averageQuotaPercentage: weeklyPercentage ?? fiveHourPercentage ?? acc.averageQuotaPercentage,
