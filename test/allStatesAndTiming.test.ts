@@ -10,6 +10,23 @@ import {
   MODEL_WEIGHTS
 } from '../src/webview/src/lib/quota';
 
+function mockAcc(overrides: Partial<AccountInfo> = {}): AccountInfo {
+  return {
+    id: 'acc-mock',
+    email: 'user@example.com',
+    name: 'User',
+    isActive: true,
+    status: 'healthy',
+    accountType: 'Google AI Pro',
+    tierBadge: 'PRO',
+    addedAt: '2026-10-20T00:00:00.000Z',
+    quotas: [],
+    hasWeeklyQuota: true,
+    has5HourQuota: true,
+    ...overrides
+  };
+}
+
 test('Comprehensive Quota Timing Scenarios', async (t) => {
   const quotaService = new QuotaService({} as any);
 
@@ -77,7 +94,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-1', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-1', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' }));
     // Synchronizes 5h bucket to 60% with genuine 5h reset
     assert.strictEqual(res.geminiGroup?.fiveHour?.percentage, 60);
     assert.strictEqual(res.geminiGroup?.fiveHour?.resetTime, valid5hReset);
@@ -112,7 +129,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-pro', email: 'pro.user@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-pro', email: 'pro.user@example.com', tierBadge: 'PRO', status: 'healthy' }));
     // Pro model is classified as weekly based on model identity (Pro always = weekly)
     const proModel = res.quotas.find((q) => q.id === 'gemini-2.5-pro');
     assert.strictEqual(proModel?.windowType, 'weekly');
@@ -166,7 +183,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-weekly-4h', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-weekly-4h', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' }));
 
     // Weekly bucket remains 92% and 4.0h countdown
     assert.strictEqual(res.geminiGroup?.weekly?.percentage, 92);
@@ -212,7 +229,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-pro-burned', email: 'pro.burned@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-pro-burned', email: 'pro.burned@example.com', tierBadge: 'PRO', status: 'healthy' }));
 
     // Argon group must accurately reflect the burned Pro quota (3%)
     assert.strictEqual(res.argonGroup?.weekly?.percentage, 3);
@@ -255,7 +272,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-pro-no-argon', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-pro-no-argon', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' }));
 
     // Must strictly be undefined: Pro accounts without Argon do NOT show an Argon group
     assert.strictEqual(res.argonGroup, undefined);
@@ -294,7 +311,7 @@ test('Comprehensive Quota Timing Scenarios', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-decoupled', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-decoupled', email: 'user@example.com', tierBadge: 'PRO', status: 'healthy' }));
 
     // Weekly MUST strictly remain 74% and NOT be overwritten by the 96% 5h consumption!
     assert.strictEqual(res.geminiGroup?.weekly?.percentage, 74);
@@ -332,7 +349,7 @@ test('Comprehensive Account States and Tier Calculations', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-pro', email: 'pro.user@example.com', tierBadge: 'PRO', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-pro', email: 'pro.user@example.com', tierBadge: 'PRO', status: 'healthy' }));
     assert.strictEqual(res.tierBadge, 'PRO');
     assert.strictEqual(res.status, 'healthy');
     assert.strictEqual(res.has5HourQuota, true);
@@ -355,7 +372,7 @@ test('Comprehensive Account States and Tier Calculations', async (t) => {
       }
     };
 
-    const res = quotaService.processQuotaData(raw, { id: 'acc-free', email: 'free.user@example.com', tierBadge: 'STANDARD FREE', status: 'healthy' });
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-free', email: 'free.user@example.com', tierBadge: 'STANDARD FREE', status: 'healthy' }));
     assert.strictEqual(res.tierBadge, 'STANDARD FREE');
     assert.strictEqual(res.has5HourQuota, false);
     assert.strictEqual(res.fiveHourPercentage, undefined);
@@ -363,24 +380,45 @@ test('Comprehensive Account States and Tier Calculations', async (t) => {
     assert.strictEqual(res.geminiGroup?.weekly?.percentage, 75);
   });
 
+  await t.test('State S2b: Standard Free Account with previous stale PRO badge recovers to STANDARD FREE', () => {
+    const raw = {
+      paidTier: { id: 'free-tier' },
+      response: {
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              { displayName: 'Weekly Limit Remaining', window: 'weekly', remainingFraction: 0.75 }
+            ]
+          }
+        ]
+      }
+    };
+
+    const res = quotaService.processQuotaData(raw, mockAcc({ id: 'acc-recovering', email: 'free.recovering@example.com', tierBadge: 'PRO', status: 'healthy' }));
+    assert.strictEqual(res.tierBadge, 'STANDARD FREE');
+    assert.strictEqual(res.has5HourQuota, false);
+    assert.strictEqual(res.fiveHourPercentage, undefined);
+  });
+
   await t.test('State S3: Ultra and Enterprise Tiers detected accurately', () => {
     const rawUltra = {
       currentTier: { id: 'gemini_ultra', name: 'Google AI Ultra' },
       response: { groups: [{ displayName: 'Gemini Models', buckets: [{ window: 'weekly', remainingFraction: 1.0 }] }] }
     };
-    const resUltra = quotaService.processQuotaData(rawUltra, { id: 'ultra', email: 'ultra@example.com' });
+    const resUltra = quotaService.processQuotaData(rawUltra, mockAcc({ id: 'ultra', email: 'ultra@example.com' }));
     assert.strictEqual(resUltra.tierBadge, 'ULTRA');
 
     const rawEnterprise = {
       currentTier: { id: 'workspace_enterprise', name: 'Antigravity Enterprise' },
       response: { groups: [{ displayName: 'Gemini Models', buckets: [{ window: 'weekly', remainingFraction: 1.0 }] }] }
     };
-    const resEnterprise = quotaService.processQuotaData(rawEnterprise, { id: 'ent', email: 'corp@example.com' });
+    const resEnterprise = quotaService.processQuotaData(rawEnterprise, mockAcc({ id: 'ent', email: 'corp@example.com' }));
     assert.strictEqual(resEnterprise.tierBadge, 'ENTERPRISE');
   });
 
   await t.test('State S4: Overall Pool Summary excludes Banned, Auth-Failed, and Uninitialized accounts', () => {
-    const healthyPro: AccountInfo = {
+    const healthyPro: AccountInfo = mockAcc({
       id: 'h1',
       email: 'h1@example.com',
       tierBadge: 'PRO',
@@ -388,10 +426,16 @@ test('Comprehensive Account States and Tier Calculations', async (t) => {
       isBanned: false,
       fiveHourQuotaPercentage: 100,
       weeklyQuotaPercentage: 100,
-      geminiGroup: { id: 'gemini', name: 'Gemini', fiveHour: { percentage: 100, disabled: false }, weekly: { percentage: 100, disabled: false } }
-    };
+      geminiGroup: {
+        id: 'gemini',
+        name: 'Gemini',
+        buckets: [],
+        fiveHour: { bucketId: 'g-5h', displayName: '5h', window: '5h', percentage: 100, remainingFraction: 1.0, disabled: false },
+        weekly: { bucketId: 'g-wk', displayName: 'weekly', window: 'weekly', percentage: 100, remainingFraction: 1.0, disabled: false }
+      }
+    });
 
-    const authFailed: AccountInfo = {
+    const authFailed: AccountInfo = mockAcc({
       id: 'e1',
       email: 'e1@example.com',
       tierBadge: 'PRO',
@@ -399,9 +443,9 @@ test('Comprehensive Account States and Tier Calculations', async (t) => {
       isBanned: false,
       fiveHourQuotaPercentage: 0,
       weeklyQuotaPercentage: 0
-    };
+    });
 
-    const banned: AccountInfo = {
+    const banned: AccountInfo = mockAcc({
       id: 'b1',
       email: 'b1@example.com',
       tierBadge: 'PRO',
@@ -409,16 +453,16 @@ test('Comprehensive Account States and Tier Calculations', async (t) => {
       isBanned: true,
       fiveHourQuotaPercentage: 0,
       weeklyQuotaPercentage: 0
-    };
+    });
 
-    const uninitialized: AccountInfo = {
+    const uninitialized: AccountInfo = mockAcc({
       id: 'u1',
       email: 'u1@example.com',
       tierBadge: 'PRO',
       status: 'healthy',
       isBanned: false,
       quotas: []
-    };
+    });
 
     const summary = quotaService.calculateOverallSummary([healthyPro, authFailed, banned, uninitialized]);
 
@@ -434,25 +478,25 @@ test('Freshness and Stale Quota Synchronization', async (t) => {
   const quotaService = new QuotaService({} as any);
 
   await t.test('Uninitialized account without lastRefreshedAt is stale', () => {
-    const unrefreshed: AccountInfo = { id: '1', email: 'user@example.com' };
+    const unrefreshed: AccountInfo = mockAcc({ id: '1', email: 'user@example.com', lastRefreshedAt: undefined });
     assert.strictEqual(quotaService.isAccountStale(unrefreshed), true);
   });
 
   await t.test('Account refreshed 10 seconds ago (< 30s) is fresh', () => {
-    const fresh: AccountInfo = {
+    const fresh: AccountInfo = mockAcc({
       id: '2',
       email: 'fresh@example.com',
       lastRefreshedAt: new Date(Date.now() - 10000).toISOString()
-    };
+    });
     assert.strictEqual(quotaService.isAccountStale(fresh), false);
   });
 
   await t.test('Account refreshed 35 seconds ago (>= 30s) is stale', () => {
-    const stale: AccountInfo = {
+    const stale: AccountInfo = mockAcc({
       id: '3',
       email: 'stale@example.com',
       lastRefreshedAt: new Date(Date.now() - 35000).toISOString()
-    };
+    });
     assert.strictEqual(quotaService.isAccountStale(stale), true);
   });
 });

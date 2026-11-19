@@ -80,6 +80,14 @@ export function enrichQuotaGroupsWithModels(
     return s.includes('argon');
   };
 
+  const isArgonAvailable = (id: string, m?: any) => {
+    if (!isArgonModel(id, m)) return false;
+    if (m?.disabled === true || m?.enabled === false) return false;
+    const s = (id + ' ' + (m?.displayName || '') + ' ' + (m?.label || '') + ' ' + (m?.modelId || '') + ' ' + (m?.tagTitle || '') + ' ' + (m?.tagDescription || '')).toLowerCase();
+    if (s.includes('disabled') || s.includes('unavailable')) return false;
+    return true;
+  };
+
   // If the account is Free Tier, it NEVER has 5-hour rolling windows, Claude/GPT models, or Argon models.
   if (isFreeAccount) {
     let minWeeklyFraction = 1.0;
@@ -226,10 +234,28 @@ export function enrichQuotaGroupsWithModels(
     }
 
     const effective5hFraction = has5hActiveLimit ? min5hFraction : 1.0;
-    const effectiveWeeklyFraction = hasWeeklyActiveLimit ? minWeeklyFraction : 1.0;
+    // When no separate weekly model bucket is active, Gemini weekly consumption derives from the 5h consumption:
+    // On Google AI Pro/Ultra, weekly pool capacity is 3.5x the 5h rolling capacity (ratio 7/2 = 3.5).
+    const derivedWeeklyFrom5h = has5hActiveLimit && min5hFraction < 1.0
+      ? Math.max(0, 1.0 - (1.0 - min5hFraction) / 3.5)
+      : 1.0;
+    const effectiveWeeklyFraction = hasWeeklyActiveLimit
+      ? minWeeklyFraction
+      : derivedWeeklyFrom5h;
+
+    // Synthesize accurate weekly reset time:
+    // If gemini5hResetTime is known (start + 5h), weekly reset is (start + 7d) = gemini5hResetTime + 163 hours
+    let synthWeeklyResetFrom5h: string | undefined;
+    if (gemini5hResetTime) {
+      try {
+        const reset5hMs = new Date(gemini5hResetTime).getTime();
+        synthWeeklyResetFrom5h = new Date(reset5hMs + 163 * 3600 * 1000).toISOString();
+      } catch {}
+    }
+
     const weeklyReset = (geminiWeeklyResetTime && isResetTimeBeyond5Hours(geminiWeeklyResetTime))
       ? geminiWeeklyResetTime
-      : (hasWeeklyActiveLimit && effectiveWeeklyFraction < 1.0 ? planWeeklyResetTime : undefined);
+      : (synthWeeklyResetFrom5h || planWeeklyResetTime);
 
     if (!geminiGroup) {
       const synthBuckets: any[] = [];
@@ -280,7 +306,7 @@ export function enrichQuotaGroupsWithModels(
       const existingWeekly = geminiGroup.buckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName));
       if (existingWeekly) {
         // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
-        if (typeof existingWeekly.remainingFraction !== 'number' || (hasWeeklyActiveLimit && effectiveWeeklyFraction < existingWeekly.remainingFraction)) {
+        if (typeof existingWeekly.remainingFraction !== 'number' || effectiveWeeklyFraction < existingWeekly.remainingFraction) {
           existingWeekly.remainingFraction = effectiveWeeklyFraction;
         }
         if (!existingWeekly.resetTime && weeklyReset) {
@@ -364,10 +390,11 @@ export function enrichQuotaGroupsWithModels(
   }
 
   // 3. Handle Argon model bucket flow (Pro vs Ultra):
-  // - Pro plan: Argon is separated into its own dedicated bucket that ONLY has a Weekly window.
+  // - Pro plan: Argon is separated into its own dedicated bucket that ONLY has a Weekly window (only if Argon is actually available)
   // - Ultra plan: Argon is merged into the Gemini bucket.
   const argonGroupIdx = resultGroups.findIndex((g: any) => (g.displayName || '').toLowerCase().includes('argon'));
   const argonModelEntries = Object.entries(modelsData).filter(([id, m]) => isArgonModel(id, m));
+  const availableArgonEntries = argonModelEntries.filter(([id, m]) => isArgonAvailable(id, m));
 
   if (isUltraAccount) {
     // On Ultra, merge any standalone Argon group into geminiGroup and remove the separate Argon group
@@ -393,14 +420,16 @@ export function enrichQuotaGroupsWithModels(
       resultGroups.splice(argonGroupIdx, 1);
     }
   } else {
-    // On Pro plan: Only process Argon if the subscription actually includes Argon group or Argon models
-    const hasArgonData = argonGroupIdx >= 0 || argonModelEntries.length > 0;
-    if (hasArgonData) {
+    // On Pro plan: Only process Argon if the subscription actually includes an ACTIVE, AVAILABLE Argon group or models
+    const isArgonGroupAvailable = argonGroupIdx >= 0 && (resultGroups[argonGroupIdx].buckets || []).some((b: any) => !b.disabled && typeof b.remainingFraction === 'number');
+    const hasActiveArgon = isArgonGroupAvailable || availableArgonEntries.length > 0;
+
+    if (hasActiveArgon) {
       let minArgonWeeklyFraction = 1.0;
       let hasArgonConsumption = false;
       let argonWeeklyResetTime: string | undefined;
 
-      for (const [, m] of argonModelEntries) {
+      for (const [, m] of availableArgonEntries) {
         const frac = m.quotaInfo?.remainingFraction;
         const rTime = m.quotaInfo?.resetTime;
         if (typeof frac === 'number') {
@@ -416,7 +445,7 @@ export function enrichQuotaGroupsWithModels(
         }
       }
 
-      const effRemaining = hasArgonConsumption ? minArgonWeeklyFraction : (argonGroupIdx >= 0 ? 1.0 : undefined);
+      const effRemaining = hasArgonConsumption ? minArgonWeeklyFraction : (isArgonGroupAvailable ? 1.0 : undefined);
       const finalArgonResetTime = (argonWeeklyResetTime && isResetTimeBeyond5Hours(argonWeeklyResetTime))
         ? argonWeeklyResetTime
         : (effRemaining !== undefined && effRemaining < 1.0 ? planWeeklyResetTime : undefined);
@@ -456,7 +485,7 @@ export function enrichQuotaGroupsWithModels(
         });
       }
     } else {
-      // Pro subscription does NOT include Argon
+      // Pro subscription does NOT include Argon or Argon is disabled/unavailable
       if (argonGroupIdx >= 0) {
         resultGroups.splice(argonGroupIdx, 1);
       }
@@ -632,13 +661,13 @@ export class GoogleDirectApiClient {
     let tierData: any = {};
     const meta = getIdeRuntimeMetadata();
 
-    const HOST_PROD = 'cloudcode-pa.googleapis.com';
     const HOST_DAILY = 'daily-cloudcode-pa.googleapis.com';
+    const HOST_PROD = 'cloudcode-pa.googleapis.com';
 
-    // 1. Query loadCodeAssist to determine user subscription tier and companion project
+    // 1. Query loadCodeAssist to determine user subscription tier and companion project (Daily primary, Prod fallback)
     try {
-      const lcaProd = await this.postJson(
-        HOST_PROD,
+      const lcaDaily = await this.postJson(
+        HOST_DAILY,
         '/v1internal:loadCodeAssist',
         activeToken,
         {
@@ -650,9 +679,9 @@ export class GoogleDirectApiClient {
         },
         timeoutMs
       );
-      if (lcaProd) {
-        projectId = lcaProd.cloudaicompanionProject;
-        tierData = { ...lcaProd };
+      if (lcaDaily) {
+        projectId = lcaDaily.cloudaicompanionProject;
+        tierData = { ...lcaDaily };
       }
     } catch (lcaErr: any) {
       if (lcaErr.message && (lcaErr.message.includes('Authentication failed') || lcaErr.message.includes('401'))) {
@@ -662,7 +691,7 @@ export class GoogleDirectApiClient {
             activeToken = fresh;
             try {
               const lcaRetry = await this.postJson(
-                HOST_PROD,
+                HOST_DAILY,
                 '/v1internal:loadCodeAssist',
                 activeToken,
                 {
@@ -684,52 +713,43 @@ export class GoogleDirectApiClient {
       }
       if (!projectId && Object.keys(tierData).length === 0) {
         try {
-          const lcaDaily = await this.postJson(
-            HOST_DAILY,
+          const lcaProd = await this.postJson(
+            HOST_PROD,
             '/v1internal:loadCodeAssist',
             activeToken,
             {
-              metadata: { ideType: 'ANTIGRAVITY' }
+              metadata: {
+                ide_type: 'ANTIGRAVITY',
+                ide_version: meta.ideVersion,
+                ide_name: meta.ideName
+              }
             },
             timeoutMs
           );
-          if (lcaDaily) {
-            projectId = lcaDaily.cloudaicompanionProject;
-            tierData = { ...lcaDaily };
+          if (lcaProd) {
+            projectId = lcaProd.cloudaicompanionProject;
+            tierData = { ...lcaProd };
           }
         } catch {}
       }
     }
-
-    const isFreeAccount = (
-      tierData?.paidTier?.id === 'free-tier' ||
-      (typeof tierData?.paidTier?.name === 'string' && tierData.paidTier.name.toLowerCase().includes('starter')) ||
-      (typeof tierData?.paidTier?.id === 'string' && tierData.paidTier.id.toLowerCase().includes('free'))
-    );
-
-    const tierRawStr = JSON.stringify({
-      paidTier: tierData?.paidTier,
-      userTier: tierData?.userTier,
-      currentTier: tierData?.currentTier
-    }).toLowerCase();
-    const isUltraAccount = !isFreeAccount && (tierRawStr.includes('ultra') || tierRawStr.includes('enterprise'));
 
     const isPooled = !projectId || projectId === 'aicode-consumers';
     const body = isPooled ? {} : { project: projectId };
 
     const modelsData: Record<string, any> = {};
 
-    // 2. retrieveUserQuota: Source for real-time model consumption and reset times
+    // 2. retrieveUserQuota: Source for real-time model consumption and reset times (Daily primary, Prod fallback)
     try {
-      const rawQuotaProd = await this.postJson(
-        HOST_PROD,
+      const rawQuotaDaily = await this.postJson(
+        HOST_DAILY,
         '/v1internal:retrieveUserQuota',
         activeToken,
         body,
         timeoutMs
       );
-      if (rawQuotaProd && rawQuotaProd.buckets) {
-        for (const b of rawQuotaProd.buckets) {
+      if (rawQuotaDaily && rawQuotaDaily.buckets) {
+        for (const b of rawQuotaDaily.buckets) {
           const mId = b.modelId || b.model || b.id || b.name;
           if (mId) {
             const frac = extractFraction(b);
@@ -746,15 +766,15 @@ export class GoogleDirectApiClient {
       }
     } catch {
       try {
-        const rawQuotaDaily = await this.postJson(
-          HOST_DAILY,
+        const rawQuotaProd = await this.postJson(
+          HOST_PROD,
           '/v1internal:retrieveUserQuota',
           activeToken,
           body,
           timeoutMs
         );
-        if (rawQuotaDaily && rawQuotaDaily.buckets) {
-          for (const b of rawQuotaDaily.buckets) {
+        if (rawQuotaProd && rawQuotaProd.buckets) {
+          for (const b of rawQuotaProd.buckets) {
             const mId = b.modelId || b.model || b.id || b.name;
             if (mId) {
               const frac = extractFraction(b);
@@ -772,54 +792,52 @@ export class GoogleDirectApiClient {
       } catch {}
     }
 
-    // 3. retrieveUserQuotaSummary: Authoritative group buckets for paid Pro/Ultra accounts
+    // 3. retrieveUserQuotaSummary: Authoritative group buckets for all accounts (Daily primary, Prod fallback)
     let groupsData: any = null;
-    if (!isFreeAccount) {
-      try {
-        groupsData = await this.postJson(
-          HOST_PROD,
-          '/v1internal:retrieveUserQuotaSummary',
-          activeToken,
-          body,
-          timeoutMs
-        );
-      } catch {
-        if (projectId) {
-          try {
-            groupsData = await this.postJson(
-              HOST_PROD,
-              '/v1internal:retrieveUserQuotaSummary',
-              activeToken,
-              {},
-              timeoutMs
-            );
-          } catch {}
-        }
-        if (!groupsData) {
-          try {
-            groupsData = await this.postJson(
-              HOST_DAILY,
-              '/v1internal:retrieveUserQuotaSummary',
-              activeToken,
-              body,
-              timeoutMs
-            );
-          } catch {}
-        }
+    try {
+      groupsData = await this.postJson(
+        HOST_DAILY,
+        '/v1internal:retrieveUserQuotaSummary',
+        activeToken,
+        body,
+        timeoutMs
+      );
+    } catch {
+      if (projectId) {
+        try {
+          groupsData = await this.postJson(
+            HOST_DAILY,
+            '/v1internal:retrieveUserQuotaSummary',
+            activeToken,
+            {},
+            timeoutMs
+          );
+        } catch {}
+      }
+      if (!groupsData) {
+        try {
+          groupsData = await this.postJson(
+            HOST_PROD,
+            '/v1internal:retrieveUserQuotaSummary',
+            activeToken,
+            body,
+            timeoutMs
+          );
+        } catch {}
       }
     }
 
-    // 4. fetchAvailableModels: Model labels, display names, and fallback model quotas
+    // 4. fetchAvailableModels: Model labels, display names, and fallback model quotas (Daily primary, Prod fallback)
     try {
-      const famProd = await this.postJson(
-        HOST_PROD,
+      const famDaily = await this.postJson(
+        HOST_DAILY,
         '/v1internal:fetchAvailableModels',
         activeToken,
         body,
         timeoutMs
       );
-      if (famProd && famProd.models) {
-        for (const [id, m] of Object.entries<any>(famProd.models)) {
+      if (famDaily && famDaily.models) {
+        for (const [id, m] of Object.entries<any>(famDaily.models)) {
           if (modelsData[id]) {
             modelsData[id].displayName = m.displayName || m.label || id;
           } else {
@@ -829,15 +847,15 @@ export class GoogleDirectApiClient {
       }
     } catch {
       try {
-        const famDaily = await this.postJson(
-          HOST_DAILY,
+        const famProd = await this.postJson(
+          HOST_PROD,
           '/v1internal:fetchAvailableModels',
           activeToken,
           body,
           timeoutMs
         );
-        if (famDaily && famDaily.models) {
-          for (const [id, m] of Object.entries<any>(famDaily.models)) {
+        if (famProd && famProd.models) {
+          for (const [id, m] of Object.entries<any>(famProd.models)) {
             if (modelsData[id]) {
               modelsData[id].displayName = m.displayName || m.label || id;
             } else {
@@ -849,7 +867,36 @@ export class GoogleDirectApiClient {
     }
 
     const groups: any[] = groupsData?.response?.groups || groupsData?.groups || [];
-    const enrichedGroups = enrichQuotaGroupsWithModels(groups, modelsData, isFreeAccount, isUltraAccount);
+
+    const tierRawStr = JSON.stringify({
+      paidTier: tierData?.paidTier,
+      userTier: tierData?.userTier,
+      currentTier: tierData?.currentTier
+    }).toLowerCase();
+
+    const isExplicitPaid = Boolean(
+      tierRawStr.includes('pro') ||
+      tierRawStr.includes('ultra') ||
+      tierRawStr.includes('enterprise') ||
+      tierRawStr.includes('premium') ||
+      tierRawStr.includes('advanced')
+    );
+
+    const isExplicitFree = Boolean(
+      tierData?.paidTier?.id === 'free-tier' ||
+      (typeof tierData?.paidTier?.name === 'string' && tierData.paidTier.name.toLowerCase().includes('starter')) ||
+      (typeof tierData?.paidTier?.id === 'string' && tierData.paidTier.id.toLowerCase().includes('free')) ||
+      tierRawStr.includes('starter')
+    );
+
+    // Check if raw backend groups actually contain an authentic 5-hour rolling bucket
+    const rawHasAuthentic5h = groups.some((g: any) =>
+      (g.buckets || []).some((b: any) => is5HourBucket(b.window, b.bucketId, b.displayName))
+    );
+
+    const isEffectiveFree = isExplicitFree || (!isExplicitPaid && !rawHasAuthentic5h);
+    const isUltraAccount = !isEffectiveFree && (tierRawStr.includes('ultra') || tierRawStr.includes('enterprise'));
+    const enrichedGroups = enrichQuotaGroupsWithModels(groups, modelsData, isEffectiveFree, isUltraAccount);
 
     return {
       ...tierData,

@@ -15,6 +15,32 @@ interface ActiveOAuthSession {
   loginHint?: string;
 }
 
+export interface ScopeVerificationResult {
+  valid: boolean;
+  scopes: string[];
+  missingScopes: string[];
+  hasRequiredScopes: boolean;
+  hasAiCode: boolean;
+}
+
+export function checkMissingScopes(
+  grantedScopes: string[],
+  requiredScopes: readonly string[] = OAUTH_CONFIG.SCOPES
+): string[] {
+  if (!grantedScopes || grantedScopes.length === 0) {
+    return [...requiredScopes];
+  }
+  return requiredScopes.filter((req) => {
+    const reqBase = req.split('/').pop() || req;
+    return !grantedScopes.some((granted) => {
+      if (granted === req || granted.includes(reqBase)) return true;
+      if (reqBase === 'userinfo.email' && (granted === 'email' || granted.includes('email'))) return true;
+      if (reqBase === 'userinfo.profile' && (granted === 'profile' || granted.includes('profile'))) return true;
+      return false;
+    });
+  });
+}
+
 export class OAuthService {
   private activeSession: ActiveOAuthSession | null = null;
 
@@ -146,11 +172,20 @@ export class OAuthService {
             }
 
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(this.getHtmlResponse('Account Connected!', 'Returning to Antigravity IDE...', true));
+            res.end(this.getHtmlResponse('Account Connected!', 'Authentication complete. You can now close this tab.', true));
             cleanup();
 
             try {
               const tokens = await this.exchangeCodeForTokens(code, redirectUri);
+              try {
+                const verified = await this.verifyTokenScopes(tokens.accessToken);
+                if (verified.valid) {
+                  tokens.scopes = verified.scopes;
+                  tokens.missingScopes = verified.missingScopes;
+                  tokens.hasRequiredScopes = verified.hasRequiredScopes;
+                  tokens.hasAiCode = verified.hasAiCode;
+                }
+              } catch {}
               const userInfo = await this.fetchUserInfo(tokens.accessToken);
               if (!isSettled) {
                 isSettled = true;
@@ -203,7 +238,6 @@ export class OAuthService {
   }
 
   private getHtmlResponse(title: string, message: string, isSuccess: boolean): string {
-    const uriScheme = vscode.env?.uriScheme || 'vscode';
     const statusBg = isSuccess ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
     const statusBorder = isSuccess ? 'rgba(16, 185, 129, 0.25)' : 'rgba(239, 68, 68, 0.25)';
     const statusColor = isSuccess ? '#10b981' : '#ef4444';
@@ -340,44 +374,9 @@ export class OAuthService {
       padding: 0 4px;
     }
 
-    .btn-return {
-      width: 100%;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      background: #1e293b;
-      color: #f8fafc;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      padding: 11px 20px;
-      border-radius: 10px;
-      font-family: inherit;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .btn-return:hover {
-      background: #2563eb;
-      border-color: #3b82f6;
-      color: #ffffff;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-    }
-
-    .btn-return:active {
-      transform: translateY(0);
-    }
-
-    .btn-return svg {
-      width: 15px;
-      height: 15px;
-    }
-
     .footer-note {
-      margin-top: 16px;
-      font-size: 11.5px;
+      margin-top: 8px;
+      font-size: 12px;
       color: var(--text-dim);
     }
   </style>
@@ -413,33 +412,18 @@ export class OAuthService {
     <h1>${title}</h1>
     <p class="subtitle">${message}</p>
 
-    <button class="btn-return" onclick="returnToIde()">
-      <span>Return to Antigravity IDE</span>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-        <polyline points="12 5 19 12 12 19"></polyline>
-      </svg>
-    </button>
-
     <div class="footer-note">
       You can safely close this browser tab anytime.
     </div>
   </div>
 
   <script>
-    const uriScheme = "${uriScheme}";
-    function returnToIde() {
-      try {
-        window.location.href = uriScheme + "://";
-      } catch (e) {}
+    if (${isSuccess}) {
       setTimeout(() => {
         try {
           window.close();
         } catch (e) {}
-      }, 500);
-    }
-    if (${isSuccess}) {
-      setTimeout(returnToIde, 1200);
+      }, 1000);
     }
   </script>
 </body>
@@ -468,11 +452,21 @@ export class OAuthService {
       throw new Error(`Token exchange failed: ${parsed.error_description || parsed.error}`);
     }
 
+    const scopeStr = parsed.scope || '';
+    const scopes = scopeStr ? scopeStr.split(' ') : undefined;
+    const hasAiCode = scopes ? scopes.some((s: string) => s.includes('aicode')) : true;
+    const missingScopes = scopes ? checkMissingScopes(scopes) : [];
+    const hasRequiredScopes = scopes ? missingScopes.length === 0 : true;
+
     return {
       accessToken: parsed.access_token,
       refreshToken: parsed.refresh_token,
       expiresAt: Date.now() + (parsed.expires_in || 3600) * 1000,
-      tokenType: parsed.token_type || 'Bearer'
+      tokenType: parsed.token_type || 'Bearer',
+      scopes,
+      missingScopes,
+      hasRequiredScopes,
+      hasAiCode
     };
   }
 
@@ -501,12 +495,97 @@ export class OAuthService {
       throw new Error(`Token refresh failed: ${errDesc || errCode}`);
     }
 
+    const scopeStr = parsed.scope || '';
+    const scopes = scopeStr ? scopeStr.split(' ') : undefined;
+    const hasAiCode = scopes ? scopes.some((s: string) => s.includes('aicode')) : undefined;
+    const missingScopes = scopes ? checkMissingScopes(scopes) : undefined;
+    const hasRequiredScopes = scopes ? missingScopes?.length === 0 : undefined;
+
     return {
       accessToken: parsed.access_token,
       refreshToken: parsed.refresh_token || refreshToken,
       expiresAt: Date.now() + (parsed.expires_in || 3600) * 1000,
-      tokenType: parsed.token_type || 'Bearer'
+      tokenType: parsed.token_type || 'Bearer',
+      scopes,
+      missingScopes,
+      hasRequiredScopes,
+      hasAiCode
     };
+  }
+
+  /**
+   * Verifies an access token's granted scopes dynamically against Google OAuth tokeninfo endpoint.
+   * Compares against OAUTH_CONFIG.SCOPES to ensure all required IDE scopes (including aicode) are granted.
+   */
+  public async verifyTokenScopes(accessToken: string): Promise<ScopeVerificationResult> {
+    return new Promise((resolve) => {
+      const options = {
+        hostname: 'www.googleapis.com',
+        path: `/oauth2/v1/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        timeout: HTTP_REQUEST_TIMEOUT_MS
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            if (res.statusCode === 200) {
+              const parsed = JSON.parse(data);
+              const scopeStr = parsed.scope || '';
+              const scopes = scopeStr ? scopeStr.split(' ') : [];
+              const missingScopes = checkMissingScopes(scopes);
+              const hasRequiredScopes = missingScopes.length === 0;
+              const hasAiCode = scopes.some((s: string) => s.includes('aicode'));
+              resolve({
+                valid: true,
+                scopes,
+                missingScopes,
+                hasRequiredScopes,
+                hasAiCode
+              });
+            } else {
+              resolve({
+                valid: false,
+                scopes: [],
+                missingScopes: [...OAUTH_CONFIG.SCOPES],
+                hasRequiredScopes: false,
+                hasAiCode: false
+              });
+            }
+          } catch {
+            resolve({
+              valid: false,
+              scopes: [],
+              missingScopes: [...OAUTH_CONFIG.SCOPES],
+              hasRequiredScopes: false,
+              hasAiCode: false
+            });
+          }
+        });
+      });
+
+      req.on('error', () => resolve({
+        valid: false,
+        scopes: [],
+        missingScopes: [...OAUTH_CONFIG.SCOPES],
+        hasRequiredScopes: false,
+        hasAiCode: false
+      }));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({
+          valid: false,
+          scopes: [],
+          missingScopes: [...OAUTH_CONFIG.SCOPES],
+          hasRequiredScopes: false,
+          hasAiCode: false
+        });
+      });
+      req.end();
+    });
   }
 
   /**

@@ -9,6 +9,8 @@ interface Props {
 interface State {
   hasError: boolean;
   error: string;
+  stack?: string;
+  componentStack?: string;
 }
 
 export class ErrorBoundary extends React.Component<Props, State> {
@@ -17,12 +19,19 @@ export class ErrorBoundary extends React.Component<Props, State> {
     this.state = { hasError: false, error: '' };
   }
 
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error: String(error) };
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return {
+      hasError: true,
+      error: error?.message || String(error),
+      stack: error?.stack || ''
+    };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[Antigravity Swap] Component error:', error, info);
+    this.setState({
+      componentStack: info?.componentStack || ''
+    });
   }
 
   render() {
@@ -46,18 +55,62 @@ export class ErrorBoundary extends React.Component<Props, State> {
             background: 'rgba(0,0,0,0.5)',
             padding: '8px',
             borderRadius: '6px',
-            border: '1px solid #f8717150'
+            border: '1px solid #f8717150',
+            userSelect: 'text'
           }}>
             {this.state.error}
           </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => this.setState({ hasError: false, error: '' })}
-            className="mt-3 text-xs"
-          >
-            Retry
-          </Button>
+          {this.state.stack && (
+            <pre style={{
+              marginTop: '8px',
+              background: 'rgba(0,0,0,0.3)',
+              padding: '8px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              maxHeight: '180px',
+              overflow: 'auto',
+              color: '#9ca3af',
+              userSelect: 'text'
+            }}>
+              {this.state.stack}
+            </pre>
+          )}
+          {this.state.componentStack && (
+            <pre style={{
+              marginTop: '8px',
+              background: 'rgba(0,0,0,0.3)',
+              padding: '8px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              maxHeight: '180px',
+              overflow: 'auto',
+              color: '#fbbf24',
+              userSelect: 'text'
+            }}>
+              {this.state.componentStack}
+            </pre>
+          )}
+          <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => this.setState({ hasError: false, error: '', stack: undefined, componentStack: undefined })}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const text = `${this.state.error}\n\nStack:\n${this.state.stack || ''}\n\nComponent Stack:\n${this.state.componentStack || ''}`;
+                navigator.clipboard?.writeText(text);
+              }}
+              className="text-xs"
+            >
+              Copy Error
+            </Button>
+          </div>
         </div>
       );
     }

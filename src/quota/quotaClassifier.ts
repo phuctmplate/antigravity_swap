@@ -239,8 +239,8 @@ export function determineAccountTier(
 
       // If paidTier is explicitly free-tier / starter quota:
       if (id === 'free-tier' || id.includes('free') || name.includes('starter') || combined.includes('starter quota')) {
-        // If retrieveUserQuotaSummary returned an authentic 5-hour rolling bucket, it is incontrovertibly a paid tier
-        if (has5hBucket) {
+        // Only treat as paid if it has BOTH authentic 5h bucket AND Claude/GPT models (Starter never has Claude models)
+        if (has5hBucket && hasClaudeOrGpt) {
           return { accountType: 'Google AI Pro', tierBadge: 'PRO' };
         }
         return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
@@ -250,7 +250,7 @@ export function determineAccountTier(
       if (t) return mapBadgeToResult(t);
     } else if (typeof rawResponse.paidTier === 'string') {
       if (rawResponse.paidTier.toLowerCase().includes('free') || rawResponse.paidTier.toLowerCase().includes('starter')) {
-        if (has5hBucket) {
+        if (has5hBucket && hasClaudeOrGpt) {
           return { accountType: 'Google AI Pro', tierBadge: 'PRO' };
         }
         return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };
@@ -288,7 +288,7 @@ export function determineAccountTier(
 
 
   // 4. Check retrieveUserQuotaSummary buckets:
-  if (has5hBucket) {
+  if (has5hBucket && hasClaudeOrGpt) {
     return { accountType: 'Google AI Pro', tierBadge: 'PRO' };
   }
 
@@ -309,12 +309,24 @@ export function determineAccountTier(
     }
   }
 
-  // Preserve existing known paid tier if response didn't specify
+  // Preserve existing known paid tier if response didn't specify, unless response explicitly says free-tier
   if (account?.tierBadge && account.tierBadge !== 'STANDARD FREE') {
-    return {
-      accountType: account.accountType || mapBadgeToResult(account.tierBadge).accountType,
-      tierBadge: account.tierBadge
-    };
+    const isExplicitlyFree = Boolean(
+      (rawResponse.paidTier && (
+        (typeof rawResponse.paidTier === 'object' && ((rawResponse.paidTier.id || '').toLowerCase().includes('free') || (rawResponse.paidTier.name || '').toLowerCase().includes('starter'))) ||
+        (typeof rawResponse.paidTier === 'string' && (rawResponse.paidTier.toLowerCase().includes('free') || rawResponse.paidTier.toLowerCase().includes('starter')))
+      )) ||
+      (rawResponse.currentTier && (
+        (typeof rawResponse.currentTier === 'object' && (rawResponse.currentTier.id || '').toLowerCase() === 'free-tier') ||
+        (typeof rawResponse.currentTier === 'string' && rawResponse.currentTier.toLowerCase() === 'free-tier')
+      ))
+    );
+    if (!isExplicitlyFree) {
+      return {
+        accountType: account.accountType || mapBadgeToResult(account.tierBadge).accountType,
+        tierBadge: account.tierBadge
+      };
+    }
   }
 
   return { accountType: 'Standard Free', tierBadge: 'STANDARD FREE' };

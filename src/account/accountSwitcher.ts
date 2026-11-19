@@ -83,8 +83,8 @@ export class AccountSwitcher {
         return false;
       }
 
-      // Check if access token is expired and refresh
-      if (tokens.expiresAt && Date.now() > tokens.expiresAt - 60000 && tokens.refreshToken) {
+      // Check if access token is expired or expiring within 2 minutes and refresh
+      if (tokens.expiresAt && Date.now() > tokens.expiresAt - 120000 && tokens.refreshToken) {
         this.storage.renewRefreshLease();
         try {
           tokens = await this.oauthService.refreshAccessToken(tokens.refreshToken);
@@ -115,9 +115,71 @@ export class AccountSwitcher {
         return false;
       }
 
-      const previousEmail = this.ctx.getActiveEmail() || accounts.find((a) => a.isActive)?.email;
+      // Pre-flight check: Dynamic scope verification against required IDE scopes.
+      // Antigravity IDE requires all scopes in OAUTH_CONFIG.SCOPES (e.g. aicode, cloud-platform).
+      // If a token lacks any required scope, agy signs out the user immediately, wiping IDE sessions.
+      let hasRequiredScopes = tokens.hasRequiredScopes;
+      let missingScopes = tokens.missingScopes;
 
-      // 1. Update internal state
+      if (hasRequiredScopes === undefined && tokens.accessToken) {
+        try {
+          const scopeInfo = await this.oauthService.verifyTokenScopes(tokens.accessToken);
+          hasRequiredScopes = scopeInfo.hasRequiredScopes;
+          missingScopes = scopeInfo.missingScopes;
+          tokens.scopes = scopeInfo.scopes;
+          tokens.missingScopes = scopeInfo.missingScopes;
+          tokens.hasRequiredScopes = scopeInfo.hasRequiredScopes;
+          tokens.hasAiCode = scopeInfo.hasAiCode;
+          await this.storage.saveAccountTokens(email, tokens);
+        } catch {
+          // If network check fails, fallback to allowing switch so offline/intranet usage is not blocked
+          hasRequiredScopes = tokens.hasAiCode !== false;
+        }
+      }
+
+      if (hasRequiredScopes === false || tokens.hasAiCode === false) {
+        target.status = 'auth_failed';
+        target.needsReauth = true;
+        target.missingScopes = missingScopes;
+        target.hasRequiredScopes = false;
+        target.statusMessage = 'Re-authorization required. Please sign in again.';
+        await this.storage.saveAccounts(accounts);
+        this.ctx.notifyStateChange();
+
+        if (!isSilent) {
+          vscode.window.showWarningMessage(
+            `Account ${email} requires re-authorization. Please sign in again to enable switching.`,
+            'Re-login Account'
+          ).then((action) => {
+            if (action === 'Re-login Account') {
+              vscode.commands.executeCommand('antigravitySwap.reloginAccount', email);
+            }
+          });
+        }
+        return false;
+      }
+
+      // 1. If the user manually chose this account, disable auto-switch so it won't override their choice
+      if (isManual) {
+        await this.storage.setAutoSwitchEnabled(false);
+      }
+
+      // 2. Update IDE state database (state.vscdb) and cloud agent DB in-place FIRST
+      // so disk records and storage entries have the target email ready before any reconnect
+      await this.storage.syncToIdeStateDb(target, tokens, false);
+      await this.storage.syncToCloudAccountsDb(email);
+
+      // 3. Update google_accounts.json so active email is aligned
+      await this.storage.syncGoogleAccountsJson(email);
+
+      // 4. Hot-switch in-memory via Unified State Sync API so language server and agent immediately get the new token!
+      await this.storage.liveSwitchOAuthToken(target, tokens, false, true, true);
+
+      // 5. Broadcast switch event to all other open IDE instances
+      this.storage.broadcastSwitchCompleted(email);
+
+      // 6. ONLY AFTER all operations succeed without error, update internal state and active card!
+      // This guarantees the card does NOT sort prematurely and only updates to the top on true success.
       const updatedAccounts = accounts.map((a) => ({
         ...a,
         isActive: a.email === email,
@@ -129,79 +191,6 @@ export class AccountSwitcher {
       await this.storage.setActiveAccountEmail(email);
       this.ctx.notifyStateChange();
 
-      // 2. If the user manually chose this account, disable auto-switch so it won't override their choice
-      if (isManual) {
-        await this.storage.setAutoSwitchEnabled(false);
-      }
-
-      // 3. Update google_accounts.json FIRST so the new active email and old list are in place for eviction
-      await this.storage.syncGoogleAccountsJson(email);
-
-      // 4. Hot-switch in-memory via Unified State Sync API so language server and agent immediately get the new token!
-      const liveSwitchOk = await this.storage.liveSwitchOAuthToken(target, tokens);
-
-      // 5. Explicitly evict previous sessions via antigravity.evictAuthSession if available
-      if (previousEmail && previousEmail !== email) {
-        try {
-          await vscode.commands.executeCommand('antigravity.evictAuthSession', previousEmail);
-        } catch (_) {}
-      }
-      for (const a of updatedAccounts) {
-        if (a.email !== email) {
-          try {
-            await vscode.commands.executeCommand('antigravity.evictAuthSession', a.email);
-          } catch (_) {}
-        }
-      }
-
-      // 6. Update IDE state database (state.vscdb) and cloud agent DB in-place
-      await this.storage.syncToIdeStateDb(target, tokens, liveSwitchOk);
-      await this.storage.syncToCloudAccountsDb(email);
-
-      // 7. Hot-restart the Antigravity Language Server in the background so it immediately picks up new credentials without closing IDE
-      try {
-        await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
-      } catch (_) {}
-      try {
-        await vscode.commands.executeCommand('antigravity.restartLanguageServer');
-        console.log('[Antigravity Swap] Executed antigravity.restartLanguageServer successfully');
-      } catch (lsErr: any) {
-        console.warn('[Antigravity Swap] restartLanguageServer command warning:', lsErr?.message || lsErr);
-      }
-
-      // 8. Post-Switch Active Account Verification Guard:
-      // Verify whether the Antigravity IDE / credential manager actually switched to the target account.
-      // If the IDE remained on previousEmail, roll back internal state and report failure so caller can try next candidate.
-      if (previousEmail && previousEmail.toLowerCase() !== email.toLowerCase()) {
-        await new Promise((r) => setTimeout(r, 600));
-        const verification = await this.storage.verifyIdeActiveAccount(email);
-        if (!verification.verified && verification.actualEmail && verification.actualEmail.toLowerCase() === previousEmail.toLowerCase()) {
-          console.warn(`[AccountSwitcher] Switch verification failed: IDE remained on ${previousEmail} instead of switching to ${email}. Rolling back.`);
-
-          // Rollback internal active account to previousEmail
-          const rolledBackAccounts = accounts.map((a) => ({
-            ...a,
-            isActive: a.email.toLowerCase() === previousEmail.toLowerCase(),
-            statusMessage: a.email === email ? 'Switch failed: IDE remained on previous account' : a.statusMessage
-          }));
-          this.ctx.setAccounts(rolledBackAccounts);
-          this.ctx.setActiveEmail(previousEmail);
-          await this.storage.saveAccounts(rolledBackAccounts);
-          await this.storage.setActiveAccountEmail(previousEmail);
-          await this.storage.syncGoogleAccountsJson(previousEmail);
-          this.ctx.notifyStateChange();
-
-          // Reset lastSwitchTime so immediate retry on next candidate is not rate-limited
-          this.lastSwitchTime = 0;
-
-          if (!isSilent) {
-            vscode.window.showErrorMessage(`Switch to ${email} failed: IDE remained on ${previousEmail}. Rollback complete.`);
-          }
-          return false;
-        }
-      }
-
-      this.ctx.notifyStateChange();
       if (this.ctx.onPostSwitch) {
         this.ctx.onPostSwitch(email);
       }

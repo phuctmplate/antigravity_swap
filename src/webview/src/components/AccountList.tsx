@@ -7,7 +7,7 @@ import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Checkbox } from "./ui/checkbox";
-import { toast } from "sonner";
+import { toast } from "./ui/sonner";
 import {
   Zap,
   Plus,
@@ -44,6 +44,8 @@ interface AccountListProps {
   activeAccount: Account | null;
   selectedEmail: string | null;
   onSelectAccount: (email: string) => void;
+  switchingEmail?: string | null;
+  onSwitchAccount?: (email: string) => void;
   isBackgroundRefreshing?: boolean;
 }
 
@@ -52,6 +54,8 @@ export const AccountList: React.FC<AccountListProps> = ({
   activeAccount,
   selectedEmail,
   onSelectAccount,
+  switchingEmail,
+  onSwitchAccount,
   isBackgroundRefreshing = false,
 }) => {
   const [filterType, setFilterType] = useState<string>("all");
@@ -78,6 +82,17 @@ export const AccountList: React.FC<AccountListProps> = ({
 
   const lastRefreshMap = useRef<Map<string, number>>(new Map());
   const vscode = getVsCodeApi();
+
+  const prevActiveEmailRef = useRef<string | null>(activeAccount?.email || null);
+
+  // When active account changes (e.g. switch completed), navigate to page 1 so the newly active card is visible at the top
+  useEffect(() => {
+    const curActive = activeAccount?.email || null;
+    if (curActive && curActive !== prevActiveEmailRef.current) {
+      prevActiveEmailRef.current = curActive;
+      setCurrentPage(1);
+    }
+  }, [activeAccount?.email]);
 
   // Stop spinning refresh icon the exact millisecond the backend responds (via toast or stateUpdate)
   useEffect(() => {
@@ -199,12 +214,22 @@ export const AccountList: React.FC<AccountListProps> = ({
     return 5; // Free
   };
 
+  const isAccActive = (acc: Account): boolean => {
+    return acc.isActive || (!!activeAccount && activeAccount.email === acc.email);
+  };
+
   const filteredAccounts = accounts.filter((acc) => {
     if (filterType === "all") return true;
     return getAccountCategory(acc) === filterType;
   });
 
   const sortedAccounts = [...filteredAccounts].sort((a, b) => {
+    // Automatically sort active account to the very top without breaking existing sort logic
+    const aActive = isAccActive(a);
+    const bActive = isAccActive(b);
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+
     if (sortMode === "name-asc") {
       const nameA = a.name || a.email;
       const nameB = b.name || b.email;
@@ -262,6 +287,8 @@ export const AccountList: React.FC<AccountListProps> = ({
   const startIndex = (validCurrentPage - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, sortedAccounts.length);
   const pagedAccounts = sortedAccounts.slice(startIndex, endIndex);
+
+
 
   // Toggle multi-select mode
   const toggleMultiSelectMode = () => {
@@ -853,7 +880,10 @@ export const AccountList: React.FC<AccountListProps> = ({
                 isMultiSelectMode={isMultiSelectMode}
                 isChecked={checkedEmails.has(acc.email)}
                 isRefreshing={refreshingEmails.has(acc.email)}
+                isSwitching={switchingEmail === acc.email}
+                isAnySwitching={Boolean(switchingEmail)}
                 onSelect={onSelectAccount}
+                onSwitch={onSwitchAccount}
                 onToggleCheck={handleToggleCheck}
                 onRefreshRequest={handleRefreshAccount}
                 onDeleteRequest={handleDeleteSingleRequest}

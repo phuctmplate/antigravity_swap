@@ -50,6 +50,23 @@ export class AccountStorage {
         } catch {}
       }
     }
+    accounts = accounts.map((acc) => {
+      if (acc.status === 'healthy' && acc.needsReauth) {
+        return {
+          ...acc,
+          needsReauth: false,
+          hasRequiredScopes: true,
+          missingScopes: undefined,
+          statusMessage: acc.statusMessage?.toLowerCase().includes('re-auth') ||
+            acc.statusMessage?.toLowerCase().includes('scope') ||
+            acc.statusMessage?.toLowerCase().includes('permission')
+            ? undefined
+            : acc.statusMessage
+        };
+      }
+      return acc;
+    });
+
     return this.normalizeExpiredQuotas(accounts);
   }
 

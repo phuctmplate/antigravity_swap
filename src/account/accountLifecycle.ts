@@ -10,7 +10,7 @@ export interface AccountLifecycleContext {
   getActiveEmail: () => string | undefined;
   setActiveEmail: (email: string | undefined) => void;
   getLiveLanguageServerEmail?: () => Promise<string | undefined>;
-  switchAccount: (email: string) => Promise<boolean>;
+  switchAccount: (email: string, isManual?: boolean, isSilent?: boolean) => Promise<boolean>;
   refreshAccountQuota: (email: string, force?: boolean) => Promise<void>;
   isSwitching?: () => boolean;
   isAutoSwitching?: () => boolean;
@@ -82,6 +82,20 @@ export class AccountLifecycle {
         this.ctx.setAccounts(updated);
         await this.storage.setActiveAccountEmail(matched.email);
         await this.storage.saveAccounts(updated);
+
+        // Synchronize fresh session tokens if present
+        if (currentSession?.accessToken || currentSession?.refreshToken) {
+          const storedTokens = await this.storage.getAccountTokens(matched.email);
+          const freshTokens: OAuthTokens = {
+            accessToken: currentSession.accessToken || storedTokens?.accessToken || '',
+            refreshToken: currentSession.refreshToken || storedTokens?.refreshToken || '',
+            expiresAt: storedTokens?.expiresAt || (Date.now() + 3600 * 1000),
+            tokenType: 'Bearer'
+          };
+          await this.storage.saveAccountTokens(matched.email, freshTokens);
+          await this.storage.syncToIdeStateDb(matched, freshTokens);
+        }
+
         this.ctx.notifyStateChange();
         this.ctx.refreshAccountQuota(matched.email).catch(() => {});
         return;
@@ -93,10 +107,24 @@ export class AccountLifecycle {
 
     if (!activeSessionEmail) {
       // If we already have an active account established in Antigravity Swap, do NOT immediately clear it
-      // on a single undefined signal, because Language Server restart or transient auth re-validation
-      // causes activeSessionEmail to be temporarily null/unreachable.
+      // on a single undefined signal, because Language Server restart, new window cold-boot, or transient
+      // auth re-validation causes activeSessionEmail to be temporarily null/unreachable.
       if (activeEmail !== undefined) {
-        console.log(`[AccountLifecycle] activeSessionEmail is undefined, but active account (${activeEmail}) is already established. Retaining active state.`);
+        console.log(`[AccountLifecycle] activeSessionEmail is undefined, but active account (${activeEmail}) is established. Self-healing window session.`);
+        const activeAcc = accounts.find((a) => a.email.toLowerCase() === activeEmail.toLowerCase());
+        if (activeAcc && !activeAcc.needsReauth && activeAcc.status !== 'auth_failed' && !activeAcc.isBanned && activeAcc.status !== 'banned') {
+          const tokens = await this.storage.getAccountTokens(activeAcc.email);
+          if (tokens?.accessToken && tokens.hasRequiredScopes !== false && tokens.hasAiCode !== false) {
+            await this.storage.liveSwitchOAuthToken(activeAcc, tokens, true, false).catch(() => {});
+          }
+        }
+        return;
+      }
+
+      // If storage already has an active account selected, do NOT clear active state during cold window startup
+      const savedActive = this.storage.getActiveAccountEmail();
+      if (savedActive || accounts.some((a) => a.isActive)) {
+        console.log('[AccountLifecycle] activeSessionEmail is undefined, but saved active account exists. Retaining active state.');
         return;
       }
 
@@ -120,17 +148,23 @@ export class AccountLifecycle {
     if (existingAcc) {
       const existingTokens = await this.storage.getAccountTokens(existingAcc.email);
       const sessionAccessToken = currentSession?.accessToken;
-      const isTokenDifferent = !existingTokens || (sessionAccessToken && sessionAccessToken !== existingTokens.accessToken);
+      const sessionRefreshToken = currentSession?.refreshToken;
+      const isTokenDifferent = !existingTokens ||
+        (sessionAccessToken && sessionAccessToken !== existingTokens.accessToken) ||
+        (sessionRefreshToken && sessionRefreshToken !== existingTokens.refreshToken);
       const isAlreadyActive = activeEmail?.toLowerCase() === email && existingAcc.isActive;
 
-      // Update tokens if a new session access token is present
-      if (sessionAccessToken && isTokenDifferent) {
+      // Update tokens if a new session access or refresh token is present
+      if ((sessionAccessToken || sessionRefreshToken) && isTokenDifferent) {
         const tokens: OAuthTokens = {
-          accessToken: sessionAccessToken,
-          refreshToken: currentSession?.refreshToken || existingTokens?.refreshToken,
-          expiresAt: Date.now() + 3600 * 1000
+          accessToken: sessionAccessToken || existingTokens?.accessToken || '',
+          refreshToken: sessionRefreshToken || existingTokens?.refreshToken || '',
+          expiresAt: Date.now() + 3600 * 1000,
+          tokenType: 'Bearer'
         };
         await this.storage.saveAccountTokens(existingAcc.email, tokens);
+        await this.storage.syncToIdeStateDb(existingAcc, tokens);
+        console.log(`[AccountLifecycle] Synchronized refreshed session tokens to storage and state.vscdb for ${existingAcc.email}`);
       }
 
       if (!isAlreadyActive) {
@@ -168,7 +202,7 @@ export class AccountLifecycle {
   /**
    * Re-authenticates / reconnects a specific account by launching Google browser login.
    */
-  public async reloginAccount(email: string): Promise<boolean> {
+  public async reloginAccount(email: string, isSilent = false): Promise<boolean> {
     const now = Date.now();
     if (now - this.lastOAuthTime < AccountLifecycle.OAUTH_COOLDOWN_MS) {
       return false;
@@ -202,6 +236,9 @@ export class AccountLifecycle {
           name: userInfo.name || accounts[existingIdx].name,
           avatarUrl: userInfo.avatarUrl || accounts[existingIdx].avatarUrl,
           status: 'healthy',
+          needsReauth: false,
+          hasRequiredScopes: tokens.hasRequiredScopes ?? true,
+          missingScopes: undefined,
           isBanned: false,
           banReason: undefined,
           statusMessage: undefined,
@@ -216,6 +253,9 @@ export class AccountLifecycle {
           isActive: false,
           addedAt: new Date().toISOString(),
           status: 'healthy',
+          needsReauth: false,
+          hasRequiredScopes: tokens.hasRequiredScopes ?? true,
+          missingScopes: undefined,
           isBanned: false,
           statusMessage: undefined,
           quotas: [],
@@ -229,7 +269,9 @@ export class AccountLifecycle {
 
       await this.storage.saveAccounts(accounts);
       this.storage.broadcastOAuthCompleted(userInfo.email);
-      vscode.window.showInformationMessage(`Re-authenticated ${userInfo.email} successfully!`);
+      if (!isSilent) {
+        vscode.window.showInformationMessage(`Re-authenticated ${userInfo.email} successfully!`);
+      }
       this.ctx.notifyStateChange();
 
       await this.ctx.refreshAccountQuota(userInfo.email, true).catch(() => {});
@@ -241,9 +283,11 @@ export class AccountLifecycle {
 
       return true;
     } catch (err: any) {
-      const msg = err.message || '';
-      if (!msg.toLowerCase().includes('cancel') && !msg.toLowerCase().includes('replace')) {
-        vscode.window.showErrorMessage(`Re-login error: ${err.message}`);
+      if (!isSilent) {
+        const msg = err.message || '';
+        if (!msg.toLowerCase().includes('cancel') && !msg.toLowerCase().includes('replace')) {
+          vscode.window.showErrorMessage(`Re-login error: ${err.message}`);
+        }
       }
       return false;
     }
@@ -286,6 +330,9 @@ export class AccountLifecycle {
           name: current.name || accounts[existingIdx].name,
           avatarUrl: current.avatarUrl || accounts[existingIdx].avatarUrl,
           status: 'healthy',
+          needsReauth: false,
+          hasRequiredScopes: true,
+          missingScopes: undefined,
           isBanned: false,
           statusMessage: undefined,
           isActive: true,
@@ -374,7 +421,12 @@ export class AccountLifecycle {
           name: userInfo.name || accounts[existingIdx].name,
           avatarUrl: userInfo.avatarUrl || accounts[existingIdx].avatarUrl,
           status: 'healthy',
+          needsReauth: false,
+          hasRequiredScopes: tokens.hasRequiredScopes ?? true,
+          missingScopes: undefined,
           isBanned: false,
+          banReason: undefined,
+          statusMessage: undefined,
           lastUsedAt: new Date().toISOString()
         };
         accounts[existingIdx] = account;
@@ -387,7 +439,11 @@ export class AccountLifecycle {
           isActive: accounts.length === 0,
           addedAt: new Date().toISOString(),
           status: 'healthy',
+          needsReauth: false,
+          hasRequiredScopes: tokens.hasRequiredScopes ?? true,
+          missingScopes: undefined,
           isBanned: false,
+          statusMessage: undefined,
           quotas: [],
           averageQuotaPercentage: undefined,
           hasWeeklyQuota: false,

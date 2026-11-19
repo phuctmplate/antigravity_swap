@@ -462,6 +462,8 @@ export const MOCK_AUTH_FAILED: AccountInfo = {
   accountType: 'Google AI Pro',
   tierBadge: 'PRO',
   averageQuotaPercentage: 0,
+  has5HourQuota: false,
+  hasWeeklyQuota: false,
   quotas: []
 };
 
@@ -479,6 +481,8 @@ export const MOCK_BANNED: AccountInfo = {
   accountType: 'Google AI Pro',
   tierBadge: 'PRO',
   averageQuotaPercentage: 0,
+  has5HourQuota: false,
+  hasWeeklyQuota: false,
   quotas: []
 };
 
@@ -493,6 +497,8 @@ export const MOCK_UNINITIALIZED: AccountInfo = {
   isBanned: false,
   accountType: 'Standard Free',
   tierBadge: 'STANDARD FREE',
+  has5HourQuota: false,
+  hasWeeklyQuota: false,
   quotas: []
 };
 

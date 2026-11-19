@@ -161,6 +161,7 @@ describe('AccountQuotaSync Staggered Carousel and External Activity Suite', () =
       id: email,
       email,
       name: email.split('@')[0],
+      addedAt: '2026-10-20T00:00:00.000Z',
       isActive: false,
       status: 'healthy',
       accountType: 'Google AI Pro',
@@ -275,6 +276,7 @@ describe('JIT Pre-Switch Verification Guard Suite', () => {
       id: email,
       email,
       name: email.split('@')[0],
+      addedAt: '2026-10-20T00:00:00.000Z',
       isActive,
       status: 'healthy',
       accountType: 'Google AI Pro',
@@ -461,5 +463,51 @@ describe('JIT Pre-Switch Verification Guard Suite', () => {
     // Auto-switch switched to Candidate 2, NOT Candidate 1!
     assert.strictEqual(switchedEmails[0], 'candidate2.steady@example.com');
     assert.strictEqual(switchedEmails.includes('candidate1.top@example.com'), false);
+  });
+
+  it('QuotaApiClient routes all accounts (active and standby) directly to Google Cloud Code PA without agy', async () => {
+    const { QuotaApiClient } = require('../src/quota/quotaApiClient');
+
+    const mockDirectClient = new GoogleDirectApiClient();
+    let directCalledCount = 0;
+    mockDirectClient.fetchStandbyQuota = async () => {
+      directCalledCount++;
+      return {
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                {
+                  bucketId: 'gemini-5h',
+                  displayName: 'Five Hour Limit Remaining',
+                  remainingFraction: 0.76,
+                  resetTime: '2026-11-12T23:13:08Z'
+                }
+              ]
+            }
+          ]
+        },
+        models: {
+          'gemini-2.5-flash': { displayName: 'Gemini 2.5 Flash', quotaInfo: { remainingFraction: 0.76, resetTime: '2026-11-12T23:13:08Z' } }
+        },
+        paidTier: { id: 'g1-pro-tier', name: 'Google AI Pro' }
+      };
+    };
+
+    const apiClient = new QuotaApiClient(undefined, mockDirectClient);
+
+    // Active account: queries Google direct API directly
+    const activeRes = await apiClient.fetchLiveQuotaData('test_token', true, 'active.dev@gmail.com');
+    assert.strictEqual(directCalledCount, 1);
+    const geminiGrp = activeRes.response.groups.find((g: any) => g.displayName === 'Gemini Models');
+    assert.ok(geminiGrp);
+    const b5h = geminiGrp.buckets.find((b: any) => b.bucketId === 'gemini-5h');
+    assert.ok(b5h);
+    assert.strictEqual(b5h.remainingFraction, 0.76);
+
+    // Standby account (isActiveAccount = false): also routes directly to Google direct API
+    await apiClient.fetchLiveQuotaData('test_token', false, 'standby.dev@gmail.com');
+    assert.strictEqual(directCalledCount, 2);
   });
 });

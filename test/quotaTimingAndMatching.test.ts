@@ -9,6 +9,23 @@ import { QuotaParser } from '../src/quota/quotaParser';
 import { is5HourBucket, isWeeklyBucket } from '../src/quota/quotaClassifier';
 import { AccountInfo } from '../src/types';
 
+function createMockAccount(overrides: Partial<AccountInfo> = {}): AccountInfo {
+  return {
+    id: 'acc-mock',
+    email: 'pro.user@example.com',
+    name: 'Pro User',
+    isActive: true,
+    status: 'healthy',
+    accountType: 'Google AI Pro',
+    tierBadge: 'PRO',
+    addedAt: '2026-10-20T00:00:00.000Z',
+    quotas: [],
+    hasWeeklyQuota: true,
+    has5HourQuota: true,
+    ...overrides
+  };
+}
+
 describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
   it('parses various Google Cloud Code PA description strings into countdowns', () => {
     assert.strictEqual(
@@ -92,13 +109,13 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
       }
     };
 
-    const dummyAcc: AccountInfo = {
+    const dummyAcc: AccountInfo = createMockAccount({
       email: 'pro.user@example.com',
       name: 'Pro User',
       isActive: true,
       accountType: 'Google AI Pro',
       tierBadge: 'PRO'
-    };
+    });
 
     const res = parser.processQuotaData(rawData, dummyAcc);
 
@@ -207,13 +224,13 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
       }
     };
 
-    const dummyAccount: AccountInfo = {
+    const dummyAccount: AccountInfo = createMockAccount({
       id: 'acc-pro',
       email: 'pro.active@gmail.com',
       name: 'Alex Rivera',
       isActive: true,
-      addedAt: Date.now()
-    };
+      addedAt: new Date().toISOString()
+    });
 
     const parsed = parser.processQuotaData(lspPayload, dummyAccount);
 
@@ -276,14 +293,14 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
       }
     };
 
-    const dummyAccount: AccountInfo = {
+    const dummyAccount: AccountInfo = createMockAccount({
       id: 'acc-pro-user',
       email: 'pro.active@gmail.com',
       name: 'Alex Rivera',
       isActive: true,
       accountType: 'Google AI Pro',
       tierBadge: 'PRO'
-    };
+    });
 
     const parsed = parser.processQuotaData(payload, dummyAccount);
 
@@ -358,14 +375,14 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
       }
     };
 
-    const dummyAccount: AccountInfo = {
+    const dummyAccount: AccountInfo = createMockAccount({
       id: 'acc-pro-models',
       email: 'pro.models@gmail.com',
       name: 'Pro Models User',
       isActive: true,
       accountType: 'Google AI Pro',
       tierBadge: 'PRO'
-    };
+    });
 
     const parsed = parser.processQuotaData(payload, dummyAccount);
 
@@ -441,14 +458,14 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
       }
     };
 
-    const dummyAcc: AccountInfo = {
+    const dummyAcc: AccountInfo = createMockAccount({
       id: 'acc-weekly-only',
       email: 'standby@example.com',
       name: 'Standby User',
       isActive: false,
       accountType: 'Google AI Pro',
       tierBadge: 'PRO'
-    };
+    });
 
     const res = parser.processQuotaData(rawPayload, dummyAcc);
 
@@ -500,14 +517,14 @@ describe('Description Countdown Parsing and Weekly Reset Preservation', () => {
       }
     };
 
-    const dummyAcc: AccountInfo = {
+    const dummyAcc: AccountInfo = createMockAccount({
       id: 'acc-pro-user',
       email: 'pro.user@example.com',
       name: 'Pro User',
       isActive: true,
       accountType: 'Google AI Pro',
       tierBadge: 'PRO'
-    };
+    });
 
     const res = parser.processQuotaData(rawPayload, dummyAcc);
 

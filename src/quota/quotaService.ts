@@ -11,6 +11,7 @@ import { EXTENSION_DEFAULTS } from '../constants';
 import { QuotaApiClient } from './quotaApiClient';
 import { QuotaParser, QuotaFetchResult } from './quotaParser';
 import { JitProbeResult } from './googleDirectApiClient';
+import { fetchActiveAccountQuotaFromIde, IdeActiveQuotaResult } from './ideLocalAgyClient';
 import {
   calculateModulatedInstantQuota,
   calculateOverallSummary,
@@ -59,8 +60,8 @@ export class QuotaService {
   }
 
   /**
-   * Invalidates cached Language Server connection to force rediscovery.
-   * Useful after account switching or language server restarts.
+   * Invalidates cached quota connection to force refresh.
+   * Useful after account switching.
    */
   public invalidateLanguageServerConnection(): void {
     this.apiClient.invalidateCache();
@@ -74,10 +75,25 @@ export class QuotaService {
   }
 
   /**
-   * Returns the email address of the active account in the running Language Server.
+   * Refreshes an expired access token using the account's refresh token.
+   */
+  public async refreshAccessToken(refreshToken: string): Promise<OAuthTokens> {
+    return this.oauthService.refreshAccessToken(refreshToken);
+  }
+
+  /**
+   * Returns the email address of the active account (from storage/state or IDE).
+   * Kept strictly undefined to avoid cross-window Language Server process race conditions.
    */
   public async getLiveLanguageServerEmail(): Promise<string | undefined> {
     return undefined;
+  }
+
+  /**
+   * Fetches the real-time active account quota from the local running IDE (agy).
+   */
+  public async fetchActiveAccountQuotaFromIde(timeoutMs = 1500): Promise<IdeActiveQuotaResult | null> {
+    return fetchActiveAccountQuotaFromIde(timeoutMs);
   }
 
   /**
@@ -91,6 +107,9 @@ export class QuotaService {
     timeoutMs: number = EXTENSION_DEFAULTS.JIT_TIMEOUT_MS
   ): Promise<JitProbeResult> {
     let currentTokens = tokens;
+    if (currentTokens.hasAiCode === false) {
+      return { ok: false, isDepleted: true, error: 'Re-auth required: missing aicode scope' };
+    }
     if (currentTokens.expiresAt && Date.now() > currentTokens.expiresAt - 120000 && currentTokens.refreshToken) {
       try {
         currentTokens = await this.oauthService.refreshAccessToken(currentTokens.refreshToken);

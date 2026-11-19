@@ -1,10 +1,13 @@
 import * as vscode from "vscode";
 import { AccountService } from "../account";
 import { SAFE_WEEKLY_THRESHOLDS } from "../constants";
+import { IdeActiveQuotaResult } from "../quota";
 
 export class StatusBarService implements vscode.Disposable {
   private statusBarItem: vscode.StatusBarItem;
   private disposables: vscode.Disposable[] = [];
+  private cachedIdeQuota: IdeActiveQuotaResult | null = null;
+  private idePollTimer?: NodeJS.Timeout;
 
   constructor(private readonly accountService: AccountService) {
     this.statusBarItem = vscode.window.createStatusBarItem(
@@ -15,11 +18,49 @@ export class StatusBarService implements vscode.Disposable {
     this.disposables.push(this.statusBarItem);
 
     this.disposables.push(
-      this.accountService.onDidChangeState(() => this.update()),
+      this.accountService.onDidChangeState(() => {
+        this.refreshIdeQuota();
+        this.update();
+      }),
     );
 
     this.update();
     this.statusBarItem.show();
+
+    // Initial background IDE quota check and periodic background sync (every 15s)
+    this.refreshIdeQuota();
+    this.idePollTimer = setInterval(() => {
+      this.refreshIdeQuota();
+    }, 15000);
+    this.disposables.push({
+      dispose: () => {
+        if (this.idePollTimer) {
+          clearInterval(this.idePollTimer);
+        }
+      },
+    });
+  }
+
+  private async refreshIdeQuota(): Promise<void> {
+    try {
+      const active = this.accountService.getActiveAccount();
+      if (!active) {
+        this.cachedIdeQuota = null;
+        return;
+      }
+      const ideRes = await this.accountService.getActiveAccountIdeQuota(1500);
+      if (ideRes && ideRes.email.toLowerCase() === active.email.toLowerCase()) {
+        const changed =
+          !this.cachedIdeQuota ||
+          this.cachedIdeQuota.geminiInstantPercentage !== ideRes.geminiInstantPercentage ||
+          this.cachedIdeQuota.claudeInstantPercentage !== ideRes.claudeInstantPercentage ||
+          this.cachedIdeQuota.accountInstantPercentage !== ideRes.accountInstantPercentage;
+        this.cachedIdeQuota = ideRes;
+        if (changed) {
+          this.update();
+        }
+      }
+    } catch {}
   }
 
   public update(): void {
@@ -50,19 +91,22 @@ export class StatusBarService implements vscode.Disposable {
       return;
     }
 
-    const geminiPct = this.accountService.getAccountTargetQuota(
-      active,
-      "gemini",
-    );
-    const claudePct = this.accountService.getAccountTargetQuota(
-      active,
-      "claude",
-    );
-    const accountInstantPct = this.accountService.getAccountTargetQuota(
-      active,
-      "instant",
-    );
-    const activePct = active.averageQuotaPercentage ?? 0;
+    const hasIdeQuota =
+      Boolean(this.cachedIdeQuota &&
+      this.cachedIdeQuota.email.toLowerCase() === active.email.toLowerCase());
+
+    const geminiPct = hasIdeQuota
+      ? this.cachedIdeQuota!.geminiInstantPercentage
+      : this.accountService.getAccountTargetQuota(active, "gemini");
+    const claudePct = hasIdeQuota
+      ? this.cachedIdeQuota!.claudeInstantPercentage
+      : this.accountService.getAccountTargetQuota(active, "claude");
+    const accountInstantPct = hasIdeQuota
+      ? this.cachedIdeQuota!.accountInstantPercentage
+      : this.accountService.getAccountTargetQuota(active, "instant");
+    const activePct = hasIdeQuota
+      ? this.cachedIdeQuota!.overallQuotaPercentage
+      : (active.averageQuotaPercentage ?? 0);
 
     const autoSwitchTarget = this.accountService.getAutoSwitchTarget();
     let targetQuota: number;
@@ -139,6 +183,7 @@ export class StatusBarService implements vscode.Disposable {
     );
 
     const geminiGroup =
+      (hasIdeQuota ? this.cachedIdeQuota!.geminiGroup : undefined) ||
       active.geminiGroup ||
       active.quotaGroups?.find(
         (g) =>
@@ -164,10 +209,11 @@ export class StatusBarService implements vscode.Disposable {
       );
 
     const argonGroup = isPro
-      ? active.argonGroup ||
+      ? ((hasIdeQuota ? this.cachedIdeQuota!.argonGroup : undefined) ||
+        active.argonGroup ||
         active.quotaGroups?.find(
           (g) => g.id === "argon" || g.name.toLowerCase().includes("argon"),
-        )
+        ))
       : undefined;
     const argonWeekly = isPro
       ? argonGroup?.weekly ||
@@ -179,6 +225,7 @@ export class StatusBarService implements vscode.Disposable {
       : undefined;
 
     const claudeGroup =
+      (hasIdeQuota ? this.cachedIdeQuota!.claudeGptGroup : undefined) ||
       active.claudeGptGroup ||
       active.quotaGroups?.find(
         (g) =>

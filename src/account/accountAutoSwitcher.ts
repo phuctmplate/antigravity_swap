@@ -1,17 +1,18 @@
 import * as vscode from 'vscode';
 import { AccountInfo, AutoSwitchTarget } from '../types';
 import { StorageService } from '../storage';
-import { calculateModulatedInstantQuota, JitProbeResult } from '../quota';
+import { calculateModulatedInstantQuota, JitProbeResult, IdeActiveQuotaResult } from '../quota';
 import { MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS, EXTENSION_DEFAULTS } from '../constants';
 
 export interface AccountAutoSwitcherContext {
   getAccounts: () => AccountInfo[];
   getActiveAccount: () => AccountInfo | undefined;
-  switchAccount: (email: string) => Promise<boolean>;
+  switchAccount: (email: string, isManual?: boolean, isSilent?: boolean) => Promise<boolean>;
   addAccountViaOAuth: () => Promise<AccountInfo | null>;
   probeCandidate?: (email: string) => Promise<JitProbeResult>;
   onCandidateDepletedExternally?: (email: string, probeResult: JitProbeResult) => Promise<void>;
   onCandidateProbed?: (email: string, probeResult: JitProbeResult) => Promise<void>;
+  getIdeActiveQuota?: () => Promise<IdeActiveQuotaResult | null>;
 }
 
 /**
@@ -201,7 +202,7 @@ export class AccountAutoSwitcher {
       const active = this.ctx.getActiveAccount();
       if (!active) return;
 
-      const isAuthFailed = active.status === 'auth_failed';
+      const isAuthFailed = active.status === 'auth_failed' || Boolean(active.needsReauth);
       const isBanned = active.isBanned || active.status === 'banned';
 
       // If account credentials are ok, wait until quota data is loaded before evaluating low quota
@@ -219,11 +220,43 @@ export class AccountAutoSwitcher {
       const isUnusable = isAuthFailed || isBanned;
 
       if (isDepleted || isUnusable) {
+        // SECONDARY GUARD: If trigger is quota depletion (not auth failure or ban),
+        // check ngầm quota remain of active account in IDE as a 2nd protection layer
+        // to prevent premature switches caused by stale or delayed Google API responses.
+        if (isDepleted && !isUnusable && this.ctx.getIdeActiveQuota) {
+          try {
+            const ideQuota = await this.ctx.getIdeActiveQuota();
+            if (ideQuota && ideQuota.email.toLowerCase() === active.email.toLowerCase()) {
+              let ideTargetQuota = ideQuota.accountInstantPercentage;
+              if (target === 'gemini') {
+                ideTargetQuota = ideQuota.geminiInstantPercentage;
+              } else if (target === 'claude') {
+                ideTargetQuota = ideQuota.claudeInstantPercentage;
+              }
+
+              if (ideTargetQuota > threshold) {
+                console.log(
+                  `[AccountAutoSwitcher] Secondary IDE Quota Guard: API reported ${active.email} has low quota (${activeQuota}% <= ${threshold}%), but IDE Language Server reports healthy quota (${ideTargetQuota}%). Aborting premature switch.`
+                );
+                return;
+              } else {
+                console.log(
+                  `[AccountAutoSwitcher] Secondary IDE Quota Guard: Confirmed low quota in IDE for ${active.email} (${ideTargetQuota}% <= ${threshold}%). Proceeding with auto-switch.`
+                );
+              }
+            }
+          } catch (guardErr) {
+            console.warn('[AccountAutoSwitcher] Secondary IDE Quota Guard check failed; falling back to API decision:', guardErr);
+          }
+        }
+
         const targetLabel = target === 'gemini' ? 'Gemini Instant' : target === 'claude' ? 'Claude & GPT Instant' : 'Account Instant';
 
         let reason: string;
         if (isAuthFailed) {
-          reason = 'authentication failed (token expired/invalid)';
+          reason = active.needsReauth
+            ? 'permissions revoked/missing (re-auth required)'
+            : 'authentication failed (token expired/invalid)';
         } else if (isBanned) {
           reason = 'account suspended/banned by Google';
         } else {
@@ -242,7 +275,14 @@ export class AccountAutoSwitcher {
 
           // Find candidates that have healthy quota for this target, excluding failed ones in this cycle and quarantined ones
           const candidates = accounts.filter((a) => {
-            if (a.email === active.email || a.isBanned || a.status === 'banned' || a.status === 'auth_failed' || failedCandidateEmails.has(a.email)) {
+            if (
+              a.email === active.email ||
+              a.isBanned ||
+              a.status === 'banned' ||
+              a.status === 'auth_failed' ||
+              a.needsReauth ||
+              failedCandidateEmails.has(a.email)
+            ) {
               return false;
             }
             const failedAt = this.temporarilyFailedCandidates.get(a.email.toLowerCase());
@@ -325,7 +365,7 @@ export class AccountAutoSwitcher {
             `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
           );
 
-          switchSuccess = await this.ctx.switchAccount(candidate.email);
+          switchSuccess = await this.ctx.switchAccount(candidate.email, false, true);
 
           // Immediately renew lease after switch attempt (whether succeeded or failed)
           this.storage.renewRefreshLease?.();

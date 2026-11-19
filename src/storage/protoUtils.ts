@@ -122,12 +122,19 @@ export function parseProtoFields(buf: Uint8Array): Array<{ fieldNum: number; wir
   return fields;
 }
 
-export function patchUserStatusPayload(existingBytes: Uint8Array, newEmail: string, newName?: string, newAvatarUrl?: string): Uint8Array {
+export function patchUserStatusPayload(
+  existingBytes: Uint8Array,
+  newEmail: string,
+  newName?: string,
+  newAvatarUrl?: string,
+  overrideAgentOnboarding?: number
+): Uint8Array {
   const fields = parseProtoFields(existingBytes);
   const resultParts: Uint8Array[] = [];
   let hasEmail = false;
   let hasName = false;
   let hasAvatar = false;
+  let hasAgentOnboarding = false;
 
   for (const f of fields) {
     if (f.fieldNum === 7) {
@@ -143,6 +150,14 @@ export function patchUserStatusPayload(existingBytes: Uint8Array, newEmail: stri
         resultParts.push(encodeStringField(26, Buffer.from(f.data).toString('utf8')));
       }
       hasAvatar = true;
+    } else if (f.fieldNum === 5 && f.wireType === 0) {
+      // agentOnboardingCompleted — override if requested, otherwise preserve existing value
+      if (overrideAgentOnboarding !== undefined) {
+        resultParts.push(encodeVarintField(5, overrideAgentOnboarding));
+      } else {
+        resultParts.push(f.rawBytes);
+      }
+      hasAgentOnboarding = true;
     } else {
       // PRESERVE ALL OTHER FIELDS (including models, paid tier, permissions, etc.)
       resultParts.push(f.rawBytes);
@@ -158,8 +173,27 @@ export function patchUserStatusPayload(existingBytes: Uint8Array, newEmail: stri
   if (!hasAvatar && newAvatarUrl) {
     resultParts.push(encodeStringField(26, newAvatarUrl));
   }
+  if (!hasAgentOnboarding && overrideAgentOnboarding !== undefined) {
+    // Inject field only if explicitly requested and not already present
+    resultParts.push(encodeVarintField(5, overrideAgentOnboarding));
+  }
 
   return Buffer.concat(resultParts.map(p => Buffer.from(p)));
+}
+
+/**
+ * Extracts the agentOnboardingCompleted enum value (field 5) from a raw UserStatus proto payload.
+ * Returns 0 (unset) if the field is absent or cannot be parsed.
+ */
+export function extractAgentOnboardingCompleted(userStatusBase64: string): number {
+  try {
+    const bytes = Buffer.from(userStatusBase64, 'base64');
+    const fields = parseProtoFields(bytes);
+    const field5 = fields.find(f => f.fieldNum === 5 && f.wireType === 0);
+    return field5 ? Number(field5.data as bigint) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export function patchUnifiedStateSyncTopicUserStatus(
@@ -272,12 +306,15 @@ export function createUnifiedOAuthToken(
 export function createUserStatusPayload(email: string, name?: string): Uint8Array {
   const field1 = encodeVarintField(1, 1); // pro: true
   const field3 = encodeStringField(3, name || email.split('@')[0]); // name
+  // field5: agentOnboardingCompleted = COMPLETED(2) in Antigravity IDE 2.7 — avoids FTUE dialog when USS is freshly hydrated
+  const field5 = encodeVarintField(5, 2);
   const field7 = encodeStringField(7, email); // email
   const field31 = encodeVarintField(31, 1); // has_used_antigravity: true
   const field34 = encodeVarintField(34, 1); // accepted_latest_terms_of_service: true
   return Buffer.concat([
     Buffer.from(field1),
     Buffer.from(field3),
+    Buffer.from(field5),
     Buffer.from(field7),
     Buffer.from(field31),
     Buffer.from(field34)
@@ -301,6 +338,28 @@ export function createSerializedUpdateRequest(topicName: string, sentinelKey: st
     Buffer.from(encodeLenDelimField(5, appliedUpdateMsg))
   ]);
   return Buffer.from(updateRequestMsg).toString('base64');
+}
+
+export function buildOnboardingStateCompletedUpdate(): {
+  topicName: string;
+  appliedUpdate: {
+    key: string;
+    newRow: {
+      value: string;
+      eTag: number;
+    };
+  };
+} {
+  return {
+    topicName: 'uss-onboardingState',
+    appliedUpdate: {
+      key: 'agentOnboardingStateSentinelKey',
+      newRow: {
+        value: 'EAI=', // Primitive proto with field 2 (int32_value) = 2 (AGENT_ONBOARDING_STATE_COMPLETED)
+        eTag: 0
+      }
+    }
+  };
 }
 
 export function parseUserStatusBytes(bytes: Uint8Array): { email: string; name: string } {

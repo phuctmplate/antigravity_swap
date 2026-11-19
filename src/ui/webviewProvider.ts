@@ -110,6 +110,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'switchAccount': {
           const ok = await this.accountService.switchAccount(data.email, data.isManual === true, true);
+          this.updateWebview();
           if (ok) {
             this.showToast(`Switched to: ${data.email}!`, 'success');
           } else {
@@ -120,9 +121,16 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'relogin':
-        case 'reloginAccount':
-          await this.accountService.reloginAccount(data.email);
+        case 'reloginAccount': {
+          const ok = await this.accountService.reloginAccount(data.email, true);
+          this.updateWebview();
+          if (ok) {
+            this.showToast(`Re-authenticated ${data.email} successfully!`, 'success');
+          } else {
+            this.showToast(`Re-authentication cancelled or failed for ${data.email}.`, 'warning');
+          }
           break;
+        }
         case 'refreshAll': {
           try {
             const accounts = this.accountService.getAccounts();
@@ -131,6 +139,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
               break;
             }
             await this.accountService.refreshAllQuotas(true);
+            this.updateWebview();
             const latest = this.accountService.getAccounts();
             const failedCount = latest.filter((a) => a.status === 'auth_failed' || a.status === 'banned').length;
             if (failedCount > 0) {
@@ -146,6 +155,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         case 'refreshAccount': {
           try {
             await this.accountService.refreshAccountQuota(data.email, true);
+            this.updateWebview();
             const acc = this.accountService.getAccounts().find((a) => a.email.toLowerCase() === data.email.toLowerCase());
             if (!acc) {
               this.showToast(`Account ${data.email} not found.`, 'error');
@@ -176,6 +186,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           if (Array.isArray(data.emails) && data.emails.length > 0) {
             try {
               await this.accountService.refreshMultipleAccounts(data.emails);
+              this.updateWebview();
               const accounts = this.accountService.getAccounts().filter((a) => data.emails.includes(a.email));
               const failed = accounts.filter((a) => a.status === 'auth_failed' || a.status === 'banned');
               if (failed.length > 0) {

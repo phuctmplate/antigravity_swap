@@ -17,7 +17,8 @@ export const OAUTH_CONFIG = {
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/userinfo.profile',
     'https://www.googleapis.com/auth/cclog',
-    'https://www.googleapis.com/auth/experimentsandconfigs'
+    'https://www.googleapis.com/auth/experimentsandconfigs',
+    'https://www.googleapis.com/auth/aicode'
   ]
 } as const;
 
@@ -29,8 +30,8 @@ export const API_ENDPOINTS = {
   USER_INFO_HOST: 'www.googleapis.com',
   USER_INFO_PATH: '/oauth2/v3/userinfo',
   CLOUD_CODE_HOSTS: [
-    'cloudcode-pa.googleapis.com',        // Production backend (contains both Gemini and Claude/GPT groups)
-    'daily-cloudcode-pa.googleapis.com'  // Companion backend fallback
+    'daily-cloudcode-pa.googleapis.com',  // Primary Antigravity backend (authoritative 5h and weekly quota metrics)
+    'cloudcode-pa.googleapis.com'         // Fallback backend
   ] as const
 } as const;
 

@@ -90,12 +90,46 @@ export class AccountQuotaSync {
         return;
       }
 
+      if (tokens.hasRequiredScopes === false || tokens.hasAiCode === false) {
+        const latestAccounts = this.ctx.getAccounts();
+        const curIdx = latestAccounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
+        if (curIdx >= 0) {
+          const updated = [...latestAccounts];
+          updated[curIdx] = {
+            ...updated[curIdx],
+            status: 'auth_failed',
+            needsReauth: true,
+            missingScopes: tokens.missingScopes,
+            hasRequiredScopes: false,
+            statusMessage: 'Re-authorization required. Please sign in again.'
+          };
+          this.ctx.setAccounts(updated);
+          if (!skipSave) {
+            await this.storage.saveAccounts(updated);
+            this.ctx.notifyStateChange();
+          }
+        }
+        return;
+      }
+
       const previousFiveHour = acc.fiveHourQuotaPercentage;
       const previousWeekly = acc.weeklyQuotaPercentage;
       const wasActive = acc.isActive;
 
       const res = await this.quotaService.fetchAccountQuotas(acc, tokens, async (newTokens) => {
         await this.storage.saveAccountTokens(email, newTokens);
+
+        const activeEmail = this.storage.getActiveAccountEmail()?.toLowerCase();
+        if (acc.isActive || (activeEmail && email.toLowerCase() === activeEmail)) {
+          console.log(`[AccountQuotaSync] Active account ${email} token refreshed during quota poll. Synchronizing keyring, USS and state.vscdb...`);
+          try {
+            // Pass triggerReconnect = false so background token refreshes for the active account do not reload the chat UI
+            await this.storage.liveSwitchOAuthToken(acc, newTokens, false, false);
+            await this.storage.syncToIdeStateDb(acc, newTokens);
+          } catch (syncErr) {
+            console.warn('[AccountQuotaSync] Failed to propagate refreshed token to IDE:', syncErr);
+          }
+        }
       });
 
       const latestAccounts = this.ctx.getAccounts();
@@ -371,6 +405,31 @@ export class AccountQuotaSync {
   public async runHeartbeatTick(): Promise<void> {
     // Keep active state synchronized with IDE external login/logout
     await this.ctx.checkExternalIdeSession().catch(() => {});
+
+    // Proactive Active Token Lifeline:
+    // If the active account's token is expiring within 10 minutes (or already expired),
+    // proactively refresh it and immediately synchronize to gemini:antigravity, in-memory USS, and state.vscdb!
+    const activeAcc = this.ctx.getActiveAccount();
+    if (activeAcc && !activeAcc.isBanned && activeAcc.status !== 'banned' && activeAcc.status !== 'auth_failed' && typeof this.storage.getAccountTokens === 'function') {
+      try {
+        const activeTokens = await this.storage.getAccountTokens(activeAcc.email);
+        if (activeTokens && activeTokens.refreshToken) {
+          const tenMinutesMs = 10 * 60 * 1000;
+          const isExpiringSoon = !activeTokens.expiresAt || (Date.now() > activeTokens.expiresAt - tenMinutesMs);
+          if (isExpiringSoon) {
+            console.log(`[AccountQuotaSync] Active account ${activeAcc.email} token is near expiration (<10m). Refreshing proactively...`);
+            const refreshed = await this.quotaService.refreshAccessToken(activeTokens.refreshToken);
+            await this.storage.saveAccountTokens(activeAcc.email, refreshed);
+            // Pass triggerReconnect = false so proactive token refresh runs 100% silently without reloading conversation
+            await this.storage.liveSwitchOAuthToken(activeAcc, refreshed, false, false);
+            await this.storage.syncToIdeStateDb(activeAcc, refreshed);
+            console.log(`[AccountQuotaSync] Active account ${activeAcc.email} proactively refreshed and synchronized.`);
+          }
+        }
+      } catch (proactiveErr: any) {
+        console.warn(`[AccountQuotaSync] Proactive token refresh failed for ${activeAcc.email}:`, proactiveErr?.message || proactiveErr);
+      }
+    }
 
     // Try to acquire distributed lease for background heartbeat polling
     if (!this.storage.tryAcquireRefreshLease(false)) {

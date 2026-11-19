@@ -141,7 +141,8 @@ export class AccountDiscoveryService {
           if (agyRow?.value) {
             try {
               const parsedAgy = JSON.parse(agyRow.value);
-              const username = parsedAgy['antigravity-storage']?.['jetski.onboarding.lastLoginUsername'];
+              const username = parsedAgy['antigravity-storage']?.['agy.onboarding.lastLoginUsername'] ||
+                               parsedAgy['antigravity-storage']?.['jetski.onboarding.lastLoginUsername'];
               if (username && this.isValidEmail(username)) {
                 agyUsername = username;
               }

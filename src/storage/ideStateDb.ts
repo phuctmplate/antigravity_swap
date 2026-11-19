@@ -436,8 +436,17 @@ main().catch(() => process.exit(1));
             if (!agyState['antigravity-storage'] || typeof agyState['antigravity-storage'] !== 'object') {
               agyState['antigravity-storage'] = {};
             }
+            const isGcpTos =
+              !account.email.toLowerCase().endsWith('@gmail.com') &&
+              !account.email.toLowerCase().endsWith('@googlemail.com') &&
+              !account.email.toLowerCase().endsWith('@example.com');
+            const gcpTosStr = isGcpTos ? 'true' : 'false';
+            agyState['antigravity-storage']['agy.onboarding.lastLoginUsername'] = account.email;
+            agyState['antigravity-storage']['agy.onboarding.lastLoginIsGcpTos'] = gcpTosStr;
+            agyState['antigravity-storage']['agy.onboarding.lastLoginStrategy'] = 'google';
             agyState['antigravity-storage']['jetski.onboarding.lastLoginUsername'] = account.email;
-            agyState['antigravity-storage']['jetski.onboarding.lastLoginIsGcpTos'] = 'false';
+            agyState['antigravity-storage']['jetski.onboarding.lastLoginIsGcpTos'] = gcpTosStr;
+            agyState['antigravity-storage']['jetski.onboarding.lastLoginStrategy'] = 'google';
             nativeDb.prepare(
               'INSERT INTO ItemTable (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
             ).run('google.google-antigravity', JSON.stringify(agyState));

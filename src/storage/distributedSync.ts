@@ -6,12 +6,14 @@ import { CONFIG_KEYS, EXTENSION_DEFAULTS } from '../constants';
 
 export class DistributedSyncManager {
   private lastProcessedOAuthTimestamp = 0;
+  private lastProcessedSwitchTimestamp = 0;
   private fileWatcher?: fs.FSWatcher;
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
     private readonly onExternalAccountsChanged: () => void,
     private readonly onExternalOAuthComplete: (data: { email: string; timestamp: number }) => void,
+    private readonly onExternalSwitchComplete: (data: { email: string; timestamp: number }) => void,
     private readonly getLastLocalSaveTime: () => number,
     private readonly getAccountsFilePath: () => string
   ) {}
@@ -24,6 +26,16 @@ export class DistributedSyncManager {
       } catch {}
     }
     return path.join(dir, '.oauth-event.json');
+  }
+
+  public getSwitchEventFilePath(): string {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, '.switch-event.json');
   }
 
   /**
@@ -40,6 +52,24 @@ export class DistributedSyncManager {
       fs.writeFileSync(eventFile, JSON.stringify(payload), 'utf-8');
     } catch (e) {
       console.warn('[DistributedSyncManager] Failed to broadcast OAuth event:', e);
+    }
+  }
+
+  /**
+   * Broadcasts to other IDE windows/instances that an active account switch completed.
+   */
+  public broadcastSwitchCompleted(email: string): void {
+    try {
+      const eventFile = this.getSwitchEventFilePath();
+      const payload = {
+        email,
+        pid: process.pid,
+        timestamp: Date.now()
+      };
+      fs.writeFileSync(eventFile, JSON.stringify(payload), 'utf-8');
+      console.log(`[DistributedSyncManager] Broadcasted switch-event for ${email} to other IDE instances.`);
+    } catch (e) {
+      console.warn('[DistributedSyncManager] Failed to broadcast switch event:', e);
     }
   }
 
@@ -61,6 +91,24 @@ export class DistributedSyncManager {
     } catch {}
   }
 
+  /**
+   * Checks if an external IDE instance recently switched the active account.
+   */
+  public checkExternalSwitchEvent(): void {
+    try {
+      const eventFile = this.getSwitchEventFilePath();
+      if (!fs.existsSync(eventFile)) return;
+      const raw = fs.readFileSync(eventFile, 'utf-8');
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object' && data.timestamp && data.email) {
+        if (data.pid !== process.pid && data.timestamp > this.lastProcessedSwitchTimestamp && Date.now() - data.timestamp < 15000) {
+          this.lastProcessedSwitchTimestamp = data.timestamp;
+          this.onExternalSwitchComplete({ email: data.email, timestamp: data.timestamp });
+        }
+      }
+    } catch {}
+  }
+
   public initFileWatcher(): vscode.Disposable {
     const filePath = this.getAccountsFilePath();
     let debounceTimer: NodeJS.Timeout | null = null;
@@ -73,6 +121,11 @@ export class DistributedSyncManager {
       this.fileWatcher = fs.watch(dir, (_eventType, filename) => {
         if (filename && filename.includes('oauth-event')) {
           this.checkExternalOAuthEvent();
+          return;
+        }
+
+        if (filename && filename.includes('switch-event')) {
+          this.checkExternalSwitchEvent();
           return;
         }
 

@@ -127,9 +127,9 @@ export class QuotaParser {
       const buckets: QuotaBucket[] = [];
 
       for (const b of (g.buckets || [])) {
-        // On Pro plan, Argon bucket ONLY has a Weekly window
-        const is5h = effectiveIsArgon ? false : is5HourBucket(b.window, b.bucketId, b.displayName);
-        const isWeekly = effectiveIsArgon ? true : isWeeklyBucket(b.window, b.bucketId, b.displayName);
+        // On Pro plan, Argon bucket ONLY has a Weekly window. Free tier accounts NEVER have a 5h window.
+        const is5h = (effectiveIsArgon || isFree) ? false : is5HourBucket(b.window, b.bucketId, b.displayName);
+        const isWeekly = (effectiveIsArgon || isFree) ? true : isWeeklyBucket(b.window, b.bucketId, b.displayName);
 
         const windowType: '5h' | 'weekly' = is5h ? '5h' : 'weekly';
         let remainingFraction = extractFraction(b);
@@ -269,10 +269,17 @@ export class QuotaParser {
       }
     }
 
-    const hasArgonInNewData = groups.some((g: any) => (g.displayName || '').toLowerCase().includes('argon')) ||
-      Object.keys(quotaData?.models || {}).some((id: string) => id.toLowerCase().includes('argon'));
+    const hasAvailableArgonInNewData = groups.some((g: any) => {
+      const isArgon = (g.displayName || '').toLowerCase().includes('argon');
+      return isArgon && (g.buckets || []).some((b: any) => !b.disabled && typeof b.remainingFraction === 'number');
+    }) || Object.entries<any>(quotaData?.models || {}).some(([id, m]) => {
+      const s = (id + ' ' + (m?.displayName || '') + ' ' + (m?.label || '') + ' ' + (m?.modelId || '') + ' ' + (m?.tagTitle || '') + ' ' + (m?.tagDescription || '')).toLowerCase();
+      if (!s.includes('argon')) return false;
+      if (m?.disabled === true || m?.enabled === false || s.includes('disabled') || s.includes('unavailable')) return false;
+      return true;
+    });
 
-    if (isPro && hasArgonInNewData) {
+    if (isPro && hasAvailableArgonInNewData) {
       if (!argonGroup && prevArgon) {
         const resolvedWk = resolvePrevBucket(prevArgon.weekly);
         argonGroup = {
@@ -293,6 +300,8 @@ export class QuotaParser {
       }
     } else {
       argonGroup = undefined;
+      const aIdx = quotaGroups.findIndex((g) => g.id === 'argon' || (g.name || '').toLowerCase().includes('argon'));
+      if (aIdx >= 0) quotaGroups.splice(aIdx, 1);
     }
 
     // Critical: If account downgraded from Pro/Ultra to Free tier, strictly purge 5h buckets
@@ -333,8 +342,13 @@ export class QuotaParser {
         const idLower = (modelId + ' ' + displayName).toLowerCase();
         const isArgonModel = idLower.includes('argon');
 
-        // Argon model is only available on Pro and Ultra plans
-        if (isArgonModel && isFree) continue;
+        // Argon model is only available on Pro (when not disabled/unavailable) and Ultra plans
+        if (isArgonModel) {
+          if (isFree) continue;
+          const s = (modelId + ' ' + (modelData?.displayName || '') + ' ' + (modelData?.label || '') + ' ' + (modelData?.modelId || '') + ' ' + (modelData?.tagTitle || '') + ' ' + (modelData?.tagDescription || '')).toLowerCase();
+          const isArgonUnavailable = modelData?.disabled === true || modelData?.enabled === false || s.includes('disabled') || s.includes('unavailable');
+          if (isArgonUnavailable) continue;
+        }
 
         const normId = normalizeModelKey(modelId);
         if (seenIds.has(normId)) continue;
@@ -775,9 +789,10 @@ export class QuotaParser {
     // ONLY if the Pro account actually has an Argon group or Argon models in its subscription
     if (isPro) {
       const argonModels = parsedQuotas.filter(
-        (q) => (q.groupName || '').toLowerCase().includes('argon') || (q.id + ' ' + q.displayName).toLowerCase().includes('argon')
+        (q) => !q.disabled && ((q.groupName || '').toLowerCase().includes('argon') || (q.id + ' ' + q.displayName).toLowerCase().includes('argon'))
       );
-      const hasArgon = Boolean(argonGroup) || argonModels.length > 0;
+      const isArgonGroupAvailable = Boolean(argonGroup?.weekly && !argonGroup.weekly.disabled && argonGroup.weekly.percentage >= 0);
+      const hasArgon = isArgonGroupAvailable || argonModels.length > 0;
       if (hasArgon) {
         if (!argonGroup) {
           argonGroup = {
@@ -834,8 +849,9 @@ export class QuotaParser {
         }
       } else {
         argonGroup = undefined;
-        const idx = quotaGroups.findIndex((g) => g.id === 'argon');
+        const idx = quotaGroups.findIndex((g) => g.id === 'argon' || (g.name || '').toLowerCase().includes('argon'));
         if (idx >= 0) quotaGroups.splice(idx, 1);
+        parsedQuotas = parsedQuotas.filter((q) => !(q.id + ' ' + q.displayName).toLowerCase().includes('argon'));
       }
     } else if (isUltra && geminiGroup) {
       // On Ultra accounts, Argon is merged into the Gemini bucket
@@ -994,7 +1010,7 @@ export class QuotaParser {
       quotaGroups,
       geminiGroup,
       claudeGptGroup,
-      argonGroup: isPro ? argonGroup : undefined,
+      argonGroup: (isPro && argonGroup?.weekly && !argonGroup.weekly.disabled && argonGroup.weekly.percentage >= 0) ? argonGroup : undefined,
       averagePercentage,
       fiveHourPercentage,
       weeklyPercentage,

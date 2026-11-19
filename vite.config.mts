@@ -19,5 +19,7 @@ export default defineConfig({
     // viteSingleFile inlines all assets into index.html
     assetsInlineLimit: 100_000_000,
     cssCodeSplit: false,
+    minify: false,
+    sourcemap: 'inline',
   }
 });

@@ -1,13 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { WebviewState } from './types';
-import { Header } from './components/Header';
-import { ControllerBar } from './components/ControllerBar';
-import { AccountList } from './components/AccountList';
-import { ModelQuotas } from './components/ModelQuotas';
-import { AutoSwitchBanner } from './components/AutoSwitchBanner';
-import { Toaster, toast } from './components/ui/sonner';
-import { getVsCodeApi } from './vscode';
-import { DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT, DEFAULT_AUTO_SWITCH_TARGET } from './constants';
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { WebviewState } from "./types";
+import { Header } from "./components/Header";
+import { ControllerBar } from "./components/ControllerBar";
+import { AccountList } from "./components/AccountList";
+import { ModelQuotas } from "./components/ModelQuotas";
+import { AutoSwitchBanner } from "./components/AutoSwitchBanner";
+import { Toaster, toast } from "./components/ui/sonner";
+import { getVsCodeApi } from "./vscode";
+import {
+  DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
+  DEFAULT_AUTO_SWITCH_TARGET,
+} from "./constants";
 
 const defaultState: WebviewState = {
   accounts: [],
@@ -22,17 +25,17 @@ const defaultState: WebviewState = {
     accountsLowOrDepleted: 0,
     accountsWithErrors: 0,
     proAccountsCount: 0,
-    lastUpdated: new Date().toISOString()
+    lastUpdated: new Date().toISOString(),
   },
   autoSwitchEnabled: false,
   autoSwitchTarget: DEFAULT_AUTO_SWITCH_TARGET,
-  autoSwitchThreshold: DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
+  autoSwitchThreshold: DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
 };
 
 function getInitialState(): WebviewState {
   try {
-    const rootEl = document.getElementById('root');
-    const rawB64 = rootEl?.getAttribute('data-initial-state');
+    const rootEl = document.getElementById("root");
+    const rawB64 = rootEl?.getAttribute("data-initial-state");
     if (rawB64) {
       const json = decodeURIComponent(escape(atob(rawB64)));
       const parsed = JSON.parse(json);
@@ -41,7 +44,7 @@ function getInitialState(): WebviewState {
       }
     }
   } catch (e) {
-    console.warn('[Antigravity Swap] Could not parse data-initial-state:', e);
+    console.warn("[Antigravity Swap] Could not parse data-initial-state:", e);
   }
 
   const cached = getVsCodeApi().getState() as WebviewState | undefined;
@@ -54,6 +57,7 @@ function getInitialState(): WebviewState {
 
 export const AppContent: React.FC = () => {
   const [state, setState] = useState<WebviewState>(getInitialState);
+  const [switchingEmail, setSwitchingEmail] = useState<string | null>(null);
 
   const effectiveAccounts = state.accounts;
   const effectiveOverall = state.overall;
@@ -69,18 +73,19 @@ export const AppContent: React.FC = () => {
 
   useEffect(() => {
     // Notify extension host that webview is ready for live stream updates
-    getVsCodeApi().postMessage({ command: 'ready' });
+    getVsCodeApi().postMessage({ command: "ready" });
 
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = event.data;
-        if (data && data.type === 'toast') {
-          const msg = data.message || '';
-          if (data.level === 'success') {
+        if (data && data.type === "toast") {
+          setSwitchingEmail(null);
+          const msg = data.message || "";
+          if (data.level === "success") {
             toast.success(msg);
-          } else if (data.level === 'warning') {
+          } else if (data.level === "warning") {
             toast.warning(msg);
-          } else if (data.level === 'error') {
+          } else if (data.level === "error") {
             toast.error(msg);
           } else {
             toast.info(msg);
@@ -88,15 +93,17 @@ export const AppContent: React.FC = () => {
           return;
         }
 
-        if (data && data.type === 'stateUpdate') {
+        if (data && data.type === "stateUpdate") {
+          setSwitchingEmail(null);
           const accounts = data.accounts || [];
           const activeAccount = data.activeAccount || null;
 
           // Preserve existing selection if valid, else pick active or first account
           const current = selectedEmailRef.current;
-          const nextSelected = (current && accounts.some((a: any) => a.email === current))
-            ? current
-            : (activeAccount?.email || accounts[0]?.email || null);
+          const nextSelected =
+            current && accounts.some((a: any) => a.email === current)
+              ? current
+              : activeAccount?.email || accounts[0]?.email || null;
 
           setSelectedEmail(nextSelected);
           const nextState: WebviewState = {
@@ -106,39 +113,62 @@ export const AppContent: React.FC = () => {
             heartbeat: data.heartbeat,
             isBackgroundRefreshing: data.isBackgroundRefreshing === true,
             autoSwitchEnabled: data.autoSwitchEnabled === true,
-            autoSwitchTarget: data.autoSwitchTarget || DEFAULT_AUTO_SWITCH_TARGET,
-            autoSwitchThreshold: typeof data.autoSwitchThreshold === 'number' ? data.autoSwitchThreshold : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
-            appVersion: data.appVersion
+            autoSwitchTarget:
+              data.autoSwitchTarget || DEFAULT_AUTO_SWITCH_TARGET,
+            autoSwitchThreshold:
+              typeof data.autoSwitchThreshold === "number"
+                ? data.autoSwitchThreshold
+                : DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT,
+            appVersion: data.appVersion,
           };
           setState(nextState);
           getVsCodeApi().setState(nextState);
         }
       } catch (err) {
-        console.error('[Antigravity Swap] handleMessage error:', err);
+        console.error("[Antigravity Swap] handleMessage error:", err);
       }
     };
 
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
   }, []);
 
   const handleToggleAutoSwitch = (enabled: boolean) => {
     setState((prev) => ({ ...prev, autoSwitchEnabled: enabled }));
-    getVsCodeApi().postMessage({ command: 'setAutoSwitch', enabled });
+    getVsCodeApi().postMessage({ command: "setAutoSwitch", enabled });
   };
 
   const handleSelectAutoSwitchTarget = (target: any) => {
     setState((prev) => ({ ...prev, autoSwitchTarget: target }));
-    getVsCodeApi().postMessage({ command: 'setAutoSwitchTarget', target });
+    getVsCodeApi().postMessage({ command: "setAutoSwitchTarget", target });
   };
 
   const handleChangeAutoSwitchThreshold = (threshold: number) => {
     setState((prev) => ({ ...prev, autoSwitchThreshold: threshold }));
-    getVsCodeApi().postMessage({ command: 'setAutoSwitchThreshold', threshold });
+    getVsCodeApi().postMessage({
+      command: "setAutoSwitchThreshold",
+      threshold,
+    });
   };
 
+  const handleSwitchAccount = useCallback((email: string) => {
+    setSwitchingEmail(email);
+    getVsCodeApi().postMessage({
+      command: "switchAccount",
+      email,
+      isManual: true,
+    });
+    // Safety fallback: in case backend never responds, clear spinner after 15s
+    setTimeout(() => {
+      setSwitchingEmail((current) => (current === email ? null : current));
+    }, 15000);
+  }, []);
+
   const selectedAcc =
-    effectiveAccounts.find((a) => a.email === selectedEmail) || effectiveActiveAccount || effectiveAccounts[0] || null;
+    effectiveAccounts.find((a) => a.email === selectedEmail) ||
+    effectiveActiveAccount ||
+    effectiveAccounts[0] ||
+    null;
 
   return (
     <div className="flex flex-col min-h-screen w-full">
@@ -147,22 +177,32 @@ export const AppContent: React.FC = () => {
         autoSwitchEnabled={state.autoSwitchEnabled ?? false}
         onToggleAutoSwitch={handleToggleAutoSwitch}
         target={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
-        threshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
+        threshold={
+          state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
+        }
       />
 
       {/* Main Content Area */}
       <div className="flex flex-col max-w-7xl mx-auto w-full p-2.5">
         {/* Header Section */}
-        <Header overall={effectiveOverall} accounts={effectiveAccounts} appVersion={state.appVersion} />
+        <Header
+          overall={effectiveOverall}
+          accounts={effectiveAccounts}
+          appVersion={state.appVersion}
+        />
 
         {/* Controller Action Bar */}
         <div className="flex flex-col gap-2">
           <ControllerBar
             autoSwitchEnabled={state.autoSwitchEnabled ?? false}
             onToggleAutoSwitch={handleToggleAutoSwitch}
-            autoSwitchTarget={state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET}
+            autoSwitchTarget={
+              state.autoSwitchTarget ?? DEFAULT_AUTO_SWITCH_TARGET
+            }
             onSelectAutoSwitchTarget={handleSelectAutoSwitchTarget}
-            autoSwitchThreshold={state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT}
+            autoSwitchThreshold={
+              state.autoSwitchThreshold ?? DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT
+            }
             onChangeAutoSwitchThreshold={handleChangeAutoSwitchThreshold}
           />
         </div>
@@ -176,6 +216,8 @@ export const AppContent: React.FC = () => {
               activeAccount={effectiveActiveAccount}
               selectedEmail={selectedEmail}
               onSelectAccount={setSelectedEmail}
+              switchingEmail={switchingEmail}
+              onSwitchAccount={handleSwitchAccount}
               isBackgroundRefreshing={state.isBackgroundRefreshing}
             />
           </div>
@@ -197,7 +239,7 @@ export const App: React.FC = () => {
   return (
     <>
       <AppContent />
-      <Toaster position="top-center" />
+      <Toaster position="top-center" duration={10000} closeButton />
     </>
   );
 };

@@ -19,6 +19,8 @@ export class StorageService {
   public readonly onDidAccountsChange = this._onDidAccountsChange.event;
   private readonly _onDidExternalOAuthComplete = new vscode.EventEmitter<{ email: string; timestamp: number }>();
   public readonly onDidExternalOAuthComplete = this._onDidExternalOAuthComplete.event;
+  private readonly _onDidExternalSwitchComplete = new vscode.EventEmitter<{ email: string; timestamp: number }>();
+  public readonly onDidExternalSwitchComplete = this._onDidExternalSwitchComplete.event;
 
   private readonly accountStorage: AccountStorage;
   private readonly distributedSync: DistributedSyncManager;
@@ -33,12 +35,13 @@ export class StorageService {
     this.accountStorage = new AccountStorage(context, secrets);
     this.ideStateDb = new IdeStateDbService();
     this.discoveryService = new AccountDiscoveryService(this.ideStateDb);
-    this.ussHotSwitch = new UssHotSwitchService();
+    this.ussHotSwitch = new UssHotSwitchService(context);
 
     this.distributedSync = new DistributedSyncManager(
       secrets,
       () => this._onDidAccountsChange.fire(),
       (data) => this._onDidExternalOAuthComplete.fire(data),
+      (data) => this._onDidExternalSwitchComplete.fire(data),
       () => this.accountStorage.getLastLocalSaveTime(),
       () => this.accountStorage.getAccountsFilePath()
     );
@@ -56,6 +59,18 @@ export class StorageService {
 
   public checkExternalOAuthEvent(): void {
     this.distributedSync.checkExternalOAuthEvent();
+  }
+
+  public getSwitchEventFilePath(): string {
+    return this.distributedSync.getSwitchEventFilePath();
+  }
+
+  public broadcastSwitchCompleted(email: string): void {
+    this.distributedSync.broadcastSwitchCompleted(email);
+  }
+
+  public checkExternalSwitchEvent(): void {
+    this.distributedSync.checkExternalSwitchEvent();
   }
 
   public initFileWatcher(): vscode.Disposable {
@@ -199,7 +214,13 @@ export class StorageService {
 
   // ── USS In-Memory Hot Switching ──
 
-  public async liveSwitchOAuthToken(account: AccountInfo, tokens: OAuthTokens): Promise<boolean> {
-    return this.ussHotSwitch.liveSwitchOAuthToken(account, tokens);
+  public async liveSwitchOAuthToken(
+    account: AccountInfo,
+    tokens: OAuthTokens,
+    skipKeyring = false,
+    triggerReconnect = true,
+    pushOnboarding = true
+  ): Promise<boolean> {
+    return this.ussHotSwitch.liveSwitchOAuthToken(account, tokens, skipKeyring, triggerReconnect, pushOnboarding);
   }
 }

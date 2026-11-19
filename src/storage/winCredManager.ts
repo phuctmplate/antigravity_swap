@@ -11,6 +11,7 @@ export interface KeyringStoredTokenPayload {
   };
   auth_method?: string;
   id_token_email?: string;
+  writer_id?: string;
 }
 
 const KEYRING_TARGET = 'gemini:antigravity';
@@ -159,8 +160,21 @@ export async function writeAntigravityKeyringToken(email: string, tokens: OAuthT
       $ErrorActionPreference = 'Stop'
       try {
         Add-Type -TypeDefinition $env:AGY_CSHARP_CODE
-        $json = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:AGY_CRED_B64))
-        $ok = [AgyCredManager]::WriteGeneric('${KEYRING_TARGET}', '${KEYRING_USER}', $json)
+        $existing = [AgyCredManager]::ReadGeneric('${KEYRING_TARGET}')
+        $newObj = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:AGY_CRED_B64)) | ConvertFrom-Json
+        if ($existing) {
+          try {
+            $oldObj = $existing | ConvertFrom-Json
+            if ($oldObj.writer_id -and -not $newObj.writer_id) {
+              $newObj | Add-Member -NotePropertyName 'writer_id' -NotePropertyValue $oldObj.writer_id -Force
+            }
+          } catch {}
+        }
+        if ($newObj.PSObject.Properties['aicode_scope_sign_out_attempted_at']) {
+          $newObj.PSObject.Properties.Remove('aicode_scope_sign_out_attempted_at')
+        }
+        $finalJson = $newObj | ConvertTo-Json -Compress
+        $ok = [AgyCredManager]::WriteGeneric('${KEYRING_TARGET}', '${KEYRING_USER}', $finalJson)
         if ($ok) { exit 0 } else { exit 1 }
       } catch {
         exit 1

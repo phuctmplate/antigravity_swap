@@ -66,6 +66,10 @@ export interface Account {
   weeklyResetCountdown?: string;
   hasWeeklyQuota?: boolean;
   has5HourQuota?: boolean;
+  scopes?: string[];
+  missingScopes?: string[];
+  hasRequiredScopes?: boolean;
+  needsReauth?: boolean;
 }
 
 export interface OverallQuotaSummary {

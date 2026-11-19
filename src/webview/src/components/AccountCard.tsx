@@ -18,7 +18,10 @@ interface AccountCardProps {
   isMultiSelectMode?: boolean;
   isChecked?: boolean;
   isRefreshing?: boolean;
+  isSwitching?: boolean;
+  isAnySwitching?: boolean;
   onSelect: (email: string) => void;
+  onSwitch?: (email: string) => void;
   onToggleCheck?: (email: string) => void;
   onDeleteRequest?: (email: string) => void;
   onRefreshRequest?: (email: string) => void;
@@ -31,20 +34,18 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   isMultiSelectMode = false,
   isChecked = false,
   isRefreshing = false,
+  isSwitching = false,
+  isAnySwitching = false,
   onSelect,
+  onSwitch,
   onToggleCheck,
   onDeleteRequest,
   onRefreshRequest
 }) => {
-  const [isSwitching, setIsSwitching] = useState(false);
   const vscode = getVsCodeApi();
 
-  useEffect(() => {
-    setIsSwitching(false);
-  }, [isActive, account.lastUsedAt]);
-
   const isBanned = account.isBanned || account.status === 'banned';
-  const isAuthFailed = account.status === 'auth_failed';
+  const isAuthFailed = account.status === 'auth_failed' || Boolean(account.needsReauth);
   const isFree = !account.tierBadge || account.tierBadge === 'STANDARD FREE';
   const isPro = account.tierBadge === 'PRO' || account.tierBadge === 'AI PREMIUM';
   const isUltra = account.tierBadge === 'ULTRA' || account.tierBadge === 'ENTERPRISE';
@@ -96,8 +97,15 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const claudeWeekly = resolveBucket(claudeGptGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt')));
 
   // Argon bucket: Dedicated weekly-only bucket on Pro plan (merged into Gemini bucket on Ultra)
-  const argonWeekly = isPro
-    ? resolveBucket(argonGroup?.weekly || argonGroup?.buckets?.[0] || weeklyQuotas.find((q) => isArgonQuota(q)))
+  // Only rendered if the account's Pro plan actually includes an active, available Argon bucket
+  const isArgonGroupAvailable = Boolean(
+    isPro &&
+    argonGroup?.weekly &&
+    !argonGroup.weekly.disabled &&
+    argonGroup.weekly.percentage >= 0
+  );
+  const argonWeekly = isArgonGroupAvailable
+    ? resolveBucket(argonGroup?.weekly || argonGroup?.buckets?.[0])
     : undefined;
 
   // Validity checks for buckets
@@ -105,7 +113,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const validGeminiWk = geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0;
   const validClaude5h = claude5h && !claude5h.disabled && claude5h.percentage >= 0;
   const validClaudeWk = claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0;
-  const validArgonWk = argonWeekly && !argonWeekly.disabled && argonWeekly.percentage >= 0;
+  const validArgonWk = Boolean(argonWeekly && !argonWeekly.disabled && argonWeekly.percentage >= 0);
 
   // Instant quota calculations
   let geminiInstant: number | undefined;
@@ -228,12 +236,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 
   const handleSwitch = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setIsSwitching(true);
-    toast.info(`Switching to ${account.email}...`);
-    vscode.postMessage({ command: 'switchAccount', email: account.email, isManual: true });
-    setTimeout(() => {
-      setIsSwitching(false);
-    }, 4000);
+    onSelect(account.email);
+    if (onSwitch) {
+      onSwitch(account.email);
+    } else {
+      vscode.postMessage({ command: 'switchAccount', email: account.email, isManual: true });
+    }
   };
 
   const handleRelogin = (e: React.MouseEvent) => {
@@ -261,7 +269,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   };
 
   // Dynamic state classes based on Multi-Select / Active / Selected hierarchy
-  let cardClasses = 'relative flex flex-col transition-all duration-200 cursor-pointer overflow-hidden ';
+  let cardClasses = 'relative flex flex-col transition-all duration-200 cursor-pointer overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 ';
   if (isMultiSelectMode && isChecked) {
     cardClasses += isActive
       ? 'border-primary ring-2 ring-primary/80 bg-primary/[0.08] dark:bg-primary/20 shadow-md'
@@ -288,7 +296,19 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 
   return (
     <Card
+      data-account-card={account.email}
+      tabIndex={0}
+      role="region"
+      aria-label={`Account ${account.name || account.email}`}
       onClick={handleCardClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.target === e.currentTarget) {
+            e.preventDefault();
+            handleCardClick();
+          }
+        }
+      }}
       className={cardClasses}
     >
       {/* Top-Left Checkbox in Multi-Select Mode */}
@@ -415,14 +435,15 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   </Badge>
                 )}
                 {isAuthFailed && (
-                  <Badge variant="warning" className="text-[8px] px-1 py-0 gap-0.5 font-bold">
+                  <Badge variant="warning" className="text-[8px] px-1 py-0 gap-0.5 font-bold bg-amber-500/15 text-amber-400 border-amber-500/30">
                     <AlertTriangle className="w-2.5 h-2.5" />
-                    <span>AUTH FAILED</span>
+                    <span>{account.needsReauth ? 'UNAUTHORIZED' : 'AUTH FAILED'}</span>
                   </Badge>
                 )}
               </div>
               <div className="text-[10px] text-muted-foreground truncate">{account.email}</div>
               {(() => {
+                if (isBanned || isAuthFailed) return null;
                 const isGeminiHealthy = (geminiInstant != null && geminiInstant > 0) || (geminiWeekly?.percentage != null && geminiWeekly.percentage > 0);
                 const isClaudeHealthy = (claudeInstant != null && claudeInstant > 0) || (claudeWeekly?.percentage != null && claudeWeekly.percentage > 0);
                 const isStaleDepletionMsg = (isGeminiHealthy && isClaudeHealthy) && (account.statusMessage || '').includes('depleted');
@@ -445,7 +466,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
           ) : isAuthFailed ? (
             <div className="text-[10px] font-medium text-amber-400 py-1 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-              <span>Authentication required. Click Re-login to authenticate.</span>
+              <span>
+                {account.needsReauth
+                  ? 'Re-authorization required. Click Re-login to continue.'
+                  : 'Authentication required. Click Re-login to authenticate.'}
+              </span>
             </div>
           ) : (
             <>
@@ -789,7 +814,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             {!isActive && !isBanned && !isAuthFailed && !isMultiSelectMode && (
               <Button
                 onClick={handleSwitch}
-                disabled={isSwitching}
+                disabled={isSwitching || isAnySwitching}
                 size="xs"
                 variant="default"
                 className="min-w-14"

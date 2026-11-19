@@ -49,6 +49,7 @@ function createMockAccount(
     id,
     email,
     name,
+    addedAt: '2026-10-20T00:00:00.000Z',
     isActive,
     status: 'healthy',
     accountType: isFree ? 'Standard Free' : 'Google AI Pro',
@@ -299,6 +300,63 @@ test('Candidate Switch Failure Fallback (Max 2 Attempts)', async (t) => {
     const active = mockCtx.getActiveAccount();
     assert.strictEqual(active?.email, 'active@example.com', 'Must stay on current account after 2 failed attempts');
     assert.ok(leaseRenewCalls >= 2, `Expected distributed lease to be renewed at least twice, got ${leaseRenewCalls}`);
+  });
+
+  await t.test('Scenario 3: Secondary IDE Quota Guard protects against stale/misleading API responses', async () => {
+    // API thinks active account is at 3% (below threshold 5%), but IDE Language Server reports 80% remaining
+    accounts = [
+      createMockAccount('acc-active', 'active@example.com', 'Active Account', 'PRO', 3, true),
+      createMockAccount('acc-cand1', 'cand1@example.com', 'Candidate 1', 'PRO', 90, false)
+    ];
+
+    let switchedTo: string | null = null;
+    let ideQuotaCalls = 0;
+
+    const mockCtxWithIdeGuard: AccountAutoSwitcherContext = {
+      getAccounts: () => accounts,
+      getActiveAccount: () => accounts.find((a) => a.isActive),
+      switchAccount: async (email: string) => {
+        switchedTo = email;
+        return true;
+      },
+      addAccountViaOAuth: async () => null,
+      getIdeActiveQuota: async () => {
+        ideQuotaCalls++;
+        // IDE Language Server returns healthy 80% quota for the active account
+        return {
+          email: 'active@example.com',
+          geminiInstantPercentage: 80,
+          claudeInstantPercentage: 85,
+          accountInstantPercentage: 81,
+          overallQuotaPercentage: 80,
+          rawGroups: []
+        };
+      }
+    };
+
+    const autoSwitcher = new AccountAutoSwitcher(mockStorage, mockCtxWithIdeGuard);
+    await autoSwitcher.checkAutoSwitch();
+
+    // Verification: Secondary guard must have intercepted the switch and prevented it!
+    assert.strictEqual(ideQuotaCalls, 1, 'Should have checked IDE quota as 2nd layer guard');
+    assert.strictEqual(switchedTo, null, 'Must NOT switch because IDE confirmed active account is still healthy (81% > 5%)');
+    const active = mockCtxWithIdeGuard.getActiveAccount();
+    assert.strictEqual(active?.email, 'active@example.com', 'Active account remains unchanged');
+
+    // Now test when IDE also confirms low quota (e.g. 2%)
+    mockCtxWithIdeGuard.getIdeActiveQuota = async () => {
+      return {
+        email: 'active@example.com',
+        geminiInstantPercentage: 2,
+        claudeInstantPercentage: 2,
+        accountInstantPercentage: 2,
+        overallQuotaPercentage: 2,
+        rawGroups: []
+      };
+    };
+
+    await autoSwitcher.checkAutoSwitch();
+    assert.strictEqual(switchedTo, 'cand1@example.com', 'Must switch when BOTH API and IDE confirm low quota');
   });
 });
 

@@ -79,6 +79,10 @@ export interface AccountInfo {
   lastHeartbeatAt?: string;
   externalActivityDetected?: boolean;
   lastVerifiedSource?: 'language_server' | 'micro_client' | 'jit_guard' | 'manual';
+  scopes?: string[];
+  missingScopes?: string[];
+  hasRequiredScopes?: boolean;
+  needsReauth?: boolean;
 }
 
 export interface OverallQuotaSummary {
@@ -111,6 +115,10 @@ export interface OAuthTokens {
   refreshToken?: string;
   expiresAt?: number; // epoch ms
   tokenType?: string;
+  scopes?: string[];
+  missingScopes?: string[];
+  hasRequiredScopes?: boolean;
+  hasAiCode?: boolean; // legacy alias for backward compatibility
 }
 
 export interface HeartbeatInfo {

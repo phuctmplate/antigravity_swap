@@ -38,11 +38,13 @@ export class QuotaApiClient {
   /**
    * Official Google Cloud Code PA API Pipeline:
    * Direct high-speed connection-pooled HTTPS queries to Google's official Cloud Code PA endpoints
-   * for 100% authentic metrics, zero child-process overhead, and accurate tier detection.
+   * (/v1internal:loadCodeAssist, /v1internal:retrieveUserQuota, /v1internal:retrieveUserQuotaSummary)
+   * for 100% authentic metrics, zero dependency on agy.exe or local processes, and accurate 5h and weekly quota
+   * for ALL accounts (both active and inactive/standby).
    */
   public async fetchLiveQuotaData(
     accessToken: string,
-    isActiveAccount: boolean = false,
+    _isActiveAccount: boolean = false,
     targetEmail?: string,
     refreshToken?: string
   ): Promise<any> {
@@ -51,7 +53,7 @@ export class QuotaApiClient {
       return this.fetchViaCallCloudCodePost(accessToken);
     }
 
-    // Direct authentic Google Cloud Code PA API
+    // Direct authentic Google Cloud Code PA API for all accounts (active and inactive)
     return this.directApiClient.fetchStandbyQuota(accessToken, targetEmail, undefined, refreshToken);
   }
 

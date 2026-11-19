@@ -24,7 +24,7 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
   }
 
   const isBanned = targetAcc.isBanned || targetAcc.status === 'banned';
-  const isAuthFailed = targetAcc.status === 'auth_failed';
+  const isAuthFailed = targetAcc.status === 'auth_failed' || Boolean(targetAcc.needsReauth);
   const isFree = !targetAcc.tierBadge || targetAcc.tierBadge === 'STANDARD FREE';
   const isPro = targetAcc.tierBadge === 'PRO' || targetAcc.tierBadge === 'AI PREMIUM';
   const isUltra = targetAcc.tierBadge === 'ULTRA' || targetAcc.tierBadge === 'ENTERPRISE';
@@ -34,16 +34,28 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
     return s.includes('argon');
   };
 
+  const hasAvailableArgon = Boolean(
+    isPro &&
+    targetAcc.argonGroup?.weekly &&
+    !targetAcc.argonGroup.weekly.disabled &&
+    targetAcc.argonGroup.weekly.percentage >= 0
+  );
+
   // Build effective model list with tier-aware Argon handling:
   // - Free tier: Argon is never available
-  // - Pro tier: Argon is in its own dedicated weekly-only bucket ('Argon Models')
+  // - Pro tier: Argon is in its own dedicated weekly-only bucket ('Argon Models') ONLY if available
   // - Ultra tier: Argon is merged into 'Gemini Models'
-  const rawQuotas = (targetAcc.quotas || []).filter((q) => !(isFree && isArgonModel(q)));
+  const rawQuotas = (targetAcc.quotas || []).filter((q) => {
+    if (isFree && isArgonModel(q)) return false;
+    if (isPro && !hasAvailableArgon && isArgonModel(q)) return false;
+    if (q.disabled && isArgonModel(q)) return false;
+    return true;
+  });
   const quotas: ModelQuota[] = [...rawQuotas];
 
   if (!isFree && quotas.length > 0 && !quotas.some((q) => isArgonModel(q))) {
-    if (isPro && targetAcc.argonGroup?.weekly) {
-      const argonWk = targetAcc.argonGroup.weekly;
+    if (hasAvailableArgon) {
+      const argonWk = targetAcc.argonGroup!.weekly!;
       quotas.push({
         id: 'gemini-4-argon',
         displayName: 'Gemini 4 Argon',
@@ -55,7 +67,7 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
         resetCountdown: argonWk.resetCountdown,
         windowType: 'weekly',
         windowLabel: 'Weekly Quota',
-        disabled: argonWk.disabled ?? false
+        disabled: false
       });
     } else if (isUltra) {
       const gemWk = targetAcc.geminiGroup?.weekly || targetAcc.geminiGroup?.fiveHour;
@@ -86,7 +98,7 @@ export const ModelQuotas: React.FC<ModelQuotasProps> = ({
 
   const isSelectedActive = activeAccount && selectedAccount && activeAccount.email === selectedAccount.email;
 
-  const groupTitles = isPro
+  const groupTitles = hasAvailableArgon
     ? ['Gemini Models', 'Claude and GPT models', 'Argon Models']
     : ['Gemini Models', 'Claude and GPT models'];
 
