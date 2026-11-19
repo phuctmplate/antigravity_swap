@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0 (2026-11-15)
+
+- **New Antigravity IDE Compatibility**: Added full support for the new Antigravity IDE 2.7 architecture, enabling seamless zero-reload hot-switching and automatic FTUE dialog suppression.
+- **Secondary Quota Verification Layer**: Introduced a secondary IDE verification layer for active account remaining quota calculation, safeguarding auto-switch decisions against API discrepancies and powering real-time status bar quota metrics.
+
 ## 2.1.0 (2026-10-29)
 
 - **Seamless Switching for New Antigravity IDE**: Fixed and restored zero-reload seamless account switching for the new Antigravity IDE versions.
