@@ -12,8 +12,8 @@
 
 ## Preview
 
-### Sidebar Integration & Fast Switch
-Integrated directly into the Antigravity IDE sidebar with account overview and instant switching:
+### Sidebar Integration, Auto-Switch & Status Bar
+Integrated directly into the Antigravity IDE sidebar with Instant & Total Pool gauges, per-window 5-hour / Weekly quota breakdowns, configurable Auto-Switch target, and real-time Status Bar telemetry:
 
 <img src="media/preview-sidebar.png" width="100%" alt="Antigravity Swap Sidebar Preview" />
 
@@ -26,12 +26,12 @@ Full dashboard view with responsive side-by-side account management, Instant quo
 
 ## Key Features
 
-- **Zero-Reload Seamless Switching**: Switch between multiple accounts instantly with zero window reload or IDE restart, fully compatible with the latest Antigravity IDE releases.
-- **High-Speed Direct Cloud Tracking**: Fast and lightweight quota synchronization directly over secure HTTPS.
-- **Decoupled Quota Windows**: Accurately tracks short-term rolling limits and long-term weekly capacity across all supported models.
-- **Instant Quota Health**: Intelligently calculates usable capacity to keep your workflow uninterrupted and prevent sudden lockouts.
-- **Smart Auto-Switch on Low Quota**: Automatically fails over to the healthiest account with candidate verification and self-healing rollback.
-- **Real-Time Multi-Instance Sync**: Synchronizes active credentials, quotas, and state across multiple open IDE windows in real-time.
+- **Zero-Reload Seamless Switching**: Switch between multiple accounts instantly with zero window reload or IDE restart, fully compatible with the latest Antigravity IDE releases via Unified State Sync.
+- **Dual-Layer Real-Time Quota Tracking**: Synchronizes all accounts over secure HTTPS while pairing the Status Bar with live local IDE telemetry (with automatic cloud fallback) for unmatched accuracy.
+- **Decoupled Quota Windows**: Accurately tracks 5-hour rolling limits and 7-day weekly capacity across Gemini, Claude & GPT, and Argon model families.
+- **Instant Quota Health**: Intelligently calculates usable burst capacity (`Account Instant`, `Gemini Instant`, `Claude & GPT Instant`) modulated by weekly reserves to keep your workflow uninterrupted.
+- **Smart Auto-Switch on Low Quota**: Automatically fails over to the healthiest account with live IDE confirmation guard, JIT candidate probing, and self-healing rollback.
+- **Real-Time Multi-Instance Sync**: Synchronizes active credentials, onboarding state, and quotas across multiple open IDE windows in real time.
 - **Detachable Floating Dashboard**: Pop out the dashboard into an independent native floating window to monitor quotas alongside your workspace.
 
 ---
@@ -46,6 +46,7 @@ Full dashboard view with responsive side-by-side account management, Instant quo
 | **Import Active Antigravity Account**<br>`antigravitySwap.importCurrentAntigravity` | 1-click import of the active session from Antigravity IDE |
 | **Re-login / Reconnect Account**<br>`antigravitySwap.reloginAccount` | Re-authenticate or reconnect an expired account |
 | **Add Account (Google OAuth)**<br>`antigravitySwap.addAccount` | Connect a new account via Google OAuth web flow |
+| **Add Account (Manual Token)**<br>`antigravitySwap.addAccountManual` | Add or update an account using an Access / Refresh Token |
 | **Refresh All Account Quotas**<br>`antigravitySwap.refreshQuotas` | Fetch fresh quota balances from cloud services |
 | **Import Detected Accounts**<br>`antigravitySwap.importExistingAccounts` | Auto-detect accounts from local IDE database |
 | **Restore Original IDE Extension**<br>`antigravitySwap.restoreOriginalIdeExtension` | Revert IDE session bridge back to original pristine backup |
