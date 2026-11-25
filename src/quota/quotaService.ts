@@ -11,7 +11,7 @@ import { EXTENSION_DEFAULTS } from '../constants';
 import { QuotaApiClient } from './quotaApiClient';
 import { QuotaParser, QuotaFetchResult } from './quotaParser';
 import { JitProbeResult } from './googleDirectApiClient';
-import { fetchActiveAccountQuotaFromIde, IdeActiveQuotaResult } from './ideLocalAgyClient';
+import { fetchActiveAccountQuotaFromIde, IdeActiveQuotaResult, IdeQuotaFetchOptions } from './ideLocalAgyClient';
 import {
   calculateModulatedInstantQuota,
   calculateOverallSummary,
@@ -92,8 +92,12 @@ export class QuotaService {
   /**
    * Fetches the real-time active account quota from the local running IDE (agy).
    */
-  public async fetchActiveAccountQuotaFromIde(timeoutMs = 1500): Promise<IdeActiveQuotaResult | null> {
-    return fetchActiveAccountQuotaFromIde(timeoutMs);
+  public async fetchActiveAccountQuotaFromIde(
+    timeoutMs = 2500,
+    forceRefresh = true,
+    options?: IdeQuotaFetchOptions
+  ): Promise<IdeActiveQuotaResult | null> {
+    return fetchActiveAccountQuotaFromIde(timeoutMs, forceRefresh, options);
   }
 
   /**

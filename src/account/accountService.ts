@@ -56,7 +56,13 @@ export class AccountService {
       getActiveAccount: () => this.getActiveAccount(),
       switchAccount: (email: string, isManual?: boolean, isSilent?: boolean) => this.switchAccount(email, isManual, isSilent),
       addAccountViaOAuth: () => this.addAccountViaOAuth(),
-      getIdeActiveQuota: () => this.quotaService.fetchActiveAccountQuotaFromIde(),
+      getIdeActiveQuota: () => {
+        const activeEmail = this.getActiveAccount()?.email;
+        return this.quotaService.fetchActiveAccountQuotaFromIde(2500, true, {
+          expectedEmail: activeEmail,
+          bypassSharedCache: true
+        });
+      },
       probeCandidate: async (email: string) => {
         const tokens = await this.storage.getAccountTokens(email);
         if (!tokens?.accessToken) {
@@ -552,7 +558,7 @@ export class AccountService {
     return this.lifecycle.importDetectedAccounts();
   }
 
-  public async getActiveAccountIdeQuota(timeoutMs = 1500) {
-    return this.quotaService.fetchActiveAccountQuotaFromIde(timeoutMs);
+  public async getActiveAccountIdeQuota(timeoutMs = 2500, options?: { expectedEmail?: string; cacheTtlMs?: number; bypassSharedCache?: boolean }) {
+    return this.quotaService.fetchActiveAccountQuotaFromIde(timeoutMs, true, options);
   }
 }

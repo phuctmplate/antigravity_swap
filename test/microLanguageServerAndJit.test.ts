@@ -510,4 +510,194 @@ describe('JIT Pre-Switch Verification Guard Suite', () => {
     await apiClient.fetchLiveQuotaData('test_token', false, 'standby.dev@gmail.com');
     assert.strictEqual(directCalledCount, 2);
   });
+
+  it('getIdeRuntimeMetadata resolves modern lsVersion from daemon hub json and avoids legacy <2.x User-Agent', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { getIdeRuntimeMetadata } = require('../src/quota/ideRuntimeMetadata');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-meta-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, 'hub_54007.json'),
+        JSON.stringify({ pid: 1234, httpPort: 54007, httpsPort: 54009, lsVersion: '2.38.4', csrfToken: 'abc-123' }),
+        'utf8'
+      );
+      const meta = getIdeRuntimeMetadata(tmpDir);
+      assert.strictEqual(meta.ideVersion, '2.38.4');
+      assert.ok(meta.userAgent.startsWith('antigravity/2.38.4 '), `Unexpected User-Agent: ${meta.userAgent}`);
+
+      const fallbackMeta = getIdeRuntimeMetadata(path.join(tmpDir, 'nonexistent'));
+      assert.strictEqual(fallbackMeta.ideVersion, '2.35.1');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parseAgyHubCommandLines reads csrfToken from daemon hub_<port>.json when --csrf_token is omitted', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { parseAgyHubCommandLines } = require('../src/quota/ideLocalAgyClient');
+
+    const tmpGeminiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-daemon-'));
+    try {
+      const daemonDir = path.join(tmpGeminiDir, 'antigravity', 'daemon');
+      fs.mkdirSync(daemonDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(daemonDir, 'hub_54007.json'),
+        JSON.stringify({ pid: 18524, httpPort: 54007, httpsPort: 54009, lsVersion: '2.35.1', csrfToken: 'test-csrf-token-54007' }),
+        'utf8'
+      );
+
+      const hubs = parseAgyHubCommandLines(
+        ['C:\\Users\\dev\\.gemini\\bin\\agy.exe --hub --hub-port=54007 --app_data_dir=antigravity --add-dir=C:\\repo'],
+        tmpGeminiDir
+      );
+      assert.strictEqual(hubs.length, 1);
+      assert.strictEqual(hubs[0].port, 54007);
+      assert.strictEqual(hubs[0].csrfToken, 'test-csrf-token-54007');
+      assert.strictEqual(hubs[0].lsVersion, '2.35.1');
+    } finally {
+      fs.rmSync(tmpGeminiDir, { recursive: true, force: true });
+    }
+  });
+
+  it('enrichQuotaGroupsWithModels preserves authoritative gemini-weekly even when derivedWeeklyFrom5h is lower or higher', () => {
+    const { enrichQuotaGroupsWithModels } = require('../src/quota/googleDirectApiClient');
+    const future5h = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+    const futureWeekly = new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString();
+
+    const groups = [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.45, resetTime: futureWeekly },
+          { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.92, resetTime: future5h }
+        ]
+      }
+    ];
+    // Flash 5h dropped to 0.10 -> derivedWeeklyFrom5h = 1 - 0.9/3.5 = 0.742 (higher than 0.45),
+    // and what if 5h is 0.0 -> derivedWeeklyFrom5h = 0.714; now test 0.90 in UQS vs 0.10 5h:
+    const modelsData = {
+      'gemini-3.8-flash-tiered': { displayName: 'Gemini 3.8 Flash', quotaInfo: { remainingFraction: 0.92, resetTime: future5h } }
+    };
+
+    const enriched = enrichQuotaGroupsWithModels(groups, modelsData, false, false);
+    const gemini = enriched.find((g: any) => g.displayName === 'Gemini Models');
+    const wk = gemini.buckets.find((b: any) => b.bucketId === 'gemini-weekly');
+    assert.strictEqual(wk.remainingFraction, 0.45);
+
+    // Also test authoritative 0.90 weekly is NOT overwritten by lower synthetic derivedWeeklyFrom5h (0.714) when 5h=0
+    const groups2 = [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.90, resetTime: futureWeekly },
+          { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.0, resetTime: future5h }
+        ]
+      }
+    ];
+    const modelsData2 = {
+      'gemini-3.8-flash-tiered': { displayName: 'Gemini 3.8 Flash', quotaInfo: { remainingFraction: 0.0, resetTime: future5h } }
+    };
+    const enriched2 = enrichQuotaGroupsWithModels(groups2, modelsData2, false, false);
+    const gemini2 = enriched2.find((g: any) => g.displayName === 'Gemini Models');
+    const wk2 = gemini2.buckets.find((b: any) => b.bucketId === 'gemini-weekly');
+    assert.strictEqual(wk2.remainingFraction, 0.90);
+  });
+
+  it('fetchActiveAccountQuotaFromIde reuses fresh shared cache across instances and invalidates on account change', async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { fetchActiveAccountQuotaFromIde, getFreshSharedIdeQuotaCache } = require('../src/quota/ideLocalAgyClient');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-shared-cache-'));
+    const cacheFilePath = path.join(tmpDir, '.ide-quota-cache.json');
+    try {
+      const mockResult = {
+        email: 'active.user@example.com',
+        geminiInstantPercentage: 25,
+        claudeInstantPercentage: 100,
+        accountInstantPercentage: 36,
+        overallQuotaPercentage: 40,
+        rawGroups: []
+      };
+      fs.writeFileSync(
+        cacheFilePath,
+        JSON.stringify({ email: 'active.user@example.com', timestamp: Date.now(), data: mockResult }),
+        'utf8'
+      );
+
+      // 1. Fresh cache hit returns immediately without calling agy.exe
+      const hit = await fetchActiveAccountQuotaFromIde(2500, true, {
+        expectedEmail: 'active.user@example.com',
+        cacheTtlMs: 25000,
+        cacheFilePath
+      });
+      assert.ok(hit);
+      assert.strictEqual(hit.email, 'active.user@example.com');
+      assert.strictEqual(hit.geminiInstantPercentage, 25);
+
+      // 2. Different expectedEmail invalidates cache hit
+      const mismatch = getFreshSharedIdeQuotaCache({
+        expectedEmail: 'other.user@example.com',
+        cacheTtlMs: 25000,
+        cacheFilePath
+      });
+      assert.strictEqual(mismatch, null);
+
+      // 3. bypassSharedCache ignores cache
+      const bypassed = getFreshSharedIdeQuotaCache({
+        expectedEmail: 'active.user@example.com',
+        cacheTtlMs: 25000,
+        cacheFilePath,
+        bypassSharedCache: true
+      });
+      assert.strictEqual(bypassed, null);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('tryAcquireIdeQuotaLock enforces exclusive locking and self-recovers from dead PID or expired TTL', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { tryAcquireIdeQuotaLock, releaseIdeQuotaLock } = require('../src/quota/ideLocalAgyClient');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-lock-'));
+    const lockPath = path.join(tmpDir, '.ide-quota-cache.json.lock');
+    try {
+      // 1. Live process (process.pid) holds valid lock -> second contender must fail (preventing race condition)
+      const acq1 = tryAcquireIdeQuotaLock(lockPath, 10000, process.pid);
+      assert.strictEqual(acq1, true);
+      const acq2 = tryAcquireIdeQuotaLock(lockPath, 10000, process.pid + 1);
+      assert.strictEqual(acq2, false, 'Must reject second contender while live PID holds non-expired lock');
+
+      // 2. Release by non-owner PID must NOT delete owner lock
+      releaseIdeQuotaLock(lockPath, process.pid + 1);
+      assert.strictEqual(fs.existsSync(lockPath), true);
+
+      // Release by owner PID removes lock
+      releaseIdeQuotaLock(lockPath, process.pid);
+      assert.strictEqual(fs.existsSync(lockPath), false);
+
+      // 3. Dead-PID self-recovery: simulate crashed/closed IDE instance leaving orphaned lock with future expiresAt
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, expiresAt: Date.now() + 60000 }), 'utf8');
+      const recoveredDead = tryAcquireIdeQuotaLock(lockPath, 5000, process.pid);
+      assert.strictEqual(recoveredDead, true, 'Must self-recover immediately when lock owner PID is dead');
+
+      // 4. Expired TTL recovery even if PID is alive
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, expiresAt: Date.now() - 1000 }), 'utf8');
+      const recoveredExpired = tryAcquireIdeQuotaLock(lockPath, 5000, process.pid + 2);
+      assert.strictEqual(recoveredExpired, true, 'Must self-recover when lock TTL is expired');
+
+      releaseIdeQuotaLock(lockPath, process.pid + 2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -8,6 +8,7 @@ export class StatusBarService implements vscode.Disposable {
   private disposables: vscode.Disposable[] = [];
   private cachedIdeQuota: IdeActiveQuotaResult | null = null;
   private idePollTimer?: NodeJS.Timeout;
+  private stateRefreshTimer?: NodeJS.Timeout;
 
   constructor(private readonly accountService: AccountService) {
     this.statusBarItem = vscode.window.createStatusBarItem(
@@ -19,15 +20,20 @@ export class StatusBarService implements vscode.Disposable {
 
     this.disposables.push(
       this.accountService.onDidChangeState(() => {
-        this.refreshIdeQuota();
         this.update();
+        if (this.stateRefreshTimer) {
+          clearTimeout(this.stateRefreshTimer);
+        }
+        this.stateRefreshTimer = setTimeout(() => {
+          this.refreshIdeQuota();
+        }, 150);
       }),
     );
 
     this.update();
     this.statusBarItem.show();
 
-    // Initial background IDE quota check and periodic background sync (every 15s)
+    // Check shared IDE quota cache / refresh every 15s (single-flight leader enforces 25s/35s TTL across instances)
     this.refreshIdeQuota();
     this.idePollTimer = setInterval(() => {
       this.refreshIdeQuota();
@@ -36,6 +42,9 @@ export class StatusBarService implements vscode.Disposable {
       dispose: () => {
         if (this.idePollTimer) {
           clearInterval(this.idePollTimer);
+        }
+        if (this.stateRefreshTimer) {
+          clearTimeout(this.stateRefreshTimer);
         }
       },
     });
@@ -48,13 +57,24 @@ export class StatusBarService implements vscode.Disposable {
         this.cachedIdeQuota = null;
         return;
       }
-      const ideRes = await this.accountService.getActiveAccountIdeQuota(1500);
+      // Focused window refreshes every 25s; unfocused windows wait up to 35s so they naturally reuse focused cache
+      const isFocused = vscode.window.state?.focused !== false;
+      const cacheTtlMs = isFocused ? 25000 : 35000;
+      const ideRes = await this.accountService.getActiveAccountIdeQuota(2500, {
+        expectedEmail: active.email,
+        cacheTtlMs
+      });
       if (ideRes && ideRes.email.toLowerCase() === active.email.toLowerCase()) {
         const changed =
           !this.cachedIdeQuota ||
           this.cachedIdeQuota.geminiInstantPercentage !== ideRes.geminiInstantPercentage ||
           this.cachedIdeQuota.claudeInstantPercentage !== ideRes.claudeInstantPercentage ||
-          this.cachedIdeQuota.accountInstantPercentage !== ideRes.accountInstantPercentage;
+          this.cachedIdeQuota.accountInstantPercentage !== ideRes.accountInstantPercentage ||
+          this.cachedIdeQuota.overallQuotaPercentage !== ideRes.overallQuotaPercentage ||
+          this.cachedIdeQuota.geminiGroup?.weekly?.percentage !== ideRes.geminiGroup?.weekly?.percentage ||
+          this.cachedIdeQuota.geminiGroup?.fiveHour?.percentage !== ideRes.geminiGroup?.fiveHour?.percentage ||
+          this.cachedIdeQuota.claudeGptGroup?.weekly?.percentage !== ideRes.claudeGptGroup?.weekly?.percentage ||
+          this.cachedIdeQuota.claudeGptGroup?.fiveHour?.percentage !== ideRes.claudeGptGroup?.fiveHour?.percentage;
         this.cachedIdeQuota = ideRes;
         if (changed) {
           this.update();

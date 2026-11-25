@@ -306,7 +306,8 @@ export function enrichQuotaGroupsWithModels(
       const existingWeekly = geminiGroup.buckets.find((b: any) => isWeeklyBucket(b.window, b.bucketId, b.displayName));
       if (existingWeekly) {
         // Authoritative group bucket from Google retrieveUserQuotaSummary takes precedence.
-        if (typeof existingWeekly.remainingFraction !== 'number' || effectiveWeeklyFraction < existingWeekly.remainingFraction) {
+        // Only update from model-level metrics when a genuine weekly model bucket exists and is lower.
+        if (typeof existingWeekly.remainingFraction !== 'number' || (hasWeeklyActiveLimit && minWeeklyFraction < existingWeekly.remainingFraction)) {
           existingWeekly.remainingFraction = effectiveWeeklyFraction;
         }
         if (!existingWeekly.resetTime && weeklyReset) {
