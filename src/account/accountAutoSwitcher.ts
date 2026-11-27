@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { AccountInfo, AutoSwitchTarget } from '../types';
 import { StorageService } from '../storage';
-import { calculateModulatedInstantQuota, JitProbeResult, IdeActiveQuotaResult } from '../quota';
+import { calculateModulatedInstantQuota, getAccountTierWeight, JitProbeResult, IdeActiveQuotaResult } from '../quota';
 import { MODEL_WEIGHTS, SAFE_WEEKLY_THRESHOLDS, EXTENSION_DEFAULTS } from '../constants';
 
 export interface AccountAutoSwitcherContext {
@@ -24,6 +24,8 @@ export class AccountAutoSwitcher {
   private static readonly MAX_AUTO_SWITCH_ATTEMPTS = 2;
   private lastNotifiedDepletionKey?: string;
   private temporarilyFailedCandidates = new Map<string, number>();
+  private cyclePausedUntil = 0;
+  private awaitingRecoverySwitch = false;
   private _isAutoSwitchInProgress = false;
 
   constructor(
@@ -35,12 +37,22 @@ export class AccountAutoSwitcher {
     return this._isAutoSwitchInProgress;
   }
 
+  public isAwaitingRecovery(): boolean {
+    return this.awaitingRecoverySwitch;
+  }
+
+  public setAwaitingRecovery(value: boolean): void {
+    this.awaitingRecoverySwitch = value;
+  }
+
   public clearFailedCandidate(email: string): void {
     this.temporarilyFailedCandidates.delete(email.toLowerCase());
+    this.cyclePausedUntil = 0;
   }
 
   public resetDepletionKey(): void {
     this.lastNotifiedDepletionKey = undefined;
+    this.cyclePausedUntil = 0;
   }
 
   /**
@@ -190,6 +202,84 @@ export class AccountAutoSwitcher {
   }
 
   /**
+   * Resolves the weekly reserve percentage for the requested target, excluding Argon.
+   */
+  public getAccountTargetWeeklyQuota(account: AccountInfo, target: AutoSwitchTarget = 'instant'): number {
+    const quotas = account.quotas || [];
+    const weeklyQuotas = quotas.filter((q) =>
+      q.windowType === 'weekly' &&
+      !q.disabled &&
+      q.percentage >= 0 &&
+      !((q.id || '') + ' ' + (q.displayName || '') + ' ' + (q.groupName || '')).toLowerCase().includes('argon')
+    );
+
+    const geminiGroup = account.geminiGroup || account.quotaGroups?.find((g) => g.id === 'gemini' || g.name.toLowerCase().includes('gemini'));
+    const geminiWeekly = geminiGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('pro'));
+    const claudeGroup = account.claudeGptGroup || account.quotaGroups?.find((g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt'));
+    const claudeWeekly = claudeGroup?.weekly || weeklyQuotas.find((q) => q.displayName.toLowerCase().includes('claude') || q.displayName.toLowerCase().includes('gpt'));
+
+    const validGWk = geminiWeekly && !geminiWeekly.disabled && geminiWeekly.percentage >= 0 ? geminiWeekly.percentage : undefined;
+    const validCWk = claudeWeekly && !claudeWeekly.disabled && claudeWeekly.percentage >= 0 ? claudeWeekly.percentage : undefined;
+
+    if (target === 'gemini') {
+      return validGWk ?? geminiGroup?.buckets?.[0]?.percentage ?? 0;
+    }
+    if (target === 'claude') {
+      return validCWk ?? claudeGroup?.buckets?.[0]?.percentage ?? 0;
+    }
+
+    if (account.weeklyQuotaPercentage !== undefined) {
+      return account.weeklyQuotaPercentage;
+    }
+    if (validGWk !== undefined && validCWk !== undefined) {
+      return Math.round(validGWk * MODEL_WEIGHTS.GEMINI + validCWk * MODEL_WEIGHTS.CLAUDE);
+    }
+    return validGWk ?? validCWk ?? account.averageQuotaPercentage ?? 0;
+  }
+
+  /**
+   * Computes capacity-weighted candidate score combining target instant quota and subscription tier pool size.
+   * Because paid plans (Pro/AI Premium/Ultra/Enterprise) carry much larger absolute quota pools than Free,
+   * a paid account at e.g. 25% instant scores significantly higher than a Free account at 100% instant.
+   */
+  public getCandidateSelectionScore(account: AccountInfo, target: AutoSwitchTarget = 'instant'): number {
+    const targetQuota = this.getAccountTargetQuota(account, target);
+    const tierWeight = getAccountTierWeight(account);
+    return Math.round(targetQuota * tierWeight * 100) / 100;
+  }
+
+  /**
+   * Deterministic candidate comparator (descending order: returns < 0 when `a` ranks higher than `b`).
+   * 1. Capacity-weighted target instant quota (targetQuota * tierWeight)
+   * 2. Capacity-weighted weekly reserve quota (weeklyQuota * tierWeight)
+   * 3. Higher subscription tier weight
+   * 4. More recent quota refresh timestamp
+   */
+  public compareCandidates(a: AccountInfo, b: AccountInfo, target: AutoSwitchTarget = 'instant'): number {
+    const scoreDiff = this.getCandidateSelectionScore(b, target) - this.getCandidateSelectionScore(a, target);
+    if (Math.abs(scoreDiff) > 0.001) {
+      return scoreDiff;
+    }
+
+    const weightA = getAccountTierWeight(a);
+    const weightB = getAccountTierWeight(b);
+    const weeklyDiff =
+      this.getAccountTargetWeeklyQuota(b, target) * weightB -
+      this.getAccountTargetWeeklyQuota(a, target) * weightA;
+    if (Math.abs(weeklyDiff) > 0.001) {
+      return weeklyDiff;
+    }
+
+    if (weightB !== weightA) {
+      return weightB - weightA;
+    }
+
+    const timeA = a.lastRefreshedAt ? Date.parse(a.lastRefreshedAt) || 0 : 0;
+    const timeB = b.lastRefreshedAt ? Date.parse(b.lastRefreshedAt) || 0 : 0;
+    return timeB - timeA;
+  }
+
+  /**
    * Auto-switches to next account with healthy quota if current account is exhausted or unusable.
    * If autoSwitch is turned OFF, it NEVER auto-switches under any circumstance.
    */
@@ -197,16 +287,22 @@ export class AccountAutoSwitcher {
     const autoSwitch = this.storage.getAutoSwitchEnabled();
     if (!autoSwitch) return;
 
+    if (this.cyclePausedUntil > Date.now()) {
+      return;
+    }
+
     this._isAutoSwitchInProgress = true;
     try {
       const active = this.ctx.getActiveAccount();
-      if (!active) return;
+      if (!active && !this.awaitingRecoverySwitch) {
+        return;
+      }
 
-      const isAuthFailed = active.status === 'auth_failed' || Boolean(active.needsReauth);
-      const isBanned = active.isBanned || active.status === 'banned';
+      const isAuthFailed = active ? (active.status === 'auth_failed' || Boolean(active.needsReauth)) : false;
+      const isBanned = active ? (active.isBanned || active.status === 'banned') : false;
 
       // If account credentials are ok, wait until quota data is loaded before evaluating low quota
-      if (!isAuthFailed && !isBanned) {
+      if (active && !isAuthFailed && !isBanned) {
         if (!active.lastRefreshedAt || !active.quotas || active.quotas.length === 0) {
           return;
         }
@@ -215,15 +311,15 @@ export class AccountAutoSwitcher {
       const threshold = this.storage.getAutoSwitchThreshold();
       const target = this.storage.getAutoSwitchTarget();
 
-      const activeQuota = this.getAccountTargetQuota(active, target);
-      const isDepleted = activeQuota <= threshold;
-      const isUnusable = isAuthFailed || isBanned;
+      const activeQuota = active ? this.getAccountTargetQuota(active, target) : 0;
+      const isDepleted = active ? activeQuota <= threshold : false;
+      const isUnusable = !active ? this.awaitingRecoverySwitch : (isAuthFailed || isBanned);
 
       if (isDepleted || isUnusable) {
         // SECONDARY GUARD: If trigger is quota depletion (not auth failure or ban),
         // check ngầm quota remain of active account in IDE as a 2nd protection layer
         // to prevent premature switches caused by stale or delayed Google API responses.
-        if (isDepleted && !isUnusable && this.ctx.getIdeActiveQuota) {
+        if (active && isDepleted && !isUnusable && this.ctx.getIdeActiveQuota) {
           try {
             const ideQuota = await this.ctx.getIdeActiveQuota();
             if (ideQuota && ideQuota.email.toLowerCase() === active.email.toLowerCase()) {
@@ -253,10 +349,10 @@ export class AccountAutoSwitcher {
         const targetLabel = target === 'gemini' ? 'Gemini Instant' : target === 'claude' ? 'Claude & GPT Instant' : 'Account Instant';
 
         let reason: string;
-        if (isAuthFailed) {
-          reason = active.needsReauth
-            ? 'permissions revoked/missing (re-auth required)'
-            : 'authentication failed (token expired/invalid)';
+        if (!active) {
+          reason = 'previous candidate switch rejection (awaiting recovery)';
+        } else if (isAuthFailed) {
+          reason = 'session not verified or expired';
         } else if (isBanned) {
           reason = 'account suspended/banned by Google';
         } else {
@@ -272,20 +368,23 @@ export class AccountAutoSwitcher {
 
         while (attempts < AccountAutoSwitcher.MAX_AUTO_SWITCH_ATTEMPTS && probeAttempts < 10) {
           const accounts = this.ctx.getAccounts();
+          const currentActive = this.ctx.getActiveAccount();
+          const activeEmailLower = (currentActive?.email || active?.email || '').toLowerCase();
 
           // Find candidates that have healthy quota for this target, excluding failed ones in this cycle and quarantined ones
           const candidates = accounts.filter((a) => {
+            const emailLower = a.email.toLowerCase();
             if (
-              a.email === active.email ||
+              (activeEmailLower && emailLower === activeEmailLower) ||
               a.isBanned ||
               a.status === 'banned' ||
               a.status === 'auth_failed' ||
               a.needsReauth ||
-              failedCandidateEmails.has(a.email)
+              failedCandidateEmails.has(emailLower)
             ) {
               return false;
             }
-            const failedAt = this.temporarilyFailedCandidates.get(a.email.toLowerCase());
+            const failedAt = this.temporarilyFailedCandidates.get(emailLower);
             if (failedAt && Date.now() - failedAt < EXTENSION_DEFAULTS.CANDIDATE_FAILURE_COOLDOWN_MS) {
               return false;
             }
@@ -293,10 +392,8 @@ export class AccountAutoSwitcher {
             return this.getAccountTargetQuota(a, target) > threshold;
           });
 
-          // Best candidate: sort descending by that target's instant quota
-          candidates.sort((a, b) => {
-            return this.getAccountTargetQuota(b, target) - this.getAccountTargetQuota(a, target);
-          });
+          // Best candidate: sort descending by capacity-weighted quota score (paid pool capacity > free pool)
+          candidates.sort((a, b) => this.compareCandidates(a, b, target));
 
           const candidate = candidates[0];
           if (!candidate) {
@@ -322,28 +419,29 @@ export class AccountAutoSwitcher {
                   console.warn(
                     `[AccountAutoSwitcher] JIT Guard detected ${candidate.email} is depleted externally (5h: ${probeResult.fiveHourPercentage}%, weekly: ${probeResult.weeklyPercentage}%). Bypassing candidate.`
                   );
-                  failedCandidateEmails.add(candidate.email);
+                  failedCandidateEmails.add(candidate.email.toLowerCase());
                   if (this.ctx.onCandidateDepletedExternally) {
                     await this.ctx.onCandidateDepletedExternally(candidate.email, probeResult);
                   }
                   continue; // Try Candidate #2
                 }
 
-                // 2. Dynamic Demotion: If probed candidate's capacity decreased and is now
-                // lower than another candidate in the pool, demote it immediately without waiting for full depletion!
+                // 2. Dynamic Demotion: Compare via capacity-weighted comparator so a paid account isn't demoted below a higher-% Free account.
                 const currentAccounts = this.ctx.getAccounts();
-                const refreshedCandidate = currentAccounts.find((a) => a.email === candidate.email);
-                const probedQuota = refreshedCandidate ? this.getAccountTargetQuota(refreshedCandidate, target) : this.getAccountTargetQuota(candidate, target);
+                const refreshedCandidate = currentAccounts.find((a) => a.email === candidate.email) || candidate;
+                const probedQuota = this.getAccountTargetQuota(refreshedCandidate, target);
+                const probedScore = this.getCandidateSelectionScore(refreshedCandidate, target);
 
                 const higherCandidate = candidates.slice(1).find((other) => {
                   const otherAcc = currentAccounts.find((a) => a.email === other.email) || other;
-                  return this.getAccountTargetQuota(otherAcc, target) > probedQuota;
+                  return this.compareCandidates(otherAcc, refreshedCandidate, target) < 0;
                 });
 
                 if (higherCandidate) {
                   const higherQuota = this.getAccountTargetQuota(higherCandidate, target);
+                  const higherScore = this.getCandidateSelectionScore(higherCandidate, target);
                   console.log(
-                    `[AccountAutoSwitcher] Candidate ${candidate.email} capacity dropped to ${probedQuota}% (lower than ${higherCandidate.email} with ${higherQuota}%). Demoting candidate rank immediately.`
+                    `[AccountAutoSwitcher] Candidate ${candidate.email} capacity dropped to ${probedQuota}% (score ${probedScore} < ${higherCandidate.email} ${higherQuota}% / score ${higherScore}). Demoting candidate rank immediately.`
                   );
                   // Continue without adding to failedCandidateEmails, so next while-iteration re-sorts and picks higherCandidate!
                   continue;
@@ -357,12 +455,13 @@ export class AccountAutoSwitcher {
           attempts++;
           const candidateQuota = this.getAccountTargetQuota(candidate, target);
           const candidateDetails = `${targetLabel}: ${candidateQuota}%`;
+          const sourceLabel = active ? `Account ${active.email}` : 'Active IDE session';
 
           // Extend distributed lease before attempting switch so other instances know we are active
           this.storage.renewRefreshLease?.();
 
           vscode.window.showWarningMessage(
-            `Account ${active.email} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
+            `${sourceLabel} has ${reason}. Auto-switching to ${candidate.email} (${candidateDetails} left)...`
           );
 
           switchSuccess = await this.ctx.switchAccount(candidate.email, false, true);
@@ -372,24 +471,33 @@ export class AccountAutoSwitcher {
 
           if (switchSuccess) {
             this.lastNotifiedDepletionKey = undefined;
+            this.cyclePausedUntil = 0;
+            this.awaitingRecoverySwitch = false;
             this.temporarilyFailedCandidates.delete(candidate.email.toLowerCase());
             return;
           }
 
           // Switch to this candidate failed: record in temporary failure cooldown and try next candidate if under limit
           this.temporarilyFailedCandidates.set(candidate.email.toLowerCase(), Date.now());
-          failedCandidateEmails.add(candidate.email);
+          failedCandidateEmails.add(candidate.email.toLowerCase());
           console.warn(`[Antigravity Swap] Auto-switch attempt ${attempts} to ${candidate.email} failed. Quarantined for ${EXTENSION_DEFAULTS.CANDIDATE_FAILURE_COOLDOWN_MS / 1000}s.`);
         }
 
         // If we reach here, either no candidates existed or all attempts (up to 2) failed
+        if (!switchSuccess && attempts >= AccountAutoSwitcher.MAX_AUTO_SWITCH_ATTEMPTS) {
+          this.cyclePausedUntil = Date.now() + EXTENSION_DEFAULTS.CANDIDATE_FAILURE_COOLDOWN_MS;
+        }
+        if (!switchSuccess && !this.ctx.getActiveAccount()) {
+          this.awaitingRecoverySwitch = true;
+        }
+
         const accounts = this.ctx.getAccounts();
         if (!switchSuccess && accounts.length > 1) {
-          const depletionKey = `${active.email}:${target}:${isAuthFailed ? 'auth' : isBanned ? 'banned' : 'depleted'}:${attempts}`;
+          const depletionKey = `${active?.email || 'none'}:${target}:${isAuthFailed ? 'auth' : isBanned ? 'banned' : 'depleted'}:${attempts}`;
           if (this.lastNotifiedDepletionKey !== depletionKey) {
             this.lastNotifiedDepletionKey = depletionKey;
             const msg = attempts > 0
-              ? `[Antigravity Swap] Auto-Switch: Failed to switch after ${attempts} candidate attempt(s). Staying on current account.`
+              ? `[Antigravity Swap] Auto-Switch: Stopped after ${attempts} failed candidate attempt(s).`
               : `[Antigravity Swap] Auto-Switch: No healthy standby accounts available for ${targetLabel}.`;
 
             vscode.window.showErrorMessage(msg, 'Add Account', 'Open Dashboard').then(async (selection) => {
@@ -402,8 +510,10 @@ export class AccountAutoSwitcher {
           }
         }
       } else {
-        // Account is healthy and within quota limits: reset depletion notification key
+        // Account is healthy and within quota limits: reset depletion & recovery state
         this.lastNotifiedDepletionKey = undefined;
+        this.cyclePausedUntil = 0;
+        this.awaitingRecoverySwitch = false;
       }
     } finally {
       this._isAutoSwitchInProgress = false;

@@ -3,6 +3,7 @@ import { AccountInfo, OverallQuotaSummary, AutoSwitchTarget } from '../types';
 import { StorageService } from '../storage';
 import { OAuthService } from '../auth';
 import { QuotaService } from '../quota';
+import { EXTENSION_DEFAULTS } from '../constants';
 import { AccountSwitcher } from './accountSwitcher';
 import { AccountAutoSwitcher } from './accountAutoSwitcher';
 import { AccountQuotaSync } from './accountQuotaSync';
@@ -16,7 +17,11 @@ import { AccountLifecycle } from './accountLifecycle';
 export class AccountService {
   private accounts: AccountInfo[] = [];
   private activeEmail?: string;
+  private ideSessionEmail?: string;
+  private pendingManualSwitchEmail?: string;
   private isHotSyncingWindow = false;
+  private isInitializing = false;
+  private lastPassiveQuotaPollAt = 0;
   private reloadDebounceTimer: NodeJS.Timeout | null = null;
   private readonly _onDidChangeState = new vscode.EventEmitter<void>();
   public readonly onDidChangeState = this._onDidChangeState.event;
@@ -31,10 +36,10 @@ export class AccountService {
     private readonly oauthService: OAuthService,
     private readonly quotaService: QuotaService
   ) {
-    // Synchronously preload accounts and activeEmail from in-memory globalState (0ms)
+    // Synchronously preload accounts and activeEmail from authoritative accounts list (0ms)
     const rawAccounts = this.storage.getAccounts();
     this.accounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
-    this.activeEmail = this.storage.getActiveAccountEmail();
+    this.activeEmail = this.accounts.find((a) => a.isActive)?.email;
 
     const notifyStateChange = () => this._onDidChangeState.fire();
 
@@ -43,6 +48,7 @@ export class AccountService {
       setAccounts: (accs) => { this.accounts = accs; },
       getActiveEmail: () => this.activeEmail,
       setActiveEmail: (email) => { this.activeEmail = email; },
+      setIdeSessionEmail: (email) => { this.ideSessionEmail = email; },
       notifyStateChange,
       onPostSwitch: (email) => {
         this.quotaService.invalidateLanguageServerConnection();
@@ -54,13 +60,14 @@ export class AccountService {
     this.autoSwitcher = new AccountAutoSwitcher(this.storage, {
       getAccounts: () => this.accounts,
       getActiveAccount: () => this.getActiveAccount(),
-      switchAccount: (email: string, isManual?: boolean, isSilent?: boolean) => this.switchAccount(email, isManual, isSilent),
+      switchAccount: (email: string, isManual?: boolean, isSilent?: boolean, force?: boolean) => this.switchAccount(email, isManual, isSilent, force),
       addAccountViaOAuth: () => this.addAccountViaOAuth(),
       getIdeActiveQuota: () => {
         const activeEmail = this.getActiveAccount()?.email;
         return this.quotaService.fetchActiveAccountQuotaFromIde(2500, true, {
           expectedEmail: activeEmail,
-          bypassSharedCache: true
+          cacheTtlMs: 5000,
+          bypassSharedCache: false
         });
       },
       probeCandidate: async (email: string) => {
@@ -71,27 +78,31 @@ export class AccountService {
         const acc = this.accounts.find((a) => a.email.toLowerCase() === email.toLowerCase());
         if (!acc) return { ok: false, isDepleted: true, error: 'Account not found' };
 
-        // Proactive dynamic scope verification: ensure candidate token contains all required scopes
+        // Proactive dynamic scope verification against required IDE scopes
         let hasRequiredScopes = tokens.hasRequiredScopes;
         let missingScopes = tokens.missingScopes;
 
         if (hasRequiredScopes === undefined) {
           try {
             const scopeRes = await this.oauthService.verifyTokenScopes(tokens.accessToken);
-            hasRequiredScopes = scopeRes.hasRequiredScopes;
-            missingScopes = scopeRes.missingScopes;
-            tokens.hasRequiredScopes = hasRequiredScopes;
-            tokens.missingScopes = missingScopes;
-            tokens.hasAiCode = scopeRes.hasAiCode;
-            tokens.scopes = scopeRes.scopes;
-            await this.storage.saveAccountTokens(email, tokens);
+            if (scopeRes.valid) {
+              hasRequiredScopes = scopeRes.hasRequiredScopes;
+              missingScopes = scopeRes.missingScopes;
+              tokens.hasRequiredScopes = hasRequiredScopes;
+              tokens.missingScopes = missingScopes;
+              tokens.hasAiCode = scopeRes.hasAiCode;
+              tokens.scopes = scopeRes.scopes;
+              await this.storage.saveAccountTokens(email, tokens);
+            } else {
+              hasRequiredScopes = true; // Allow JIT probe to handle token refresh if expired
+            }
           } catch {
             // Non-fatal if network probe fails; rely on switchAccount fallback
-            hasRequiredScopes = tokens.hasAiCode !== false;
+            hasRequiredScopes = true;
           }
         }
 
-        if (hasRequiredScopes === false || tokens.hasAiCode === false) {
+        if (hasRequiredScopes === false) {
           const curIdx = this.accounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
           if (curIdx >= 0) {
             const updated = [...this.accounts];
@@ -182,67 +193,102 @@ export class AccountService {
       setAccounts: (accs) => { this.accounts = accs; },
       getActiveEmail: () => this.activeEmail,
       setActiveEmail: (email) => { this.activeEmail = email; },
+      getIdeSessionEmail: () => this.ideSessionEmail,
+      setIdeSessionEmail: (email) => { this.ideSessionEmail = email; },
       getLiveLanguageServerEmail: () => this.quotaService.getLiveLanguageServerEmail(),
-      switchAccount: (email: string, isManual?: boolean, isSilent?: boolean) => this.switchAccount(email, isManual, isSilent),
+      switchAccount: (email: string, isManual?: boolean, isSilent?: boolean, force?: boolean) => this.switchAccount(email, isManual, isSilent, force),
       refreshAccountQuota: (email, force) => this.refreshAccountQuota(email, force),
+      reloadFromStorage: () => this.reloadFromStorage(),
       isSwitching: () => this.switcher.isSwitchInProgress(),
       isAutoSwitching: () => this.autoSwitcher.isAutoSwitchInProgress(),
+      isHotSyncing: () => this.isHotSyncingWindow,
       notifyStateChange
     });
   }
 
+  public getIdeSessionEmail(): string | undefined {
+    return this.ideSessionEmail;
+  }
+
+  public getSwitchingEmail(): string | undefined {
+    return this.switcher.getSwitchingEmail();
+  }
+
+  private async refreshIdeSessionEmailHint(): Promise<void> {
+    if (typeof this.storage.getLiveIdeAuthState !== 'function') return;
+    try {
+      const liveIde = await this.storage.getLiveIdeAuthState();
+      if (liveIde.authState === 'signedIn' && liveIde.email && this.storage.isValidEmail(liveIde.email)) {
+        this.ideSessionEmail = liveIde.email;
+      } else if (liveIde.authState === 'signedOut') {
+        this.ideSessionEmail = undefined;
+      }
+    } catch {}
+  }
+
   public async initialize(): Promise<void> {
-    const rawAccounts = this.storage.getAccounts();
+    this.isInitializing = true;
+    try {
+      const rawAccounts = this.storage.getAccounts();
     this.accounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
     if (this.accounts.length !== rawAccounts.length) {
       await this.storage.saveAccounts(this.accounts);
       console.log(`[Antigravity Swap] Sanitized ${rawAccounts.length - this.accounts.length} invalid/phantom account(s).`);
     }
 
-    // 1. Read saved active account from storage / accounts first (instant, 0ms)
-    const savedActive = this.storage.getActiveAccountEmail()?.toLowerCase();
+    // 1. Resolve active account strictly from extension storage (authoritative isActive in accounts.json)
     const activeInAccounts = this.accounts.find((a) => a.isActive)?.email?.toLowerCase();
+    let effectiveEmail = (activeInAccounts && this.accounts.some((a) => a.email.toLowerCase() === activeInAccounts))
+      ? activeInAccounts
+      : undefined;
 
-    let effectiveEmail = (savedActive && this.accounts.some((a) => a.email.toLowerCase() === savedActive))
-      ? savedActive
-      : (activeInAccounts && this.accounts.some((a) => a.email.toLowerCase() === activeInAccounts))
-        ? activeInAccounts
-        : undefined;
+    // 2. Inspect live IDE auth state (0ms in-memory) to detect external sign-out or manual IDE account switch (Model A+)
+    const liveIde = typeof this.storage.getLiveIdeAuthState === 'function'
+      ? await this.storage.getLiveIdeAuthState().catch(() => ({ authState: 'unknown' as const, email: undefined }))
+      : { authState: 'unknown' as const, email: undefined };
 
-    // 2. Only probe external / keyring discovery if no active account is already saved
-    if (!effectiveEmail) {
-      let liveLsEmail: string | undefined;
-      try {
-        liveLsEmail = await this.quotaService.getLiveLanguageServerEmail();
-      } catch {}
+    if (liveIde.authState === 'signedIn' && liveIde.email && this.storage.isValidEmail(liveIde.email)) {
+      this.ideSessionEmail = liveIde.email;
+    } else if (liveIde.authState === 'signedOut') {
+      this.ideSessionEmail = undefined;
+    }
 
-      const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
-      const activeDetectedEmail = (liveLsEmail && this.storage.isValidEmail(liveLsEmail))
-        ? liveLsEmail.trim().toLowerCase()
-        : (currentSession?.email && this.storage.isValidEmail(currentSession.email))
-          ? currentSession.email.trim().toLowerCase()
-          : undefined;
+    if (effectiveEmail) {
+      const ideSignedOut = liveIde.authState === 'signedOut';
+      const ideSwitchedExternally = Boolean(
+        liveIde.authState === 'signedIn' &&
+        liveIde.email &&
+        liveIde.email.toLowerCase() !== effectiveEmail
+      );
 
-      if (activeDetectedEmail && this.accounts.some((a) => a.email.toLowerCase() === activeDetectedEmail)) {
-        effectiveEmail = activeDetectedEmail;
+      if (ideSignedOut || ideSwitchedExternally) {
+        console.log(
+          `[AccountService] Startup detected external IDE change (${ideSignedOut ? 'signedOut' : `switched to ${liveIde.email}`}) while ${effectiveEmail} was active. Releasing extension active control.`
+        );
+        effectiveEmail = undefined;
+        this.activeEmail = undefined;
+        this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
+        await this.storage.setActiveAccountEmail(undefined);
+        await this.storage.saveAccounts(this.accounts);
       }
     }
 
     if (effectiveEmail) {
-      this.activeEmail = effectiveEmail;
+      const activeAcc = this.accounts.find((a) => a.email.toLowerCase() === effectiveEmail);
+      this.activeEmail = activeAcc?.email || effectiveEmail;
+      this.ideSessionEmail = activeAcc?.email?.toLowerCase() || effectiveEmail;
       this.accounts = this.accounts.map((a) => ({
         ...a,
         isActive: a.email.toLowerCase() === effectiveEmail
       }));
-      await this.storage.setActiveAccountEmail(effectiveEmail);
-      await this.storage.syncGoogleAccountsJson(effectiveEmail);
+      await this.storage.setActiveAccountEmail(this.activeEmail);
+      await this.storage.syncGoogleAccountsJson(this.activeEmail);
 
-      const activeAcc = this.accounts.find((a) => a.email.toLowerCase() === effectiveEmail);
       if (activeAcc) {
         let tokens = await this.storage.getAccountTokens(activeAcc.email);
 
-        // Pre-refresh token if close to expiry (< 2m)
-        if (tokens?.refreshToken && tokens.expiresAt && Date.now() > tokens.expiresAt - 120000) {
+        // Pre-refresh token if close to expiry (< 2m) or missing expiry
+        if (tokens?.refreshToken && (!tokens.expiresAt || Date.now() > tokens.expiresAt - 120000)) {
           try {
             tokens = await this.oauthService.refreshAccessToken(tokens.refreshToken);
             await this.storage.saveAccountTokens(activeAcc.email, tokens);
@@ -251,28 +297,22 @@ export class AccountService {
           }
         }
 
-        if (tokens?.accessToken && !activeAcc.needsReauth && activeAcc.status !== 'auth_failed' && !activeAcc.isBanned && tokens.hasRequiredScopes !== false && tokens.hasAiCode !== false) {
-          // 1. Ensure state.vscdb is aligned
+        if (tokens?.accessToken && !activeAcc.needsReauth && activeAcc.status !== 'auth_failed' && !activeAcc.isBanned && tokens.hasRequiredScopes !== false) {
+          this.lifecycle.recordSessionSyncCooldown();
           await this.storage.syncToIdeStateDb(activeAcc, tokens, true).catch(() => {});
-
-          // 2. 🔥 CRITICAL FIX: Hydrate in-memory Unified State Sync (USS) and trigger auth refresh
-          // for THIS window instance so its Language Server and chat session immediately
-          // pick up the active credentials with valid token and zero logout!
           await this.storage.liveSwitchOAuthToken(activeAcc, tokens, true, false, true).catch((e) => {
             console.warn('[AccountService] Initial window liveSwitchOAuthToken warning:', e);
           });
         }
       }
     } else {
-      // Genuinely no account selected and no saved active account
+      // No active account selected by extension yet (first install, manual unswitch, or released control)
       this.activeEmail = undefined;
       this.accounts = this.accounts.map((a) => ({ ...a, isActive: false }));
       await this.storage.setActiveAccountEmail(undefined);
     }
-
-    // Auto-discover previous accounts from system if list is empty
-    if (this.accounts.length === 0) {
-      await this.importDetectedAccounts();
+    } finally {
+      this.isInitializing = false;
     }
 
     // Listen to external accounts storage changes (e.g. from other IDE instances/windows)
@@ -333,11 +373,24 @@ export class AccountService {
     const rawAccounts = this.storage.getAccounts();
     const cleanAccounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
     this.accounts = cleanAccounts;
-    const active = this.storage.getActiveAccountEmail();
-    this.activeEmail = (active && this.accounts.some((a) => a.email === active)) ? active : this.accounts.find((a) => a.isActive)?.email;
+
+    // Authoritative cross-window active state comes from accounts.json isActive flag
+    const activeFromDisk = this.accounts.find((a) => a.isActive)?.email;
+    this.activeEmail = activeFromDisk;
+
+    if (this.storage.getActiveAccountEmail() !== this.activeEmail) {
+      await this.storage.setActiveAccountEmail(this.activeEmail).catch(() => {});
+    }
+
+    if (this.activeEmail) {
+      this.ideSessionEmail = this.activeEmail.toLowerCase();
+    } else {
+      await this.refreshIdeSessionEmailHint();
+    }
+
     this._onDidChangeState.fire();
 
-    // If active account changed externally, seamlessly hot-sync this IDE window's in-memory session
+    // If active account changed externally to a new account, seamlessly hot-sync this IDE window's in-memory session
     if (this.activeEmail && this.activeEmail.toLowerCase() !== previousActiveEmail?.toLowerCase() && !this.switcher.isSwitchInProgress()) {
       console.log(`[AccountService] External switch detected from ${previousActiveEmail} -> ${this.activeEmail}. Hot-syncing current IDE window.`);
       this.syncActiveAccountToCurrentWindow(this.activeEmail).catch(() => {});
@@ -353,6 +406,7 @@ export class AccountService {
       return false;
     }
     this.isHotSyncingWindow = true;
+    this.lifecycle.recordSessionSyncCooldown();
     try {
       const rawAccounts = this.storage.getAccounts();
       const cleanAccounts = rawAccounts.filter((a) => this.storage.isValidEmail(a.email));
@@ -383,8 +437,8 @@ export class AccountService {
         return false;
       }
 
-      // 2. Pre-refresh token if close to expiry
-      if (tokens.expiresAt && Date.now() > tokens.expiresAt - 120000 && tokens.refreshToken) {
+      // 2. Pre-refresh token if close to expiry or missing expiry
+      if ((!tokens.expiresAt || Date.now() > tokens.expiresAt - 120000) && tokens.refreshToken) {
         try {
           tokens = await this.oauthService.refreshAccessToken(tokens.refreshToken);
           await this.storage.saveAccountTokens(target.email, tokens);
@@ -393,8 +447,8 @@ export class AccountService {
         }
       }
 
-      // 2b. Safeguard: Dynamic scope verification. If token lacks required scopes or aicode, do not inject it into USS!
-      if (tokens.hasRequiredScopes === false || tokens.hasAiCode === false) {
+      // 2b. Safeguard: Dynamic scope verification.
+      if (tokens.hasRequiredScopes === false) {
         console.warn(`[AccountService] Skipping external hot-sync for ${target.email}: token lacks required scopes.`);
         target.needsReauth = true;
         target.status = 'auth_failed';
@@ -406,6 +460,7 @@ export class AccountService {
       }
 
       console.log(`[AccountService] Hot-syncing current IDE window to active account: ${target.email}`);
+      this.ideSessionEmail = target.email.toLowerCase();
       // Ensure state.vscdb is also aligned on secondary windows
       if (typeof this.storage.syncToIdeStateDb === 'function') {
         await this.storage.syncToIdeStateDb(target, tokens, true).catch(() => {});
@@ -432,8 +487,32 @@ export class AccountService {
     }
   }
 
-  public async handleIdeSessionChange(): Promise<void> {
-    return this.lifecycle.handleIdeSessionChange();
+  public async handleIdeSessionChange(options?: { fastPoll?: boolean }): Promise<void> {
+    return this.lifecycle.handleIdeSessionChange(options);
+  }
+
+  public async pollIdeSessionFast(): Promise<void> {
+    if (
+      this.isInitializing ||
+      this.switcher.isSwitchInProgress() ||
+      this.autoSwitcher.isAutoSwitchInProgress() ||
+      this.isHotSyncingWindow
+    ) {
+      return;
+    }
+    await this.lifecycle.handleIdeSessionChange({ fastPoll: true });
+
+    if (
+      !this.isInitializing &&
+      !this.switcher.isSwitchInProgress() &&
+      !this.autoSwitcher.isAutoSwitchInProgress() &&
+      !this.isHotSyncingWindow &&
+      this.activeEmail &&
+      Date.now() - this.lastPassiveQuotaPollAt >= EXTENSION_DEFAULTS.IDE_PASSIVE_QUOTA_POLL_MS
+    ) {
+      this.lastPassiveQuotaPollAt = Date.now();
+      await this.quotaSync.syncActiveAccountFromIdeSmart().catch(() => {});
+    }
   }
 
   public async checkExternalIdeSession(): Promise<void> {
@@ -465,6 +544,9 @@ export class AccountService {
     await this.storage.setAutoSwitchEnabled(enabled);
     if (!enabled) {
       this.autoSwitcher.resetDepletionKey();
+      this.autoSwitcher.setAwaitingRecovery(false);
+    } else {
+      this.autoSwitcher.resetDepletionKey();
     }
     this._onDidChangeState.fire();
   }
@@ -487,23 +569,61 @@ export class AccountService {
     this._onDidChangeState.fire();
   }
 
-  public async switchAccount(email: string, isManual = false, isSilent = false): Promise<boolean> {
+  public async switchAccount(email: string, isManual = false, isSilent = false, force = false): Promise<boolean> {
+    const emailLower = email.trim().toLowerCase();
     if (isManual) {
-      this.lifecycle.recordManualSwitch();
+      this.pendingManualSwitchEmail = emailLower;
     }
-    const ok = await this.switcher.switchAccount(email, isManual, isSilent);
+    this.lifecycle.recordManualSwitch(email);
+    const ok = await this.switcher.switchAccount(email, isManual, isSilent, force);
     if (ok) {
+      this.ideSessionEmail = emailLower;
+      this.lastPassiveQuotaPollAt = Date.now();
+      this.pendingManualSwitchEmail = undefined;
+      this.autoSwitcher.setAwaitingRecovery(false);
       this.autoSwitcher.clearFailedCandidate(email);
+    } else if (isManual) {
+      const target = this.accounts.find((a) => a.email.toLowerCase() === emailLower);
+      const isAuthFailure = Boolean(target && (target.status === 'auth_failed' || target.needsReauth));
+      if (!isAuthFailure) {
+        this.pendingManualSwitchEmail = undefined;
+      }
     }
     return ok;
   }
 
   public async reloginAccount(email: string, isSilent = false): Promise<boolean> {
-    return this.lifecycle.reloginAccount(email, isSilent);
-  }
+    const emailLower = email.trim().toLowerCase();
+    const wasActive = this.activeEmail?.toLowerCase() === emailLower;
+    const matchedPendingManualSwitch = this.pendingManualSwitchEmail === emailLower;
 
-  public async importCurrentAntigravityAccount(): Promise<AccountInfo | null> {
-    return this.lifecycle.importCurrentAntigravityAccount();
+    const ok = await this.lifecycle.reloginAccount(email, isSilent);
+    if (!ok) {
+      return false;
+    }
+
+    // Account is verified again: remove quarantine and clear any 2-attempt auto-switch cycle pause.
+    this.autoSwitcher.clearFailedCandidate(email);
+
+    if (wasActive) {
+      this.pendingManualSwitchEmail = undefined;
+      return true;
+    }
+
+    if (matchedPendingManualSwitch) {
+      this.pendingManualSwitchEmail = undefined;
+      await this.switchAccount(email, false, isSilent);
+      return true;
+    }
+
+    // Re-logged-in standby account does NOT hijack an already healthy active account.
+    // Only if Auto-Switch is ON and current active is depleted/unusable (or awaiting recovery after 2 failed candidates)
+    // does checkAutoSwitch() re-evaluate the entire pool cleanly.
+    if (this.storage.getAutoSwitchEnabled()) {
+      await this.autoSwitcher.checkAutoSwitch();
+    }
+
+    return true;
   }
 
   public async addAccountViaOAuth(): Promise<AccountInfo | null> {
@@ -554,11 +674,10 @@ export class AccountService {
     return this.autoSwitcher.checkAutoSwitch();
   }
 
-  public async importDetectedAccounts(): Promise<number> {
-    return this.lifecycle.importDetectedAccounts();
-  }
-
-  public async getActiveAccountIdeQuota(timeoutMs = 2500, options?: { expectedEmail?: string; cacheTtlMs?: number; bypassSharedCache?: boolean }) {
-    return this.quotaService.fetchActiveAccountQuotaFromIde(timeoutMs, true, options);
+  public async getActiveAccountIdeQuota(
+    timeoutMs = 2500,
+    options?: { expectedEmail?: string; cacheTtlMs?: number; bypassSharedCache?: boolean; forceRefresh?: boolean }
+  ) {
+    return this.quotaService.fetchActiveAccountQuotaFromIde(timeoutMs, options?.forceRefresh ?? false, options);
   }
 }

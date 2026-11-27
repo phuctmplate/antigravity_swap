@@ -979,26 +979,19 @@ export class QuotaParser {
     const claudeAvailable = hasClaude && !isClaudeDepleted;
 
     let status: AccountStatus = 'healthy';
-    let statusMessage: string | undefined;
+    const statusMessage: string | undefined = undefined;
 
     if (hasGemini && hasClaude) {
       if (!geminiAvailable && !claudeAvailable) {
         status = 'low_balance';
-        statusMessage = 'All model quotas depleted';
-      } else if (!geminiAvailable && claudeAvailable) {
-        statusMessage = 'Gemini depleted · Claude available';
-      } else if (geminiAvailable && !claudeAvailable) {
-        statusMessage = 'Claude depleted · Gemini available';
       }
     } else if (hasGemini && !hasClaude) {
       if (!geminiAvailable) {
         status = 'low_balance';
-        statusMessage = 'Gemini quota depleted';
       }
     } else if (!hasGemini && hasClaude) {
       if (!claudeAvailable) {
         status = 'low_balance';
-        statusMessage = 'Claude quota depleted';
       }
     }
 

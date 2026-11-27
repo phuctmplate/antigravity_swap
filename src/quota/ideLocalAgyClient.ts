@@ -151,6 +151,8 @@ export interface IdeActiveQuotaResult {
   email: string;
   name?: string;
   userTier?: { id?: string; name?: string; description?: string };
+  planInfo?: { teamsTier?: string; planName?: string };
+  fetchedAt?: number;
   geminiGroup?: QuotaGroup;
   claudeGptGroup?: QuotaGroup;
   argonGroup?: QuotaGroup;
@@ -161,8 +163,17 @@ export interface IdeActiveQuotaResult {
   rawGroups: any[];
 }
 
-let cachedHubInfo: { info: LocalAgyHubInfo | null; timestamp: number } | null = null;
-const HUB_CACHE_TTL_MS = 15000; // 15 seconds
+export interface LiveIdeServerAuthState {
+  reachable: boolean;
+  authState: 'signedIn' | 'signedOut' | 'unknown';
+  email?: string;
+  hasValidAuth?: boolean;
+  rejectionMessage?: string;
+}
+
+let cachedHubInfo: { info: LocalAgyHubInfo | null; allHubs: LocalAgyHubInfo[]; timestamp: number } | null = null;
+const HUB_CACHE_TTL_MS = 120000; // 2 minutes for healthy hubs (invalidated immediately on 401/socket error)
+const HUB_EMPTY_RETRY_TTL_MS = 15000; // 15 seconds when no running agy hub was found
 
 /**
  * Reads the daemon hub discovery JSON file (~/.gemini/<appDataDir>/daemon/hub_<port>.json)
@@ -226,17 +237,15 @@ export function parseAgyHubCommandLines(lines: string[], geminiBaseDir?: string)
   return candidateHubs;
 }
 
-/**
- * Discovers the local agy hub port and CSRF token from running process command line arguments
- * and daemon discovery files.
- */
-export function getLocalAgyHubInfo(forceRefresh = false): LocalAgyHubInfo | null {
+function discoverLocalAgyHubs(forceRefresh = false): { primary: LocalAgyHubInfo | null; allHubs: LocalAgyHubInfo[] } {
   const now = Date.now();
-  if (!forceRefresh && cachedHubInfo && (now - cachedHubInfo.timestamp < HUB_CACHE_TTL_MS)) {
-    return cachedHubInfo.info;
+  const cacheTtl = cachedHubInfo?.info ? HUB_CACHE_TTL_MS : HUB_EMPTY_RETRY_TTL_MS;
+  if (!forceRefresh && cachedHubInfo && (now - cachedHubInfo.timestamp < cacheTtl)) {
+    return { primary: cachedHubInfo.info, allHubs: cachedHubInfo.allHubs };
   }
 
   let info: LocalAgyHubInfo | null = null;
+  let candidateHubs: LocalAgyHubInfo[] = [];
 
   try {
     let stdout = '';
@@ -254,10 +263,10 @@ export function getLocalAgyHubInfo(forceRefresh = false): LocalAgyHubInfo | null
     }
 
     const lines = stdout.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    const candidateHubs = parseAgyHubCommandLines(lines);
+    candidateHubs = parseAgyHubCommandLines(lines);
 
     if (candidateHubs.length > 0) {
-      // Prioritize the hub matching the active workspace if vscode is available
+      // Prioritize the hub matching the active workspace (or no --add-dir for empty windows)
       let matchedHub: LocalAgyHubInfo | undefined;
       try {
         const vscode = require('vscode');
@@ -270,6 +279,11 @@ export function getLocalAgyHubInfo(forceRefresh = false): LocalAgyHubInfo | null
             const cl = (h.commandLine || '').toLowerCase();
             return workspacePaths.some((wp) => wp && cl.includes(wp));
           });
+        } else {
+          matchedHub = candidateHubs.find((h) => {
+            const cl = (h.commandLine || '').toLowerCase();
+            return !cl.includes('--add-dir=');
+          });
         }
       } catch {}
 
@@ -279,8 +293,23 @@ export function getLocalAgyHubInfo(forceRefresh = false): LocalAgyHubInfo | null
     info = null;
   }
 
-  cachedHubInfo = { info, timestamp: now };
-  return info;
+  cachedHubInfo = { info, allHubs: candidateHubs, timestamp: now };
+  return { primary: info, allHubs: candidateHubs };
+}
+
+/**
+ * Discovers the local agy hub port and CSRF token from running process command line arguments
+ * and daemon discovery files.
+ */
+export function getLocalAgyHubInfo(forceRefresh = false): LocalAgyHubInfo | null {
+  return discoverLocalAgyHubs(forceRefresh).primary;
+}
+
+/**
+ * Discovers all running local agy hubs (e.g., across multiple open IDE windows).
+ */
+export function getAllLocalAgyHubs(forceRefresh = false): LocalAgyHubInfo[] {
+  return discoverLocalAgyHubs(forceRefresh).allHubs;
 }
 
 /**
@@ -360,7 +389,10 @@ export function getFreshSharedIdeQuotaCache(
     Date.now() - cached.timestamp < cacheTtlMs
   ) {
     if (!expectedEmail || cached.data.email.toLowerCase() === expectedEmail) {
-      return cached.data;
+      return {
+        ...cached.data,
+        fetchedAt: cached.data.fetchedAt ?? cached.timestamp
+      };
     }
   }
   return null;
@@ -548,10 +580,18 @@ export async function fetchActiveAccountQuotaFromIde(
           )
         : (geminiGroup?.weekly?.percentage ?? claudeGptGroup?.weekly?.percentage ?? accountInstant);
 
+    const fetchedAt = Date.now();
     const result: IdeActiveQuotaResult = {
       email,
       name: userStatus.name,
       userTier: userStatus.userTier,
+      planInfo: userStatus.planStatus?.planInfo
+        ? {
+            teamsTier: userStatus.planStatus.planInfo.teamsTier,
+            planName: userStatus.planStatus.planInfo.planName
+          }
+        : undefined,
+      fetchedAt,
       geminiGroup,
       claudeGptGroup,
       argonGroup,
@@ -565,7 +605,7 @@ export async function fetchActiveAccountQuotaFromIde(
     if (!options?.bypassSharedCache) {
       writeSharedIdeQuotaCache(cachePath, {
         email,
-        timestamp: Date.now(),
+        timestamp: fetchedAt,
         data: result
       });
     }
@@ -589,4 +629,101 @@ export async function fetchActiveAccountQuotaFromIde(
   });
   inFlightLocalQueries.set(cachePath, promise);
   return promise;
+}
+
+/**
+ * Forces all running Antigravity Language Server hubs (across open IDE windows)
+ * to re-read and validate credentials from stored keyring storage immediately.
+ */
+export async function forceReloadAllLocalAgyHubs(timeoutMs = 2500): Promise<void> {
+  const hubs = getAllLocalAgyHubs(true);
+  if (hubs.length === 0) return;
+
+  await Promise.allSettled(
+    hubs.map((hub) => callLocalAgyRpc(hub, 'GetAuthStatus', { forceRefresh: true }, timeoutMs))
+  );
+}
+
+/**
+ * Queries the running Antigravity IDE Language Server (agy.exe) directly via local RPC
+ * to determine whether the IDE currently holds a valid authenticated session and for which email.
+ * Works reliably in packaged .vsix installs even when proposed USS APIs are restricted.
+ */
+export async function getLiveIdeServerAuthState(
+  timeoutMs = 2500,
+  forceRefresh = false
+): Promise<LiveIdeServerAuthState> {
+  try {
+    const hubInfo = getLocalAgyHubInfo(forceRefresh);
+    if (!hubInfo) {
+      return { reachable: false, authState: 'unknown' };
+    }
+
+    const [authSettled, userSettled] = await Promise.allSettled([
+      callLocalAgyRpc(hubInfo, 'GetAuthStatus', forceRefresh ? { forceRefresh: true } : {}, timeoutMs),
+      callLocalAgyRpc(hubInfo, 'GetUserStatus', {}, timeoutMs)
+    ]);
+
+    if (authSettled.status !== 'fulfilled' && userSettled.status !== 'fulfilled') {
+      return { reachable: false, authState: 'unknown' };
+    }
+
+    const authRes = authSettled.status === 'fulfilled' ? authSettled.value : null;
+    const userRes = userSettled.status === 'fulfilled' ? userSettled.value : null;
+
+    const authResult = authRes?.authResult;
+    const hasValidAuth = authResult?.hasValidAuth;
+    const rejectionMessage =
+      authResult?.generalError?.reason ||
+      authResult?.ineligible?.reason ||
+      authResult?.tosViolation?.message ||
+      authResult?.uiMessage ||
+      undefined;
+
+    const emailRaw = userRes?.userStatus?.email;
+    const email = typeof emailRaw === 'string' && emailRaw.trim() ? emailRaw.trim().toLowerCase() : undefined;
+
+    if (
+      hasValidAuth === false ||
+      Boolean(authResult?.authRequired) ||
+      Boolean(authResult?.tosViolation) ||
+      Boolean(authResult?.ineligible)
+    ) {
+      return {
+        reachable: true,
+        authState: 'signedOut',
+        email: undefined,
+        hasValidAuth: false,
+        rejectionMessage: typeof rejectionMessage === 'string' && rejectionMessage.trim() ? rejectionMessage.trim() : undefined
+      };
+    }
+
+    if (email) {
+      return {
+        reachable: true,
+        authState: 'signedIn',
+        email,
+        hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : undefined
+      };
+    }
+
+    // If GetUserStatus responded with an object lacking email (e.g., logged-out userStatus)
+    if (userSettled.status === 'fulfilled') {
+      return {
+        reachable: true,
+        authState: 'signedOut',
+        email: undefined,
+        hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : false,
+        rejectionMessage: typeof rejectionMessage === 'string' && rejectionMessage.trim() ? rejectionMessage.trim() : undefined
+      };
+    }
+
+    return {
+      reachable: true,
+      authState: 'unknown',
+      hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : undefined
+    };
+  } catch {
+    return { reachable: false, authState: 'unknown' };
+  }
 }

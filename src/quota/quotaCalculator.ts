@@ -62,6 +62,22 @@ export function findSoonestResetTime(quotas: ModelQuota[]): string | undefined {
 }
 
 /**
+ * Resolves the capacity tier weight for an account (Enterprise > Ultra > AI Premium > Pro > Free).
+ * Shared by overall summary weighting and auto-switch candidate ranking.
+ */
+export function getAccountTierWeight(
+  account: Pick<AccountInfo, 'tierBadge' | 'accountType'>
+): number {
+  const badge = (account.tierBadge || '').toUpperCase();
+  const type = (account.accountType || '').toLowerCase();
+  if (badge === 'ENTERPRISE' || type.includes('enterprise')) return TIER_WEIGHTS.ENTERPRISE;
+  if (badge === 'ULTRA' || type.includes('ultra')) return TIER_WEIGHTS.ULTRA;
+  if (badge === 'AI PREMIUM' || type.includes('premium')) return TIER_WEIGHTS['AI PREMIUM'];
+  if (badge === 'PRO' || type.includes('pro')) return TIER_WEIGHTS.PRO;
+  return TIER_WEIGHTS.FREE;
+}
+
+/**
  * Computes capacity-weighted overall aggregate percentage across all healthy accounts.
  * Accounts with higher tier allocations (Enterprise > Ultra > AI Premium > Pro > Free) contribute proportionately:
  * - Enterprise: 5.0x weight
@@ -93,22 +109,6 @@ export function calculateOverallSummary(accounts: AccountInfo[]): OverallQuotaSu
       lastUpdated: new Date().toISOString()
     };
   }
-
-  const getTierWeight = (tier: AccountTierType): number => {
-    switch (tier) {
-      case 'ENTERPRISE':
-        return TIER_WEIGHTS.ENTERPRISE;
-      case 'ULTRA':
-        return TIER_WEIGHTS.ULTRA;
-      case 'AI PREMIUM':
-        return TIER_WEIGHTS['AI PREMIUM'];
-      case 'PRO':
-        return TIER_WEIGHTS.PRO;
-      case 'STANDARD FREE':
-      default:
-        return TIER_WEIGHTS.FREE;
-    }
-  };
 
   const activeAcc = accounts.find((a) => a.isActive) || accounts[0];
   let sumOverallWeighted = 0;
@@ -163,7 +163,7 @@ export function calculateOverallSummary(accounts: AccountInfo[]): OverallQuotaSu
 
     healthyCount++;
 
-    const weight = getTierWeight(acc.tierBadge);
+    const weight = getAccountTierWeight(acc);
 
     // Check validity of Gemini and Claude buckets
     const g5h = isFree ? undefined : acc.geminiGroup?.fiveHour;
