@@ -114,7 +114,7 @@ export class AccountLifecycle {
       }
     }
 
-    const liveState = typeof this.storage.getLiveIdeAuthState === 'function'
+    let liveState = typeof this.storage.getLiveIdeAuthState === 'function'
       ? await this.storage
           .getLiveIdeAuthState({ skipDiskFallback: true, forceServerRefresh: false })
           .catch(() => ({ authState: 'unknown' as const, email: undefined }))
@@ -152,7 +152,7 @@ export class AccountLifecycle {
       }
 
       // Potential external IDE state transition detected during fast poll:
-      // Wait 150ms settle and re-check guards before mutating disk/memory state.
+      // Wait 150ms settle and re-confirm live IDE state before mutating active control.
       await new Promise((r) => setTimeout(r, 150));
       if (
         this.ctx.isSwitching?.() ||
@@ -164,6 +164,15 @@ export class AccountLifecycle {
       if (this.storage.hasSwitchInProgress?.() || this.storage.hasRecentSwitchEvent?.(3000)) {
         await this.ctx.reloadFromStorage?.().catch(() => {});
         return;
+      }
+
+      if (liveState.authState === 'signedOut' && typeof this.storage.getLiveIdeAuthState === 'function') {
+        liveState = await this.storage
+          .getLiveIdeAuthState({ skipDiskFallback: true, forceServerRefresh: false })
+          .catch(() => liveState);
+        if (liveState.authState === 'unknown') {
+          return;
+        }
       }
     }
 

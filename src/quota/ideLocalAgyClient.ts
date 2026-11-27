@@ -21,6 +21,7 @@ export interface IdeQuotaFetchOptions {
   cacheTtlMs?: number;
   cacheFilePath?: string;
   bypassSharedCache?: boolean;
+  skipCacheRead?: boolean;
 }
 
 interface SharedIdeQuotaCacheEntry {
@@ -377,7 +378,7 @@ export function callLocalAgyRpc(
 export function getFreshSharedIdeQuotaCache(
   options?: IdeQuotaFetchOptions
 ): IdeActiveQuotaResult | null {
-  if (options?.bypassSharedCache) return null;
+  if (options?.bypassSharedCache || options?.skipCacheRead) return null;
   const cachePath = options?.cacheFilePath || getDefaultSharedIdeCachePath();
   const cacheTtlMs = options?.cacheTtlMs ?? SHARED_IDE_QUOTA_CACHE_TTL_MS;
   const expectedEmail = options?.expectedEmail?.trim().toLowerCase();
@@ -396,6 +397,28 @@ export function getFreshSharedIdeQuotaCache(
     }
   }
   return null;
+}
+
+export function updateSharedIdeQuotaCache(
+  data: IdeActiveQuotaResult,
+  cacheFilePath?: string
+): void {
+  const cachePath = cacheFilePath || getDefaultSharedIdeCachePath();
+  const ts = data.fetchedAt ?? Date.now();
+  writeSharedIdeQuotaCache(cachePath, {
+    email: data.email,
+    timestamp: ts,
+    data: { ...data, fetchedAt: ts }
+  });
+}
+
+export function clearSharedIdeQuotaCache(cacheFilePath?: string): void {
+  try {
+    const cachePath = cacheFilePath || getDefaultSharedIdeCachePath();
+    if (fs.existsSync(cachePath)) {
+      fs.unlinkSync(cachePath);
+    }
+  } catch {}
 }
 
 /**
@@ -431,7 +454,9 @@ export async function fetchActiveAccountQuotaFromIde(
     const expectedEmail = options?.expectedEmail?.trim().toLowerCase();
     let acquiredLock = false;
 
-    if (!options?.bypassSharedCache) {
+    const shouldCoordinateLock = !options?.bypassSharedCache && !(options?.skipCacheRead && !forceRefresh);
+
+    if (shouldCoordinateLock) {
       acquiredLock = tryAcquireIdeQuotaLock(lockPath, lockTtlMs);
       if (!acquiredLock) {
         // Another live IDE instance holds the exclusive lock: wait briefly and check shared cache
@@ -620,7 +645,7 @@ export async function fetchActiveAccountQuotaFromIde(
     }
   };
 
-  if (options?.bypassSharedCache) {
+  if (options?.bypassSharedCache || options?.skipCacheRead) {
     return runFetch();
   }
 
@@ -644,6 +669,87 @@ export async function forceReloadAllLocalAgyHubs(timeoutMs = 2500): Promise<void
   );
 }
 
+const TRANSIENT_NETWORK_AUTH_ERROR_RE =
+  /\b(network|timeout|timed out|deadline|unavailable|offline|econnrefused|econnreset|enotfound|etimedout|eai_again|ehostunreach|socket|tls|ssl|dns|502|503|504)\b|failed to fetch|fetch failed|connection (?:refused|reset|closed|failed|timed out)/i;
+const AUTH_REVOCATION_REASON_RE =
+  /\b(invalid_grant|unauthenticated|unauthorized|revoked|expired|401|403)\b|sign[- ]?in|re-?login/i;
+
+function isTransientNetworkAuthError(reason?: string): boolean {
+  if (!reason) return false;
+  return TRANSIENT_NETWORK_AUTH_ERROR_RE.test(reason) && !AUTH_REVOCATION_REASON_RE.test(reason);
+}
+
+/**
+ * Classifies GetAuthStatus + GetUserStatus responses from agy.exe into a LiveIdeServerAuthState.
+ * Network/upstream failures (empty userStatus without auth rejection, or transient network generalError)
+ * resolve to 'unknown' instead of 'signedOut' so offline reconnects never strip active extension control.
+ */
+export function classifyLiveIdeServerAuthState(
+  authRes: any,
+  userRes: any,
+  authFulfilled = true,
+  userFulfilled = true
+): LiveIdeServerAuthState {
+  if (!authFulfilled && !userFulfilled) {
+    return { reachable: false, authState: 'unknown' };
+  }
+
+  const authResult = authRes?.authResult;
+  const hasValidAuth = authResult?.hasValidAuth;
+  const rejectionMessageRaw =
+    authResult?.generalError?.reason ||
+    authResult?.ineligible?.reason ||
+    authResult?.tosViolation?.message ||
+    authResult?.uiMessage ||
+    undefined;
+  const rejectionMessage =
+    typeof rejectionMessageRaw === 'string' && rejectionMessageRaw.trim()
+      ? rejectionMessageRaw.trim()
+      : undefined;
+
+  const emailRaw = userRes?.userStatus?.email;
+  const email = typeof emailRaw === 'string' && emailRaw.trim() ? emailRaw.trim().toLowerCase() : undefined;
+
+  const explicitAuthBlock =
+    Boolean(authResult?.authRequired) ||
+    Boolean(authResult?.tosViolation) ||
+    Boolean(authResult?.ineligible);
+
+  if (hasValidAuth === false && !explicitAuthBlock && isTransientNetworkAuthError(rejectionMessage)) {
+    return {
+      reachable: true,
+      authState: 'unknown',
+      email,
+      hasValidAuth: undefined
+    };
+  }
+
+  if (hasValidAuth === false || explicitAuthBlock) {
+    return {
+      reachable: true,
+      authState: 'signedOut',
+      email: undefined,
+      hasValidAuth: false,
+      rejectionMessage
+    };
+  }
+
+  if (email) {
+    return {
+      reachable: true,
+      authState: 'signedIn',
+      email,
+      hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : undefined
+    };
+  }
+
+  return {
+    reachable: true,
+    authState: 'unknown',
+    hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : undefined
+  };
+}
+
 /**
  * Queries the running Antigravity IDE Language Server (agy.exe) directly via local RPC
  * to determine whether the IDE currently holds a valid authenticated session and for which email.
@@ -664,65 +770,14 @@ export async function getLiveIdeServerAuthState(
       callLocalAgyRpc(hubInfo, 'GetUserStatus', {}, timeoutMs)
     ]);
 
-    if (authSettled.status !== 'fulfilled' && userSettled.status !== 'fulfilled') {
-      return { reachable: false, authState: 'unknown' };
-    }
-
     const authRes = authSettled.status === 'fulfilled' ? authSettled.value : null;
     const userRes = userSettled.status === 'fulfilled' ? userSettled.value : null;
-
-    const authResult = authRes?.authResult;
-    const hasValidAuth = authResult?.hasValidAuth;
-    const rejectionMessage =
-      authResult?.generalError?.reason ||
-      authResult?.ineligible?.reason ||
-      authResult?.tosViolation?.message ||
-      authResult?.uiMessage ||
-      undefined;
-
-    const emailRaw = userRes?.userStatus?.email;
-    const email = typeof emailRaw === 'string' && emailRaw.trim() ? emailRaw.trim().toLowerCase() : undefined;
-
-    if (
-      hasValidAuth === false ||
-      Boolean(authResult?.authRequired) ||
-      Boolean(authResult?.tosViolation) ||
-      Boolean(authResult?.ineligible)
-    ) {
-      return {
-        reachable: true,
-        authState: 'signedOut',
-        email: undefined,
-        hasValidAuth: false,
-        rejectionMessage: typeof rejectionMessage === 'string' && rejectionMessage.trim() ? rejectionMessage.trim() : undefined
-      };
-    }
-
-    if (email) {
-      return {
-        reachable: true,
-        authState: 'signedIn',
-        email,
-        hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : undefined
-      };
-    }
-
-    // If GetUserStatus responded with an object lacking email (e.g., logged-out userStatus)
-    if (userSettled.status === 'fulfilled') {
-      return {
-        reachable: true,
-        authState: 'signedOut',
-        email: undefined,
-        hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : false,
-        rejectionMessage: typeof rejectionMessage === 'string' && rejectionMessage.trim() ? rejectionMessage.trim() : undefined
-      };
-    }
-
-    return {
-      reachable: true,
-      authState: 'unknown',
-      hasValidAuth: typeof hasValidAuth === 'boolean' ? hasValidAuth : undefined
-    };
+    return classifyLiveIdeServerAuthState(
+      authRes,
+      userRes,
+      authSettled.status === 'fulfilled',
+      userSettled.status === 'fulfilled'
+    );
   } catch {
     return { reachable: false, authState: 'unknown' };
   }

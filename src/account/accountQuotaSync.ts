@@ -1,6 +1,6 @@
 import { AccountInfo } from '../types';
 import { StorageService } from '../storage';
-import { IdeActiveQuotaResult, QuotaFetchResult, QuotaService } from '../quota';
+import { QuotaFetchResult, QuotaService } from '../quota';
 import { EXTENSION_DEFAULTS } from '../constants';
 
 export interface AccountQuotaSyncContext {
@@ -30,36 +30,6 @@ export class AccountQuotaSync {
 
   public isBackgroundRefreshingState(): boolean {
     return this.isBackgroundRefreshing;
-  }
-
-  /**
-   * Returns true if the passive IDE agy.exe snapshot differs from the currently stored active account quotas.
-   */
-  private hasIdeQuotaChanged(account: AccountInfo, ideRes: IdeActiveQuotaResult): boolean {
-    const bucketSig = (b?: { remainingFraction?: number; percentage?: number; resetTime?: string }) =>
-      b ? `${b.remainingFraction ?? ''}:${b.percentage ?? ''}:${b.resetTime ?? ''}` : 'none';
-
-    const curGemini =
-      account.geminiGroup ||
-      account.quotaGroups?.find(
-        (g) => g.id === 'gemini' || (g.name.toLowerCase().includes('gemini') && !g.name.toLowerCase().includes('argon'))
-      );
-    const curClaude =
-      account.claudeGptGroup ||
-      account.quotaGroups?.find(
-        (g) => g.id === 'claude_gpt' || g.name.toLowerCase().includes('claude') || g.name.toLowerCase().includes('gpt')
-      );
-    const curArgon =
-      account.argonGroup ||
-      account.quotaGroups?.find((g) => g.id === 'argon' || g.name.toLowerCase().includes('argon'));
-
-    return (
-      bucketSig(curGemini?.fiveHour) !== bucketSig(ideRes.geminiGroup?.fiveHour) ||
-      bucketSig(curGemini?.weekly) !== bucketSig(ideRes.geminiGroup?.weekly) ||
-      bucketSig(curClaude?.fiveHour) !== bucketSig(ideRes.claudeGptGroup?.fiveHour) ||
-      bucketSig(curClaude?.weekly) !== bucketSig(ideRes.claudeGptGroup?.weekly) ||
-      bucketSig(curArgon?.weekly) !== bucketSig(ideRes.argonGroup?.weekly)
-    );
   }
 
   private applyQuotaResultToAccount(
@@ -118,76 +88,6 @@ export class AccountQuotaSync {
   }
 
   /**
-   * Smart active quota monitor:
-   * 1) Reads agy.exe RAM first (`forceRefresh = false`, ~6ms, 0 Google calls).
-   *    If agy already refreshed on its own (e.g. while streaming), immediately shares the new quota with Sidebar & StatusBar
-   *    and resets the freshness timer so no forced refresh is needed.
-   * 2) Only if agy's values stayed unchanged AND >= ACTIVE_FORCE_REFRESH_THRESHOLD_MS (20s) elapsed,
-   *    triggers a single shared `forceRefresh = true` refresh across windows.
-   */
-  public async syncActiveAccountFromIdeSmart(): Promise<void> {
-    if (
-      this.isBackgroundRefreshing ||
-      typeof this.quotaService.fetchActiveAccountQuotaFromIde !== 'function' ||
-      typeof this.quotaService.parseIdeQuotaResult !== 'function'
-    ) {
-      return;
-    }
-
-    const active = this.ctx.getActiveAccount();
-    if (!active || active.isBanned || active.status === 'banned' || active.status === 'auth_failed') {
-      return;
-    }
-    if (this.refreshingEmails.has(active.email)) {
-      return;
-    }
-
-    const lastRefreshedMs = active.lastRefreshedAt ? new Date(active.lastRefreshedAt).getTime() : 0;
-    const msSinceRefresh = isNaN(lastRefreshedMs) ? Infinity : Date.now() - lastRefreshedMs;
-
-    try {
-      const passiveIdeRes = await this.quotaService.fetchActiveAccountQuotaFromIde(1500, false, {
-        expectedEmail: active.email,
-        bypassSharedCache: true
-      });
-
-      if (
-        passiveIdeRes &&
-        passiveIdeRes.rawGroups &&
-        passiveIdeRes.rawGroups.length > 0 &&
-        passiveIdeRes.email.toLowerCase() === active.email.trim().toLowerCase() &&
-        this.hasIdeQuotaChanged(active, passiveIdeRes)
-      ) {
-        const parsedRes = this.quotaService.parseIdeQuotaResult(passiveIdeRes, active);
-        const latestAccounts = this.ctx.getAccounts();
-        const curIdx = latestAccounts.findIndex((a) => a.email.toLowerCase() === active.email.toLowerCase());
-        if (curIdx >= 0) {
-          const updated = [...latestAccounts];
-          updated[curIdx] = this.applyQuotaResultToAccount(
-            updated[curIdx],
-            parsedRes,
-            updated[curIdx].fiveHourQuotaPercentage,
-            updated[curIdx].weeklyQuotaPercentage,
-            true
-          );
-          const merged = this.mergeWithDiskAccounts(updated);
-          this.ctx.setAccounts(merged);
-          await this.storage.saveAccounts(merged);
-          this.ctx.notifyStateChange();
-          await this.ctx.checkAutoSwitch();
-        }
-        return;
-      }
-    } catch {}
-
-    // Passive snapshot matched stored state (or agy didn't respond): only forceRefresh=true once active threshold (20s) elapses.
-    if (msSinceRefresh >= EXTENSION_DEFAULTS.ACTIVE_FORCE_REFRESH_THRESHOLD_MS) {
-      await this.refreshAccountQuota(active.email, true, false, false);
-      await this.ctx.checkAutoSwitch();
-    }
-  }
-
-  /**
    * Checks if an account's quota information is stale (older than freshness threshold).
    */
   public isAccountStale(account: AccountInfo, thresholdMs: number = EXTENSION_DEFAULTS.ACCOUNT_FRESHNESS_THRESHOLD_MS): boolean {
@@ -203,8 +103,7 @@ export class AccountQuotaSync {
   public async refreshAccountQuota(
     email: string,
     force = false,
-    skipSave = false,
-    bypassIdeCache = false
+    skipSave = false
   ): Promise<void> {
     const accounts = this.ctx.getAccounts();
     const accIdx = accounts.findIndex((a) => a.email.toLowerCase() === email.toLowerCase());
@@ -294,8 +193,7 @@ export class AccountQuotaSync {
               console.warn('[AccountQuotaSync] Failed to propagate refreshed token to IDE:', syncErr);
             }
           }
-        },
-        { bypassIdeCache: bypassIdeCache || (force && !skipSave) }
+        }
       );
 
       const latestAccounts = this.ctx.getAccounts();
@@ -492,7 +390,7 @@ export class AccountQuotaSync {
         await Promise.all(
           chunk.map(async (acc) => {
             try {
-              await this.refreshAccountQuota(acc.email, true, true, force);
+              await this.refreshAccountQuota(acc.email, true, true);
             } catch (err) {
               console.warn(`[Antigravity Swap] Failed to refresh account ${acc.email}:`, err);
             } finally {
@@ -575,9 +473,9 @@ export class AccountQuotaSync {
 
       const accountsToRefresh: AccountInfo[] = [];
 
-      // 1. ALWAYS prioritize active account first (if healthy and stale against active threshold 20s)
+      // 1. ALWAYS prioritize active account first (if healthy and stale)
       if (active && !active.isBanned && active.status !== 'banned' && active.status !== 'auth_failed') {
-        if (this.isAccountStale(active, EXTENSION_DEFAULTS.ACTIVE_FORCE_REFRESH_THRESHOLD_MS)) {
+        if (this.isAccountStale(active)) {
           accountsToRefresh.push(active);
         }
       }

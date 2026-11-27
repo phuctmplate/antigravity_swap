@@ -21,7 +21,6 @@ export class AccountService {
   private pendingManualSwitchEmail?: string;
   private isHotSyncingWindow = false;
   private isInitializing = false;
-  private lastPassiveQuotaPollAt = 0;
   private reloadDebounceTimer: NodeJS.Timeout | null = null;
   private readonly _onDidChangeState = new vscode.EventEmitter<void>();
   public readonly onDidChangeState = this._onDidChangeState.event;
@@ -64,10 +63,9 @@ export class AccountService {
       addAccountViaOAuth: () => this.addAccountViaOAuth(),
       getIdeActiveQuota: () => {
         const activeEmail = this.getActiveAccount()?.email;
-        return this.quotaService.fetchActiveAccountQuotaFromIde(2500, true, {
+        return this.quotaService.fetchActiveAccountQuotaFromIde(2500, false, {
           expectedEmail: activeEmail,
-          cacheTtlMs: 5000,
-          bypassSharedCache: false
+          skipCacheRead: true
         });
       },
       probeCandidate: async (email: string) => {
@@ -140,12 +138,38 @@ export class AccountService {
                           (old.weeklyQuotaPercentage !== undefined && newWk !== undefined && newWk < old.weeklyQuotaPercentage);
 
           const updated = [...latestAccounts];
+          const parsedProbed =
+            probeResult.rawData && typeof this.quotaService.processQuotaData === 'function'
+              ? this.quotaService.processQuotaData(probeResult.rawData, old)
+              : undefined;
+
           updated[curIdx] = {
             ...old,
-            fiveHourQuotaPercentage: new5h ?? old.fiveHourQuotaPercentage,
-            weeklyQuotaPercentage: newWk ?? old.weeklyQuotaPercentage,
-            averageQuotaPercentage: new5h ?? newWk ?? old.averageQuotaPercentage,
-            fiveHourResetTime: probeResult.resetTime || old.fiveHourResetTime,
+            ...(parsedProbed
+              ? {
+                  quotas: parsedProbed.quotas,
+                  quotaGroups: parsedProbed.quotaGroups,
+                  geminiGroup: parsedProbed.geminiGroup,
+                  claudeGptGroup: parsedProbed.claudeGptGroup,
+                  argonGroup: parsedProbed.argonGroup,
+                  averageQuotaPercentage: parsedProbed.averagePercentage,
+                  fiveHourQuotaPercentage: parsedProbed.fiveHourPercentage ?? new5h ?? old.fiveHourQuotaPercentage,
+                  weeklyQuotaPercentage: parsedProbed.weeklyPercentage ?? newWk ?? old.weeklyQuotaPercentage,
+                  fiveHourResetTime: parsedProbed.fiveHourResetTime || probeResult.resetTime || old.fiveHourResetTime,
+                  fiveHourResetCountdown: parsedProbed.fiveHourResetCountdown || old.fiveHourResetCountdown,
+                  weeklyResetTime: parsedProbed.weeklyResetTime || old.weeklyResetTime,
+                  weeklyResetCountdown: parsedProbed.weeklyResetCountdown || old.weeklyResetCountdown,
+                  has5HourQuota: parsedProbed.has5HourQuota,
+                  hasWeeklyQuota: parsedProbed.hasWeeklyQuota,
+                  accountType: parsedProbed.accountType,
+                  tierBadge: parsedProbed.tierBadge
+                }
+              : {
+                  fiveHourQuotaPercentage: new5h ?? old.fiveHourQuotaPercentage,
+                  weeklyQuotaPercentage: newWk ?? old.weeklyQuotaPercentage,
+                  averageQuotaPercentage: new5h ?? newWk ?? old.averageQuotaPercentage,
+                  fiveHourResetTime: probeResult.resetTime || old.fiveHourResetTime
+                }),
             externalActivityDetected: dropped || old.externalActivityDetected,
             lastVerifiedSource: 'jit_guard',
             lastRefreshedAt: new Date().toISOString()
@@ -500,19 +524,7 @@ export class AccountService {
     ) {
       return;
     }
-    await this.lifecycle.handleIdeSessionChange({ fastPoll: true });
-
-    if (
-      !this.isInitializing &&
-      !this.switcher.isSwitchInProgress() &&
-      !this.autoSwitcher.isAutoSwitchInProgress() &&
-      !this.isHotSyncingWindow &&
-      this.activeEmail &&
-      Date.now() - this.lastPassiveQuotaPollAt >= EXTENSION_DEFAULTS.IDE_PASSIVE_QUOTA_POLL_MS
-    ) {
-      this.lastPassiveQuotaPollAt = Date.now();
-      await this.quotaSync.syncActiveAccountFromIdeSmart().catch(() => {});
-    }
+    return this.lifecycle.handleIdeSessionChange({ fastPoll: true });
   }
 
   public async checkExternalIdeSession(): Promise<void> {
@@ -577,8 +589,9 @@ export class AccountService {
     this.lifecycle.recordManualSwitch(email);
     const ok = await this.switcher.switchAccount(email, isManual, isSilent, force);
     if (ok) {
+      // Anchor post-switch cooldown to switch completion so reconnect/model fetches cannot trigger a premature release
+      this.lifecycle.recordManualSwitch(email);
       this.ideSessionEmail = emailLower;
-      this.lastPassiveQuotaPollAt = Date.now();
       this.pendingManualSwitchEmail = undefined;
       this.autoSwitcher.setAwaitingRecovery(false);
       this.autoSwitcher.clearFailedCandidate(email);
@@ -676,8 +689,14 @@ export class AccountService {
 
   public async getActiveAccountIdeQuota(
     timeoutMs = 2500,
-    options?: { expectedEmail?: string; cacheTtlMs?: number; bypassSharedCache?: boolean; forceRefresh?: boolean }
+    options?: {
+      expectedEmail?: string;
+      cacheTtlMs?: number;
+      bypassSharedCache?: boolean;
+      skipCacheRead?: boolean;
+      forceRefresh?: boolean;
+    }
   ) {
-    return this.quotaService.fetchActiveAccountQuotaFromIde(timeoutMs, options?.forceRefresh ?? false, options);
+    return this.quotaService.fetchActiveAccountQuotaFromIde(timeoutMs, options?.forceRefresh ?? true, options);
   }
 }

@@ -284,6 +284,8 @@ export class AccountAutoSwitcher {
    * If autoSwitch is turned OFF, it NEVER auto-switches under any circumstance.
    */
   public async checkAutoSwitch(): Promise<void> {
+    if (this._isAutoSwitchInProgress) return;
+
     const autoSwitch = this.storage.getAutoSwitchEnabled();
     if (!autoSwitch) return;
 
@@ -431,6 +433,15 @@ export class AccountAutoSwitcher {
                 const refreshedCandidate = currentAccounts.find((a) => a.email === candidate.email) || candidate;
                 const probedQuota = this.getAccountTargetQuota(refreshedCandidate, target);
                 const probedScore = this.getCandidateSelectionScore(refreshedCandidate, target);
+
+                // Bypass candidate if live JIT probe revealed it is actually at/below user's switch threshold
+                if (probedQuota <= threshold) {
+                  console.warn(
+                    `[AccountAutoSwitcher] JIT Guard detected ${candidate.email} quota (${probedQuota}%) is <= threshold (${threshold}%). Bypassing candidate.`
+                  );
+                  failedCandidateEmails.add(candidate.email.toLowerCase());
+                  continue;
+                }
 
                 const higherCandidate = candidates.slice(1).find((other) => {
                   const otherAcc = currentAccounts.find((a) => a.email === other.email) || other;

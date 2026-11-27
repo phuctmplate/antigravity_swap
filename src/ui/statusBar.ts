@@ -1,16 +1,24 @@
 import * as vscode from "vscode";
 import { AccountService } from "../account";
-import { SAFE_WEEKLY_THRESHOLDS } from "../constants";
-import { IdeActiveQuotaResult } from "../quota";
+import { EXTENSION_DEFAULTS, SAFE_WEEKLY_THRESHOLDS } from "../constants";
+import { IdeActiveQuotaResult, updateSharedIdeQuotaCache } from "../quota";
 
 export class StatusBarService implements vscode.Disposable {
   private statusBarItem: vscode.StatusBarItem;
   private disposables: vscode.Disposable[] = [];
   private cachedIdeQuota: IdeActiveQuotaResult | null = null;
+  private lastTrackedEmail?: string;
+  private lastIdeSyncAt = 0;
+  private ideRefreshInFlight = false;
+  private pendingIdeRefresh = false;
+  private disposed = false;
   private idePollTimer?: NodeJS.Timeout;
   private stateRefreshTimer?: NodeJS.Timeout;
 
-  constructor(private readonly accountService: AccountService) {
+  constructor(
+    private readonly accountService: AccountService,
+    private readonly sharedCacheFilePath?: string
+  ) {
     this.statusBarItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
       100,
@@ -20,24 +28,35 @@ export class StatusBarService implements vscode.Disposable {
 
     this.disposables.push(
       this.accountService.onDidChangeState(() => {
-        this.update();
-        if (this.stateRefreshTimer) {
-          clearTimeout(this.stateRefreshTimer);
+        const activeEmail = this.accountService.getActiveAccount()?.email?.toLowerCase();
+        const emailChanged = activeEmail !== this.lastTrackedEmail;
+        if (emailChanged) {
+          this.lastTrackedEmail = activeEmail;
+          this.cachedIdeQuota = null;
+          this.lastIdeSyncAt = 0;
         }
-        this.stateRefreshTimer = setTimeout(() => {
-          this.refreshIdeQuota();
-        }, 150);
+        this.update();
+        if (emailChanged) {
+          if (this.stateRefreshTimer) {
+            clearTimeout(this.stateRefreshTimer);
+          }
+          this.stateRefreshTimer = setTimeout(() => {
+            this.refreshIdeQuota();
+          }, 150);
+        }
       }),
     );
 
+    this.lastTrackedEmail = this.accountService.getActiveAccount()?.email?.toLowerCase();
     this.update();
     this.statusBarItem.show();
 
-    // Check shared IDE quota cache / refresh every 15s (single-flight leader enforces 25s/35s TTL across instances)
+    // Poll agy.exe RAM every 5s (forceRefresh=false, ~6ms, 0 Google calls).
+    // Only forceRefresh=true after 20s idle (35s when unfocused) if agy has not refreshed on its own.
     this.refreshIdeQuota();
     this.idePollTimer = setInterval(() => {
       this.refreshIdeQuota();
-    }, 15000);
+    }, EXTENSION_DEFAULTS.IDE_PASSIVE_QUOTA_POLL_MS);
     this.disposables.push({
       dispose: () => {
         if (this.idePollTimer) {
@@ -50,41 +69,103 @@ export class StatusBarService implements vscode.Disposable {
     });
   }
 
-  private async refreshIdeQuota(): Promise<void> {
+  private hasIdeQuotaChanged(prev: IdeActiveQuotaResult | null, next: IdeActiveQuotaResult): boolean {
+    if (!prev || prev.email.toLowerCase() !== next.email.toLowerCase()) {
+      return true;
+    }
+    const bucketSig = (b?: { remainingFraction?: number; percentage?: number; resetTime?: string }) =>
+      b ? `${b.remainingFraction ?? ""}:${b.percentage ?? ""}:${b.resetTime ?? ""}` : "none";
+
+    return (
+      prev.geminiInstantPercentage !== next.geminiInstantPercentage ||
+      prev.claudeInstantPercentage !== next.claudeInstantPercentage ||
+      prev.accountInstantPercentage !== next.accountInstantPercentage ||
+      prev.overallQuotaPercentage !== next.overallQuotaPercentage ||
+      bucketSig(prev.geminiGroup?.fiveHour) !== bucketSig(next.geminiGroup?.fiveHour) ||
+      bucketSig(prev.geminiGroup?.weekly) !== bucketSig(next.geminiGroup?.weekly) ||
+      bucketSig(prev.claudeGptGroup?.fiveHour) !== bucketSig(next.claudeGptGroup?.fiveHour) ||
+      bucketSig(prev.claudeGptGroup?.weekly) !== bucketSig(next.claudeGptGroup?.weekly) ||
+      bucketSig(prev.argonGroup?.weekly) !== bucketSig(next.argonGroup?.weekly)
+    );
+  }
+
+  public async refreshIdeQuota(): Promise<void> {
+    if (this.disposed) return;
+    if (this.ideRefreshInFlight) {
+      this.pendingIdeRefresh = true;
+      return;
+    }
+    this.ideRefreshInFlight = true;
     try {
       const active = this.accountService.getActiveAccount();
       if (!active) {
         this.cachedIdeQuota = null;
+        this.lastIdeSyncAt = 0;
         return;
       }
-      if (this.cachedIdeQuota && this.cachedIdeQuota.email.toLowerCase() !== active.email.toLowerCase()) {
+      const targetEmailLower = active.email.toLowerCase();
+      if (this.cachedIdeQuota && this.cachedIdeQuota.email.toLowerCase() !== targetEmailLower) {
         this.cachedIdeQuota = null;
+        this.lastIdeSyncAt = 0;
       }
-      // Focused window refreshes every 25s; unfocused windows wait up to 35s so they naturally reuse focused cache
+
+      // 1. Passive 5s RAM read from agy.exe (0 Google API calls).
+      // If agy already refreshed on its own (e.g. while streaming), immediately update Status Bar & reset 20s timer.
+      if (this.cachedIdeQuota) {
+        const passiveRes = await this.accountService.getActiveAccountIdeQuota(1500, {
+          expectedEmail: active.email,
+          forceRefresh: false,
+          skipCacheRead: true
+        });
+        if (this.accountService.getActiveAccount()?.email?.toLowerCase() !== targetEmailLower) {
+          return;
+        }
+        if (
+          passiveRes &&
+          passiveRes.email.toLowerCase() === targetEmailLower &&
+          this.hasIdeQuotaChanged(this.cachedIdeQuota, passiveRes)
+        ) {
+          this.cachedIdeQuota = passiveRes;
+          this.lastIdeSyncAt = Date.now();
+          updateSharedIdeQuotaCache(passiveRes, this.sharedCacheFilePath);
+          this.update();
+          return;
+        }
+      }
+
+      // 2. Fallback forced refresh only when initial cache is empty OR >= 20s focused (35s unfocused) passed with no organic change
       const isFocused = vscode.window.state?.focused !== false;
-      const cacheTtlMs = isFocused ? 25000 : 35000;
+      const ttlMs = isFocused ? EXTENSION_DEFAULTS.ACTIVE_FORCE_REFRESH_THRESHOLD_MS : 35000;
+      if (this.cachedIdeQuota && Date.now() - this.lastIdeSyncAt < ttlMs) {
+        return;
+      }
+
       const ideRes = await this.accountService.getActiveAccountIdeQuota(2500, {
         expectedEmail: active.email,
-        cacheTtlMs,
-        forceRefresh: false
+        cacheTtlMs: ttlMs,
+        forceRefresh: true
       });
-      if (ideRes && ideRes.email.toLowerCase() === active.email.toLowerCase()) {
-        const changed =
-          !this.cachedIdeQuota ||
-          this.cachedIdeQuota.geminiInstantPercentage !== ideRes.geminiInstantPercentage ||
-          this.cachedIdeQuota.claudeInstantPercentage !== ideRes.claudeInstantPercentage ||
-          this.cachedIdeQuota.accountInstantPercentage !== ideRes.accountInstantPercentage ||
-          this.cachedIdeQuota.overallQuotaPercentage !== ideRes.overallQuotaPercentage ||
-          this.cachedIdeQuota.geminiGroup?.weekly?.percentage !== ideRes.geminiGroup?.weekly?.percentage ||
-          this.cachedIdeQuota.geminiGroup?.fiveHour?.percentage !== ideRes.geminiGroup?.fiveHour?.percentage ||
-          this.cachedIdeQuota.claudeGptGroup?.weekly?.percentage !== ideRes.claudeGptGroup?.weekly?.percentage ||
-          this.cachedIdeQuota.claudeGptGroup?.fiveHour?.percentage !== ideRes.claudeGptGroup?.fiveHour?.percentage;
+      if (this.accountService.getActiveAccount()?.email?.toLowerCase() !== targetEmailLower) {
+        return;
+      }
+      if (ideRes && ideRes.email.toLowerCase() === targetEmailLower) {
+        const changed = this.hasIdeQuotaChanged(this.cachedIdeQuota, ideRes);
         this.cachedIdeQuota = ideRes;
+        this.lastIdeSyncAt = ideRes.fetchedAt ?? Date.now();
         if (changed) {
           this.update();
         }
       }
-    } catch {}
+    } catch {
+    } finally {
+      this.ideRefreshInFlight = false;
+      if (this.pendingIdeRefresh && !this.disposed) {
+        this.pendingIdeRefresh = false;
+        queueMicrotask(() => {
+          this.refreshIdeQuota();
+        });
+      }
+    }
   }
 
   public update(): void {
@@ -118,14 +199,10 @@ export class StatusBarService implements vscode.Disposable {
       return;
     }
 
-    const activeRefreshedMs = active.lastRefreshedAt ? new Date(active.lastRefreshedAt).getTime() : 0;
-    const ideFetchedMs = this.cachedIdeQuota?.fetchedAt ?? 0;
-    const hasIdeQuota =
-      Boolean(
-        this.cachedIdeQuota &&
-        this.cachedIdeQuota.email.toLowerCase() === active.email.toLowerCase() &&
-        (ideFetchedMs === 0 || ideFetchedMs >= activeRefreshedMs)
-      );
+    const hasIdeQuota = Boolean(
+      this.cachedIdeQuota &&
+      this.cachedIdeQuota.email.toLowerCase() === active.email.toLowerCase(),
+    );
 
     const geminiPct = hasIdeQuota
       ? this.cachedIdeQuota!.geminiInstantPercentage
@@ -533,7 +610,10 @@ export class StatusBarService implements vscode.Disposable {
       } else {
         const email = chosen.description?.split(" — ")[0]?.trim();
         if (email) {
-          await this.accountService.switchAccount(email, true);
+          const isForce =
+            this.accountService.getActiveAccount()?.email?.toLowerCase() ===
+            email.toLowerCase();
+          await this.accountService.switchAccount(email, !isForce, false, isForce);
         }
       }
     });
@@ -542,6 +622,8 @@ export class StatusBarService implements vscode.Disposable {
   }
 
   public dispose(): void {
+    this.disposed = true;
+    this.pendingIdeRefresh = false;
     for (const d of this.disposables) {
       d.dispose();
     }

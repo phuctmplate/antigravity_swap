@@ -142,29 +142,13 @@ export class QuotaService {
   }
 
   /**
-   * Converts an active IDE agy.exe quota result into normalized QuotaFetchResult used by the Sidebar & Status Bar.
-   */
-  public parseIdeQuotaResult(ideRes: IdeActiveQuotaResult, account: AccountInfo): QuotaFetchResult {
-    return this.parser.processQuotaData(
-      {
-        response: { groups: ideRes.rawGroups },
-        userTier: ideRes.userTier,
-        planName: ideRes.planInfo?.planName,
-        teamsTier: ideRes.planInfo?.teamsTier
-      },
-      account
-    );
-  }
-
-  /**
    * Fetches the quota breakdown for an account using its access token.
    * If expired and a refresh token is available, automatically refreshes the token.
    */
   public async fetchAccountQuotas(
     account: AccountInfo,
     tokens: OAuthTokens,
-    onTokenRefreshed?: (newTokens: OAuthTokens) => Promise<void>,
-    options?: { bypassIdeCache?: boolean }
+    onTokenRefreshed?: (newTokens: OAuthTokens) => Promise<void>
   ): Promise<QuotaFetchResult> {
     let currentTokens = tokens;
 
@@ -200,32 +184,6 @@ export class QuotaService {
     try {
       const liveLsEmail = await this.getLiveLanguageServerEmail().catch(() => undefined);
       const isLiveActive = (liveLsEmail && account.email.trim().toLowerCase() === liveLsEmail.trim().toLowerCase()) || (account.isActive ?? false);
-
-      // Single authoritative agy.exe forceRefresh=true source for the active account:
-      // Updates .ide-quota-cache.json once so Sidebar and StatusBar share the exact same IDE quota snapshot.
-      const hasMockedApiClient = this.apiClient.fetchLiveQuotaData !== QuotaApiClient.prototype.fetchLiveQuotaData;
-      const hasMockedIdeFetcher = this.fetchActiveAccountQuotaFromIde !== QuotaService.prototype.fetchActiveAccountQuotaFromIde;
-      if (account.isActive && (!hasMockedApiClient || hasMockedIdeFetcher)) {
-        try {
-          const ideRes = await this.fetchActiveAccountQuotaFromIde(2500, true, {
-            expectedEmail: account.email,
-            cacheTtlMs: EXTENSION_DEFAULTS.ACTIVE_FORCE_REFRESH_THRESHOLD_MS,
-            bypassSharedCache: Boolean(options?.bypassIdeCache)
-          });
-          if (
-            ideRes &&
-            ideRes.rawGroups &&
-            ideRes.rawGroups.length > 0 &&
-            ideRes.email.toLowerCase() === account.email.trim().toLowerCase()
-          ) {
-            const parsedFromIde = this.parseIdeQuotaResult(ideRes, account);
-            console.log(
-              `[QuotaService] Refreshed active account ${account.email} via shared IDE agy source (${parsedFromIde.tierBadge}): Instant=${parsedFromIde.averagePercentage}%, 5h=${parsedFromIde.fiveHourPercentage ?? 'N/A'}%, Weekly=${parsedFromIde.weeklyPercentage ?? 'N/A'}%`
-            );
-            return parsedFromIde;
-          }
-        } catch {}
-      }
 
       let quotaData = await this.apiClient.fetchLiveQuotaData(
         currentTokens.accessToken,
