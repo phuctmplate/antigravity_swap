@@ -172,13 +172,14 @@ export const AppContent: React.FC = () => {
     });
   };
 
-  const handleSwitchAccount = useCallback((email: string) => {
+  const handleSwitchAccount = useCallback((email: string, force = false) => {
     pendingSwitchEmailRef.current = email;
     setSwitchingEmail(email);
     getVsCodeApi().postMessage({
       command: "switchAccount",
       email,
-      isManual: true,
+      isManual: !force,
+      force,
     });
     // Safety fallback: in case backend never responds, clear spinner after 20s
     setTimeout(() => {

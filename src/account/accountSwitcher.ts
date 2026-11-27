@@ -3,6 +3,7 @@ import { AccountInfo, OAuthTokens } from '../types';
 import { StorageService } from '../storage';
 import { OAuthService } from '../auth';
 import { EXTENSION_DEFAULTS } from '../constants';
+import { clearSharedIdeQuotaCache } from '../quota';
 
 export interface AccountSwitcherContext {
   getAccounts: () => AccountInfo[];
@@ -219,7 +220,12 @@ export class AccountSwitcher {
    */
   public async switchAccount(email: string, isManual = false, isSilent = false, force = false): Promise<boolean> {
     const now = Date.now();
-    if (!force && (this.isSwitching || now - this.lastSwitchTime < AccountSwitcher.SWITCH_COOLDOWN_MS)) {
+    if (this.isSwitching) {
+      console.log('[Antigravity Swap] Switch already in progress. Ignored.');
+      return false;
+    }
+
+    if (!force && now - this.lastSwitchTime < AccountSwitcher.SWITCH_COOLDOWN_MS) {
       console.log('[Antigravity Swap] Switch rate-limited / cooldown active. Ignored.');
       return false;
     }
@@ -394,6 +400,9 @@ export class AccountSwitcher {
 
       // 3. Update google_accounts.json so active email is aligned
       await this.storage.syncGoogleAccountsJson(email);
+
+      // Clear any previous account's shared IDE quota snapshot before mutating IDE auth state
+      clearSharedIdeQuotaCache();
 
       // 4. Hot-switch in-memory via Unified State Sync API so language server and agent immediately get the new token!
       await this.storage.liveSwitchOAuthToken(target, tokens, false, true, true);

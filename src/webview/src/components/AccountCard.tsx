@@ -22,7 +22,7 @@ interface AccountCardProps {
   isSwitching?: boolean;
   isAnySwitching?: boolean;
   onSelect: (email: string) => void;
-  onSwitch?: (email: string) => void;
+  onSwitch?: (email: string, force?: boolean) => void;
   onToggleCheck?: (email: string) => void;
   onDeleteRequest?: (email: string) => void;
   onRefreshRequest?: (email: string) => void;
@@ -239,10 +239,16 @@ export const AccountCard: React.FC<AccountCardProps> = ({
   const handleSwitch = (e: React.MouseEvent) => {
     e.stopPropagation();
     onSelect(account.email);
+    const isReswitch = isActive;
     if (onSwitch) {
-      onSwitch(account.email);
+      onSwitch(account.email, isReswitch);
     } else {
-      vscode.postMessage({ command: 'switchAccount', email: account.email, isManual: true });
+      vscode.postMessage({
+        command: 'switchAccount',
+        email: account.email,
+        isManual: !isReswitch,
+        force: isReswitch
+      });
     }
   };
 
@@ -819,12 +825,13 @@ export const AccountCard: React.FC<AccountCardProps> = ({
               <Trash2 className="w-3 h-3" />
             </Button>
 
-            {!isActive && !isBanned && !isAuthFailed && !isMultiSelectMode && (
+            {!isBanned && !isAuthFailed && !isMultiSelectMode && (
               <Button
                 onClick={handleSwitch}
                 disabled={isSwitching || isAnySwitching}
                 size="xs"
-                variant="default"
+                variant={isActive ? 'secondary' : 'default'}
+                title={isActive ? 'Re-switch active account to IDE' : 'Switch to this account'}
                 className="min-w-14"
               >
                 {isSwitching ? (
@@ -832,7 +839,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 ) : (
                   <>
                     <ArrowRightLeft className="w-3 h-3" />
-                    <span>Switch</span>
+                    <span>{isActive ? 'Re-switch' : 'Switch'}</span>
                   </>
                 )}
               </Button>

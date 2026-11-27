@@ -45,7 +45,7 @@ interface AccountListProps {
   selectedEmail: string | null;
   onSelectAccount: (email: string) => void;
   switchingEmail?: string | null;
-  onSwitchAccount?: (email: string) => void;
+  onSwitchAccount?: (email: string, force?: boolean) => void;
   isBackgroundRefreshing?: boolean;
 }
 

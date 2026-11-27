@@ -109,15 +109,18 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'switchAccount': {
+          const isForce =
+            data.force === true ||
+            this.accountService.getActiveAccount()?.email?.toLowerCase() === String(data.email || '').toLowerCase();
           let ok = false;
           try {
-            ok = await this.accountService.switchAccount(data.email, data.isManual === true, true);
+            ok = await this.accountService.switchAccount(data.email, data.isManual === true, true, isForce);
           } finally {
             this.postMessageToAll({ type: 'switchComplete', email: data.email });
             this.updateWebview();
           }
           if (ok) {
-            this.showToast(`Switched to: ${data.email}!`, 'success');
+            this.showToast(isForce ? `Re-switched to: ${data.email}!` : `Switched to: ${data.email}!`, 'success');
           } else {
             const acc = this.accountService.getAccounts().find((a) => a.email === data.email);
             const msg = acc?.statusMessage || `Failed to switch to ${data.email}.`;

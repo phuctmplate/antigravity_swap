@@ -17,6 +17,20 @@ const mockVscode = {
   ProgressLocation: {
     Notification: 15
   },
+  StatusBarAlignment: {
+    Left: 1,
+    Right: 2
+  },
+  ThemeColor: class {
+    constructor(public readonly id: string) {}
+  },
+  MarkdownString: class {
+    public value = '';
+    public isTrusted = false;
+    public supportThemeIcons = false;
+    constructor(v = '') { this.value = v; }
+    appendMarkdown(s: string) { this.value += s; return this; }
+  },
   EventEmitter: class {
     private listeners: Function[] = [];
     event = (listener: Function) => {
@@ -28,9 +42,18 @@ const mockVscode = {
     };
   },
   window: {
+    state: { focused: true },
     showWarningMessage: async () => undefined,
     showErrorMessage: async () => undefined,
     showInformationMessage: async () => undefined,
+    createStatusBarItem: () => ({
+      show: () => {},
+      dispose: () => {},
+      text: '',
+      tooltip: '',
+      command: '',
+      backgroundColor: undefined
+    }),
     withProgress: async (_opts: any, task: any) =>
       task({ report: () => {} }, { onCancellationRequested: () => {} }),
     onDidChangeWindowState: () => ({ dispose: () => {} }),
@@ -1459,91 +1482,18 @@ describe('Account Switch and Multi-Instance Sync Suite', () => {
     assert.notStrictEqual(accounts[0].needsReauth, true);
   });
 
-  it('AccountService keeps forceRefresh=false for StatusBar IDE quota reads while AutoSwitcher uses forceRefresh=true', async () => {
+  it('QuotaService uses unified Google direct API for both active and standby accounts while AutoSwitcher retains IDE guard', async () => {
     const { AccountService } = require('../src/account/accountService');
-
-    const capturedCalls: Array<{ forceRefresh: boolean; bypassSharedCache?: boolean; cacheTtlMs?: number }> = [];
-    const activeAcc = createMockAccount('quota.mode@example.com', { isActive: true });
-
-    const mockStorage: any = {
-      isValidEmail: (e: string) => Boolean(e && e.includes('@')),
-      getAccounts: () => [activeAcc],
-      saveAccounts: async () => {},
-      getActiveAccountEmail: () => 'quota.mode@example.com',
-      setActiveAccountEmail: async () => {},
-      getAutoSwitchEnabled: () => false,
-      getAutoSwitchTarget: () => 'gemini',
-      getAutoSwitchThreshold: () => 5,
-      onDidAccountsChange: () => {},
-      onDidExternalSwitchComplete: () => {},
-      onDidExternalOAuthComplete: () => {}
-    };
-
-    const mockQuota: any = {
-      getLiveLanguageServerEmail: async () => undefined,
-      invalidateLanguageServerConnection: () => {},
-      fetchActiveAccountQuotaFromIde: async (_timeoutMs: number, forceRefresh: boolean, opts?: any) => {
-        capturedCalls.push({
-          forceRefresh,
-          bypassSharedCache: opts?.bypassSharedCache,
-          cacheTtlMs: opts?.cacheTtlMs
-        });
-        return null;
-      },
-      calculateOverallSummary: () => ({ totalAccounts: 1 })
-    };
-
-    const service = new AccountService(mockStorage, {} as any, mockQuota);
-
-    // 1. StatusBar path defaults to forceRefresh=false (reads agy.exe in-memory cache without forcing Google API)
-    await service.getActiveAccountIdeQuota(2500, { expectedEmail: activeAcc.email, cacheTtlMs: 25000 });
-    assert.strictEqual(capturedCalls[0]?.forceRefresh, false);
-
-    // 2. AutoSwitcher secondary guard reuses recent shared cache (5s TTL) right after heartbeat, forcing only if stale
-    await (service as any).autoSwitcher.ctx.getIdeActiveQuota();
-    assert.strictEqual(capturedCalls[1]?.forceRefresh, true);
-    assert.strictEqual(capturedCalls[1]?.bypassSharedCache, false);
-    assert.strictEqual(capturedCalls[1]?.cacheTtlMs, 5000);
-  });
-
-  it('QuotaService uses shared agy.exe forceRefresh=true once for active account and skips Google direct API when IDE responds', async () => {
     const { QuotaService } = require('../src/quota/quotaService');
 
     const quotaService = new QuotaService({} as any);
-    let ideCalls = 0;
+    let ideQuotaCalls = 0;
     let directApiCalls = 0;
 
-    quotaService.fetchActiveAccountQuotaFromIde = async (_timeoutMs: number, forceRefresh: boolean) => {
-      ideCalls++;
-      assert.strictEqual(forceRefresh, true);
-      return {
-        email: 'shared.active@example.com',
-        name: 'Shared Active',
-        planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' },
-        fetchedAt: Date.now(),
-        geminiInstantPercentage: 80,
-        claudeInstantPercentage: 60,
-        accountInstantPercentage: 77,
-        overallQuotaPercentage: 88,
-        rawGroups: [
-          {
-            displayName: 'Gemini Models',
-            buckets: [
-              { bucketId: 'gemini-5h', displayName: 'Five Hour Limit Remaining', remainingFraction: 0.8 },
-              { bucketId: 'gemini-weekly', displayName: 'Weekly Limit Remaining', remainingFraction: 0.9 }
-            ]
-          },
-          {
-            displayName: 'Claude and GPT models',
-            buckets: [
-              { bucketId: 'claude-5h', displayName: 'Five Hour Limit Remaining', remainingFraction: 0.6 },
-              { bucketId: 'claude-weekly', displayName: 'Weekly Limit Remaining', remainingFraction: 0.85 }
-            ]
-          }
-        ]
-      };
+    (quotaService as any).fetchActiveAccountQuotaFromIde = async () => {
+      ideQuotaCalls++;
+      return { email: 'active.user@example.com', rawGroups: [{ displayName: 'Gemini Models', buckets: [] }] };
     };
-
     (quotaService as any).apiClient.fetchLiveQuotaData = async () => {
       directApiCalls++;
       return {
@@ -1557,130 +1507,331 @@ describe('Account Switch and Multi-Instance Sync Suite', () => {
       };
     };
 
-    const activeAcc = createMockAccount('shared.active@example.com', { isActive: true });
-    const tokens: OAuthTokens = { accessToken: 'ya29.shared', expiresAt: Date.now() + 3600000 };
-
-    const activeRes = await quotaService.fetchAccountQuotas(activeAcc, tokens);
-    assert.strictEqual(ideCalls, 1, 'Active account must query shared agy.exe IDE source once');
-    assert.strictEqual(directApiCalls, 0, 'Active account must NOT fire duplicate direct Google API call when IDE source succeeds');
-    assert.strictEqual(activeRes.geminiGroup?.fiveHour?.percentage, 80);
-    assert.strictEqual(activeRes.claudeGptGroup?.fiveHour?.percentage, 60);
-    assert.strictEqual(activeRes.fiveHourPercentage, 77);
-    assert.strictEqual(activeRes.weeklyPercentage, 89);
-    assert.strictEqual(activeRes.tierBadge, 'PRO');
-
-    // Standby account must bypass IDE source and query Google direct API
+    const tokens: OAuthTokens = { accessToken: 'ya29.unified', expiresAt: Date.now() + 3600000 };
+    const activeAcc = createMockAccount('active.user@example.com', { isActive: true });
     const standbyAcc = createMockAccount('standby.user@example.com', { isActive: false });
+
+    // Both active and standby accounts read strictly from the unified Google Direct API (preventing IDE vs API display jumps)
+    await quotaService.fetchAccountQuotas(activeAcc, tokens);
     await quotaService.fetchAccountQuotas(standbyAcc, tokens);
-    assert.strictEqual(ideCalls, 1, 'Standby account must not call IDE agy.exe source');
-    assert.strictEqual(directApiCalls, 1, 'Standby account must query Google direct API');
+    assert.strictEqual(directApiCalls, 2, 'Both active and standby accounts must use Google direct API');
+    assert.strictEqual(ideQuotaCalls, 0, 'QuotaService UI fetch must not mix IDE agy.exe quota source');
+
+    // AutoSwitcher secondary confirmation guard reads live agy.exe RAM (forceRefresh=false, skipCacheRead=true)
+    const guardCalls: Array<{ forceRefresh: boolean; bypassSharedCache?: boolean; skipCacheRead?: boolean }> = [];
+    const mockStorage: any = {
+      isValidEmail: (e: string) => Boolean(e && e.includes('@')),
+      getAccounts: () => [activeAcc],
+      saveAccounts: async () => {},
+      getActiveAccountEmail: () => 'active.user@example.com',
+      setActiveAccountEmail: async () => {},
+      getAutoSwitchEnabled: () => false,
+      getAutoSwitchTarget: () => 'gemini',
+      getAutoSwitchThreshold: () => 5,
+      onDidAccountsChange: () => {},
+      onDidExternalSwitchComplete: () => {},
+      onDidExternalOAuthComplete: () => {}
+    };
+    const mockQuota: any = {
+      getLiveLanguageServerEmail: async () => undefined,
+      invalidateLanguageServerConnection: () => {},
+      fetchActiveAccountQuotaFromIde: async (_timeoutMs: number, forceRefresh: boolean, opts?: any) => {
+        guardCalls.push({
+          forceRefresh,
+          bypassSharedCache: opts?.bypassSharedCache,
+          skipCacheRead: opts?.skipCacheRead
+        });
+        return null;
+      },
+      calculateOverallSummary: () => ({ totalAccounts: 1 })
+    };
+    const service = new AccountService(mockStorage, {} as any, mockQuota);
+    await service.getActiveAccountIdeQuota(2500, { expectedEmail: activeAcc.email, cacheTtlMs: 25000 });
+    assert.strictEqual(guardCalls[0]?.forceRefresh, true, 'StatusBar initial/forced IDE telemetry uses forceRefresh=true');
+
+    await (service as any).autoSwitcher.ctx.getIdeActiveQuota();
+    assert.strictEqual(guardCalls[1]?.forceRefresh, false, 'AutoSwitcher guard must read agy RAM without forceRefresh=true');
+    assert.strictEqual(guardCalls[1]?.skipCacheRead, true);
   });
 
-  it('AccountQuotaSync.syncActiveAccountFromIdeSmart catches organic agy updates at 0 Google cost and only forces refresh after 20s idle', async () => {
-    const { AccountQuotaSync } = require('../src/account/accountQuotaSync');
-    const { QuotaService } = require('../src/quota/quotaService');
+  it('StatusBarService polls agy.exe passively every 5s and only triggers forceRefresh=true after 20s without organic changes', async () => {
+    const { StatusBarService } = require('../src/ui/statusBar');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-sb-test-'));
+    const cacheFilePath = path.join(tmpDir, '.ide-quota-cache.json');
 
-    const realParserService = new QuotaService({} as any);
-    let accounts: AccountInfo[] = [
-      createMockAccount('smart.active@example.com', {
-        isActive: true,
-        fiveHourQuotaPercentage: 85,
-        weeklyQuotaPercentage: 90,
-        lastRefreshedAt: new Date(Date.now() - 4000).toISOString(),
-        geminiGroup: {
-          id: 'gemini',
-          name: 'Gemini Models',
-          fiveHour: { bucketId: 'gemini-5h', displayName: '5h', window: '5h', percentage: 85, remainingFraction: 0.85 },
-          weekly: { bucketId: 'gemini-weekly', displayName: 'Weekly', window: 'weekly', percentage: 90, remainingFraction: 0.9 },
-          buckets: []
-        }
-      })
-    ];
+    let geminiPct = 90;
+    const stateChangeEmitter = new mockVscode.EventEmitter();
+    const activeAcc = createMockAccount('sb.smart@example.com', { isActive: true, averageQuotaPercentage: 50 });
+    const ideCalls: Array<{ forceRefresh?: boolean; skipCacheRead?: boolean }> = [];
 
-    let passiveCalls = 0;
-    let forcedCalls = 0;
-    let notifyCount = 0;
-    let autoSwitchChecks = 0;
-    let mockPassiveFraction = 0.75; // Changed from 0.85 -> 0.75 (agy updated organically!)
-
-    const makeIdeRes = (frac: number) => ({
-      email: 'smart.active@example.com',
-      name: 'Smart Active',
-      planInfo: { teamsTier: 'TEAMS_TIER_PRO', planName: 'Pro' },
-      fetchedAt: Date.now(),
-      geminiInstantPercentage: Math.round(frac * 100),
-      claudeInstantPercentage: 100,
-      accountInstantPercentage: Math.round(frac * 100),
-      overallQuotaPercentage: 90,
-      geminiGroup: {
-        id: 'gemini',
-        name: 'Gemini Models',
-        fiveHour: { bucketId: 'gemini-5h', displayName: '5h', window: '5h', percentage: Math.round(frac * 100), remainingFraction: frac },
-        weekly: { bucketId: 'gemini-weekly', displayName: 'Weekly', window: 'weekly', percentage: 90, remainingFraction: 0.9 },
-        buckets: []
-      },
-      rawGroups: [
-        {
-          displayName: 'Gemini Models',
-          buckets: [
-            { bucketId: 'gemini-5h', displayName: 'Five Hour Limit Remaining', remainingFraction: frac },
-            { bucketId: 'gemini-weekly', displayName: 'Weekly Limit Remaining', remainingFraction: 0.9 }
-          ]
-        }
-      ]
-    });
-
-    const mockStorage: any = {
-      getAccounts: () => accounts,
-      saveAccounts: async (accs: AccountInfo[]) => { accounts = accs; },
-      getAccountTokens: async () => ({ accessToken: 'ya29.smart', expiresAt: Date.now() + 3600000 }),
-      getActiveAccountEmail: () => 'smart.active@example.com',
-      renewRefreshLease: () => {}
-    };
-
-    const mockQuotaService: any = {
-      fetchActiveAccountQuotaFromIde: async (_timeoutMs: number, forceRefresh: boolean) => {
-        if (forceRefresh) forcedCalls++;
-        else passiveCalls++;
-        return makeIdeRes(mockPassiveFraction);
-      },
-      parseIdeQuotaResult: (ideRes: any, acc: AccountInfo) => realParserService.parseIdeQuotaResult(ideRes, acc),
-      fetchAccountQuotas: async (_acc: AccountInfo) => {
-        forcedCalls++;
-        return realParserService.parseIdeQuotaResult(makeIdeRes(mockPassiveFraction), _acc);
+    const mockAccountService: any = {
+      onDidChangeState: stateChangeEmitter.event,
+      getAccounts: () => [activeAcc],
+      getActiveAccount: () => activeAcc,
+      getOverallSummary: () => ({ instantPercentage: 50, overallPercentage: 50, totalAccounts: 1 }),
+      getAutoSwitchTarget: () => 'gemini',
+      getAccountTargetQuota: () => 50,
+      getIdeSessionEmail: () => 'sb.smart@example.com',
+      getActiveAccountIdeQuota: async (_timeoutMs: number, opts?: any) => {
+        ideCalls.push({ forceRefresh: opts?.forceRefresh, skipCacheRead: opts?.skipCacheRead });
+        return {
+          email: 'sb.smart@example.com',
+          geminiInstantPercentage: geminiPct,
+          claudeInstantPercentage: 100,
+          accountInstantPercentage: 92,
+          overallQuotaPercentage: 95,
+          fetchedAt: Date.now(),
+          rawGroups: []
+        };
       }
     };
 
-    const sync = new AccountQuotaSync(mockStorage, mockQuotaService, {
+    const sb = new StatusBarService(mockAccountService, cacheFilePath);
+    try {
+      await new Promise((r) => setTimeout(r, 30)); // Wait for initial load (forceRefresh: true)
+      assert.strictEqual(ideCalls.length, 1);
+      assert.strictEqual(ideCalls[0].forceRefresh, true);
+
+      // 1. Organic agy update (90 -> 82) within < 20s -> caught via passive (forceRefresh: false) & resets 20s timer
+      geminiPct = 82;
+      await sb.refreshIdeQuota();
+      assert.strictEqual(ideCalls.length, 2, 'Must NOT follow up with forceRefresh when passive read caught organic change');
+      assert.strictEqual(ideCalls[1].forceRefresh, false);
+      assert.strictEqual(ideCalls[1].skipCacheRead, true);
+
+      // 2. Unchanged & < 20s -> passive check only, zero forced refresh
+      await sb.refreshIdeQuota();
+      assert.strictEqual(ideCalls.length, 3);
+      assert.strictEqual(ideCalls[2].forceRefresh, false);
+
+      // 3. Unchanged & >= 20s -> passive check + single forceRefresh: true fallback
+      (sb as any).lastIdeSyncAt = Date.now() - 21000;
+      await sb.refreshIdeQuota();
+      assert.strictEqual(ideCalls.length, 5);
+      assert.strictEqual(ideCalls[3].forceRefresh, false);
+      assert.strictEqual(ideCalls[4].forceRefresh, true);
+    } finally {
+      sb.dispose();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('AccountAutoSwitcher ignores concurrent checkAutoSwitch calls and bypasses candidates whose JIT probe falls <= threshold', async () => {
+    const { AccountAutoSwitcher } = require('../src/account/accountAutoSwitcher');
+
+    let accounts: AccountInfo[] = [
+      createMockAccount('depleted@example.com', { isActive: true, averageQuotaPercentage: 0, fiveHourQuotaPercentage: 0, quotas: [] }),
+      createMockAccount('just.above5@example.com', {
+        isActive: false,
+        averageQuotaPercentage: 80,
+        fiveHourQuotaPercentage: 80,
+        weeklyQuotaPercentage: 100,
+        quotas: [{ id: 'g', displayName: 'Gemini 2.5 Flash', windowType: '5h', windowLabel: '5-Hour Limit', percentage: 80 }]
+      }),
+      createMockAccount('truly.healthy@example.com', {
+        isActive: false,
+        averageQuotaPercentage: 90,
+        fiveHourQuotaPercentage: 90,
+        weeklyQuotaPercentage: 100,
+        quotas: [{ id: 'g', displayName: 'Gemini 2.5 Flash', windowType: '5h', windowLabel: '5-Hour Limit', percentage: 90 }]
+      })
+    ];
+    // Mark depleted@example.com with depleted Gemini quota
+    accounts[0] = {
+      ...accounts[0],
+      lastRefreshedAt: new Date().toISOString(),
+      quotas: [{ id: 'g', displayName: 'Gemini 2.5 Flash', windowType: '5h', windowLabel: '5-Hour Limit', percentage: 0 }]
+    };
+
+    const switchedTo: string[] = [];
+    let releaseSwitch!: () => void;
+    const switchGate = new Promise<void>((resolve) => { releaseSwitch = resolve; });
+
+    const mockStorage: any = {
+      getAutoSwitchEnabled: () => true,
+      getAutoSwitchThreshold: () => 15,
+      getAutoSwitchTarget: () => 'instant',
+      renewRefreshLease: () => {}
+    };
+
+    const switcher = new AccountAutoSwitcher(mockStorage, {
       getAccounts: () => accounts,
-      setAccounts: (accs: AccountInfo[]) => { accounts = accs; },
-      getActiveAccount: () => accounts[0],
-      reloadFromStorage: async () => {},
-      checkAutoSwitch: async () => { autoSwitchChecks++; },
-      checkExternalIdeSession: async () => {},
-      notifyStateChange: () => { notifyCount++; }
+      getActiveAccount: () => accounts.find((a) => a.isActive),
+      switchAccount: async (email: string) => {
+        switchedTo.push(email);
+        await switchGate;
+        accounts = accounts.map((a) => ({ ...a, isActive: a.email === email }));
+        return true;
+      },
+      addAccountViaOAuth: async () => null,
+      probeCandidate: async (email: string) => {
+        if (email === 'just.above5@example.com') {
+          // Live quota dropped to 10% (<= threshold 15%, even though > hardcoded 5%)
+          return { ok: true, isDepleted: false, fiveHourPercentage: 10, weeklyPercentage: 100 };
+        }
+        return { ok: true, isDepleted: false, fiveHourPercentage: 90, weeklyPercentage: 100 };
+      },
+      onCandidateProbed: async (email: string, res: any) => {
+        accounts = accounts.map((a) =>
+          a.email === email
+            ? {
+                ...a,
+                fiveHourQuotaPercentage: res.fiveHourPercentage,
+                quotas: [{ id: 'g', displayName: 'Gemini 2.5 Flash', windowType: '5h', windowLabel: '5-Hour Limit', percentage: res.fiveHourPercentage }]
+              }
+            : a
+        );
+      }
     });
 
-    // 1. Organic agy update (0.85 -> 0.75): updates UI + resets freshness WITHOUT forcing Google refresh
-    await sync.syncActiveAccountFromIdeSmart();
-    assert.strictEqual(passiveCalls, 1);
-    assert.strictEqual(forcedCalls, 0, 'Must NOT forceRefresh when agy already reported updated quota organically');
-    assert.strictEqual(accounts[0].fiveHourQuotaPercentage, 75);
-    assert.strictEqual(notifyCount, 1);
-    assert.strictEqual(autoSwitchChecks, 1);
+    const firstCall = switcher.checkAutoSwitch();
+    await new Promise((r) => setTimeout(r, 20));
+    const concurrentCall = switcher.checkAutoSwitch();
+    releaseSwitch();
+    await Promise.all([firstCall, concurrentCall]);
 
-    // 2. Unchanged & < 20s since last update (even at 16s) -> does nothing (0 forced calls, 0 redundant saves)
-    accounts[0].lastRefreshedAt = new Date(Date.now() - 16000).toISOString();
-    await sync.syncActiveAccountFromIdeSmart();
-    assert.strictEqual(passiveCalls, 2);
-    assert.strictEqual(forcedCalls, 0, 'Must skip forceRefresh when unchanged and within 20s freshness window');
-    assert.strictEqual(notifyCount, 1);
+    assert.deepStrictEqual(
+      switchedTo,
+      ['truly.healthy@example.com'],
+      'Must skip just.above5@example.com (10% <= 15% threshold) and ignore concurrent re-entrant checkAutoSwitch'
+    );
+  });
 
-    // 3. Unchanged & >= 20s elapsed -> runs single shared forceRefresh=true fallback
-    accounts[0].lastRefreshedAt = new Date(Date.now() - 21000).toISOString();
-    await sync.syncActiveAccountFromIdeSmart();
-    assert.strictEqual(passiveCalls, 3);
-    assert.strictEqual(forcedCalls, 1, 'Must trigger single forceRefresh=true after 20s without organic changes');
-    assert.strictEqual(autoSwitchChecks, 2);
+  it('classifyLiveIdeServerAuthState treats offline/empty model fetch errors as unknown instead of false signedOut', async () => {
+    const { classifyLiveIdeServerAuthState } = require('../src/quota');
+    const { AccountDiscoveryService } = require('../src/storage/accountDiscovery');
+    const { AccountLifecycle } = require('../src/account/accountLifecycle');
+
+    // 1. Empty GetUserStatus (failed model/profile fetch) while GetAuthStatus hasValidAuth != false -> unknown
+    const emptyUserOnlineErr = classifyLiveIdeServerAuthState({ authResult: {} }, { userStatus: {} }, true, true);
+    assert.strictEqual(emptyUserOnlineErr.authState, 'unknown');
+
+    // 2. Transient network error on GetAuthStatus without authRequired -> unknown (never signedOut)
+    const netErrState = classifyLiveIdeServerAuthState(
+      { authResult: { hasValidAuth: false, generalError: { reason: 'network connection timeout' } } },
+      { userStatus: {} },
+      true,
+      true
+    );
+    assert.strictEqual(netErrState.authState, 'unknown');
+
+    // 3. Genuine authRequired / logout -> signedOut
+    const realLogout = classifyLiveIdeServerAuthState(
+      { authResult: { hasValidAuth: false, authRequired: true } },
+      { userStatus: {} },
+      true,
+      true
+    );
+    assert.strictEqual(realLogout.authState, 'signedOut');
+
+    // 4. AccountDiscoveryService preserves USS signedIn email when server returns unknown during network drop
+    const prevAuthState = mockVscode.antigravityUnifiedStateSync.OAuthPreferences.getAuthState;
+    const prevTokenInfo = mockVscode.antigravityUnifiedStateSync.OAuthPreferences.getOAuthTokenInfo;
+    const prevUserStatus = mockVscode.antigravityUnifiedStateSync.UserStatus.getUserStatus;
+    try {
+      const { createUserStatusPayload } = require('../src/storage/protoUtils');
+      mockVscode.antigravityUnifiedStateSync.OAuthPreferences.getAuthState = async () => 'signedIn';
+      mockVscode.antigravityUnifiedStateSync.OAuthPreferences.getOAuthTokenInfo = async () => ({ accessToken: 'ya29.ok' });
+      mockVscode.antigravityUnifiedStateSync.UserStatus.getUserStatus = async () =>
+        Buffer.from(createUserStatusPayload('switched.user@gmail.com', 'Switched User')).toString('base64');
+
+      const discovery = new AccountDiscoveryService({ getSqliteDb: () => null } as any, async () => emptyUserOnlineErr);
+      const live = await discovery.getLiveIdeAuthState({ skipDiskFallback: true, forceServerRefresh: true });
+      assert.strictEqual(live.authState, 'signedIn');
+      assert.strictEqual(live.email, 'switched.user@gmail.com');
+    } finally {
+      mockVscode.antigravityUnifiedStateSync.OAuthPreferences.getAuthState = prevAuthState;
+      mockVscode.antigravityUnifiedStateSync.OAuthPreferences.getOAuthTokenInfo = prevTokenInfo;
+      mockVscode.antigravityUnifiedStateSync.UserStatus.getUserStatus = prevUserStatus;
+    }
+
+    // 5. AccountLifecycle ignores single-frame transient signedOut flicker on fastPoll when second confirm returns unknown
+    let pollIdx = 0;
+    let accounts: AccountInfo[] = [createMockAccount('switched.acc@gmail.com', { isActive: true, status: 'healthy' })];
+    let activeEmail: string | undefined = 'switched.acc@gmail.com';
+    const mockStorage: any = {
+      isValidEmail: (e: string) => Boolean(e && e.includes('@')),
+      getAccounts: () => accounts,
+      saveAccounts: async (accs: AccountInfo[]) => { accounts = accs; },
+      setActiveAccountEmail: async (e: string | undefined) => { activeEmail = e; },
+      hasRecentSwitchEvent: () => false,
+      getLiveIdeAuthState: async () => {
+        pollIdx++;
+        return pollIdx === 1
+          ? { authState: 'signedOut', email: undefined }
+          : { authState: 'unknown', email: undefined };
+      }
+    };
+    const lifecycle = new AccountLifecycle(mockStorage, {} as any, {
+      getAccounts: () => accounts,
+      setAccounts: (accs: AccountInfo[]) => { accounts = accs; },
+      getActiveEmail: () => activeEmail,
+      setActiveEmail: (e: string | undefined) => { activeEmail = e; },
+      switchAccount: async () => true,
+      refreshAccountQuota: async () => {},
+      notifyStateChange: () => {}
+    });
+    await lifecycle.handleIdeSessionChange({ fastPoll: true });
+    assert.strictEqual(activeEmail, 'switched.acc@gmail.com', 'Transient reconnect signedOut flicker must not drop extension active control');
+    assert.strictEqual(accounts[0].isActive, true);
+  });
+
+  it('AccountSwitcher force re-switch re-pushes credentials for active account without disabling autoSwitch', async () => {
+    const { AccountSwitcher } = require('../src/account/accountSwitcher');
+    let accounts: AccountInfo[] = [
+      createMockAccount('active.reswitch@example.com', { isActive: true, status: 'healthy' })
+    ];
+    let activeEmail: string | undefined = 'active.reswitch@example.com';
+    let liveSwitchCalls = 0;
+    let autoSwitchDisabled = false;
+
+    const mockStorage: any = {
+      getAccounts: () => accounts,
+      getAccountTokens: async () => ({
+        accessToken: 'ya29.active_token',
+        refreshToken: '1//refresh',
+        expiresAt: Date.now() + 3600000,
+        hasRequiredScopes: true
+      }),
+      saveAccounts: async (accs: AccountInfo[]) => { accounts = accs; },
+      saveAccountTokens: async () => {},
+      renewRefreshLease: () => {},
+      syncGoogleAccountsJson: async () => {},
+      liveSwitchOAuthToken: async () => {
+        liveSwitchCalls++;
+        return true;
+      },
+      syncToIdeStateDb: async () => true,
+      syncToCloudAccountsDb: async () => true,
+      getLiveIdeAuthState: async () => ({ authState: 'signedIn', email: 'active.reswitch@example.com' }),
+      broadcastSwitchCompleted: () => {},
+      setActiveAccountEmail: async () => {},
+      setAutoSwitchEnabled: async (val: boolean) => {
+        if (!val) autoSwitchDisabled = true;
+      }
+    };
+
+    const switcher = new AccountSwitcher(
+      mockStorage,
+      { verifyTokenScopes: async () => ({ valid: true, scopes: [], missingScopes: [], hasRequiredScopes: true, hasAiCode: true }) } as any,
+      {
+        getAccounts: () => accounts,
+        setAccounts: (accs: AccountInfo[]) => { accounts = accs; },
+        getActiveEmail: () => activeEmail,
+        setActiveEmail: (e: string | undefined) => { activeEmail = e; },
+        notifyStateChange: () => {}
+      }
+    );
+
+    // Non-forced call on active account returns early cleanly without re-pushing
+    const noopOk = await switcher.switchAccount('active.reswitch@example.com', false, true, false);
+    assert.strictEqual(noopOk, true);
+    assert.strictEqual(liveSwitchCalls, 0);
+
+    // Forced Re-switch (isManual=false, force=true) re-pushes credentials to IDE while keeping autoSwitch intact
+    const reswitchOk = await switcher.switchAccount('active.reswitch@example.com', false, true, true);
+    assert.strictEqual(reswitchOk, true);
+    assert.strictEqual(liveSwitchCalls, 1, 'Force Re-switch must re-push token & reconnect IDE');
+    assert.strictEqual(autoSwitchDisabled, false, 'Re-switching active account must preserve Auto-Switch setting');
   });
 });
