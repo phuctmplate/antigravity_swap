@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0 (2026-11-27)
+
+- **Dedicated Account Control**: Removed automatic IDE account importing so active account control stays explicit with clean IDE session sync.
+- **Stronger Session Verification**: Added stricter session validation and smarter re-login recovery, unified under a clear verification status.
+- **Smarter Auto-Switch Selection**: Candidate ranking now prioritizes higher-capacity paid plans over free-tier accounts and stops cleanly after repeated switch failures.
+- **UI Cleanups**: Simplified account cards and status indicators by removing redundant text.
+
 ## 2.2.1 (2026-11-26)
 
 - **Improved IDE Sync**: Improved real-time quota synchronization between the status bar and newer Antigravity IDE updates.
