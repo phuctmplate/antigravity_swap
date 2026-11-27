@@ -1,13 +1,13 @@
 import * as vscode from 'vscode';
 import { AccountInfo, OAuthTokens, AutoSwitchTarget } from '../types';
-import { DiscoveredAccount } from './accountDiscovery';
+import { DiscoveredAccount, LiveIdeAuthState } from './accountDiscovery';
 import { AccountStorage } from './accountStorage';
 import { DistributedSyncManager } from './distributedSync';
 import { IdeStateDbService } from './ideStateDb';
 import { AccountDiscoveryService } from './accountDiscovery';
 import { UssHotSwitchService } from './ussHotSwitch';
 
-export { DiscoveredAccount };
+export { DiscoveredAccount, LiveIdeAuthState };
 
 /**
  * StorageService
@@ -71,6 +71,22 @@ export class StorageService {
 
   public checkExternalSwitchEvent(): void {
     this.distributedSync.checkExternalSwitchEvent();
+  }
+
+  public hasRecentSwitchEvent(windowMs = 15000): boolean {
+    return this.distributedSync.hasRecentSwitchEvent(windowMs);
+  }
+
+  public broadcastSwitchStarted(email: string): void {
+    this.distributedSync.broadcastSwitchStarted(email);
+  }
+
+  public clearSwitchInProgress(): void {
+    this.distributedSync.clearSwitchInProgress();
+  }
+
+  public hasSwitchInProgress(windowMs = 15000): boolean {
+    return this.distributedSync.hasSwitchInProgress(windowMs);
   }
 
   public initFileWatcher(): vscode.Disposable {
@@ -189,6 +205,13 @@ export class StorageService {
 
   public async getCurrentAntigravityAccount(): Promise<DiscoveredAccount | null> {
     return this.discoveryService.getCurrentAntigravityAccount();
+  }
+
+  public async getLiveIdeAuthState(options?: {
+    skipDiskFallback?: boolean;
+    forceServerRefresh?: boolean;
+  }): Promise<LiveIdeAuthState> {
+    return this.discoveryService.getLiveIdeAuthState(options);
   }
 
   public async discoverExistingAccounts(): Promise<DiscoveredAccount[]> {

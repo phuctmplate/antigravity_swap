@@ -200,7 +200,8 @@ export function patchUnifiedStateSyncTopicUserStatus(
   topicBuf: Uint8Array,
   newEmail: string,
   newName?: string,
-  newAvatarUrl?: string
+  newAvatarUrl?: string,
+  overrideAgentOnboarding?: number
 ): string | null {
   try {
     const topFields = parseProtoFields(topicBuf);
@@ -221,7 +222,13 @@ export function patchUnifiedStateSyncTopicUserStatus(
             if (valField && valField.data instanceof Uint8Array) {
               const innerB64 = Buffer.from(valField.data).toString('utf8');
               const innerBytes = Buffer.from(innerB64, 'base64');
-              const patchedBytes = patchUserStatusPayload(innerBytes, newEmail, newName, newAvatarUrl);
+              const patchedBytes = patchUserStatusPayload(
+                innerBytes,
+                newEmail,
+                newName,
+                newAvatarUrl,
+                overrideAgentOnboarding
+              );
               const patchedB64 = Buffer.from(patchedBytes).toString('base64');
               const newRow = encodeStringField(1, patchedB64);
               const newEntry = Buffer.concat([

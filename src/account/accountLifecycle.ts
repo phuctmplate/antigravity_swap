@@ -9,27 +9,29 @@ export interface AccountLifecycleContext {
   setAccounts: (accounts: AccountInfo[]) => void;
   getActiveEmail: () => string | undefined;
   setActiveEmail: (email: string | undefined) => void;
+  getIdeSessionEmail?: () => string | undefined;
+  setIdeSessionEmail?: (email: string | undefined) => void;
   getLiveLanguageServerEmail?: () => Promise<string | undefined>;
-  switchAccount: (email: string, isManual?: boolean, isSilent?: boolean) => Promise<boolean>;
+  switchAccount: (email: string, isManual?: boolean, isSilent?: boolean, force?: boolean) => Promise<boolean>;
   refreshAccountQuota: (email: string, force?: boolean) => Promise<void>;
+  reloadFromStorage?: () => Promise<void>;
   isSwitching?: () => boolean;
   isAutoSwitching?: () => boolean;
+  isHotSyncing?: () => boolean;
   notifyStateChange: () => void;
 }
 
 /**
  * AccountLifecycle
  * Manages adding accounts (OAuth and manual token entry), re-authentication,
- * account removals, IDE session synchronization, and account discovery import.
+ * account removals, and asymmetric IDE session synchronization (Model A+).
  */
 export class AccountLifecycle {
-  private isImporting = false;
-  private lastImportTime = 0;
-  private static readonly IMPORT_COOLDOWN_MS = EXTENSION_DEFAULTS.IMPORT_COOLDOWN_MS;
-
   private lastOAuthTime = 0;
   private static readonly OAUTH_COOLDOWN_MS = EXTENSION_DEFAULTS.OAUTH_COOLDOWN_MS;
   private lastManualSwitchTime = 0;
+  private lastSwitchTargetEmail: string | undefined;
+  private sessionCheckInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly storage: StorageService,
@@ -37,165 +39,225 @@ export class AccountLifecycle {
     private readonly ctx: AccountLifecycleContext
   ) {}
 
-  public recordManualSwitch(): void {
+  public recordManualSwitch(targetEmail?: string): void {
     this.lastManualSwitchTime = Date.now();
+    this.lastSwitchTargetEmail = targetEmail ? targetEmail.trim().toLowerCase() : undefined;
   }
 
   /**
-   * Handles real-time IDE auth session changes (login / logout / switch).
+   * Records a startup or cross-window hot-sync settle cooldown without flagging any account as a
+   * manual switch target (so subsequent user sign-outs are never misread as IDE rejections).
    */
-  public async handleIdeSessionChange(): Promise<void> {
-    // 1. Guard against race conditions during manual, programmatic, or auto account switches.
-    // If a switch is in progress or occurred within the last 15 seconds, ignore IDE session flutter.
-    if (this.ctx.isSwitching?.() || this.ctx.isAutoSwitching?.() || (Date.now() - this.lastManualSwitchTime < 15000)) {
-      console.log('[AccountLifecycle] Switch or auto-switch in progress or recently completed. Ignoring IDE session event.');
+  public recordSessionSyncCooldown(): void {
+    this.lastManualSwitchTime = Date.now();
+    this.lastSwitchTargetEmail = undefined;
+  }
+
+  private async refreshIdeHintFromLiveState(): Promise<void> {
+    if (typeof this.storage.getLiveIdeAuthState !== 'function') return;
+    try {
+      const liveState = await this.storage.getLiveIdeAuthState();
+      if (liveState.authState === 'signedIn' && liveState.email && this.storage.isValidEmail(liveState.email)) {
+        this.ctx.setIdeSessionEmail?.(liveState.email);
+      } else if (liveState.authState === 'signedOut') {
+        this.ctx.setIdeSessionEmail?.(undefined);
+      }
+      this.ctx.notifyStateChange();
+    } catch {}
+  }
+
+  /**
+   * Handles real-time IDE auth session changes using Asymmetric Sync (Model A+):
+   * - Never auto-activates or imports accounts when the user has not explicitly clicked Switch.
+   * - Tracks the live IDE email as an informational hint (for the IN IDE card badge).
+   * - Releases extension active control if the user manually signs out or switches accounts inside the IDE UI.
+   */
+  public async handleIdeSessionChange(options?: { fastPoll?: boolean }): Promise<void> {
+    if (this.sessionCheckInFlight) {
+      return this.sessionCheckInFlight;
+    }
+
+    const promise = this.executeIdeSessionCheck(options).finally(() => {
+      if (this.sessionCheckInFlight === promise) {
+        this.sessionCheckInFlight = null;
+      }
+    });
+    this.sessionCheckInFlight = promise;
+    return promise;
+  }
+
+  private async executeIdeSessionCheck(options?: { fastPoll?: boolean }): Promise<void> {
+    const fastPoll = Boolean(options?.fastPoll);
+    const msSinceSwitch = Date.now() - this.lastManualSwitchTime;
+
+    // Guard against race conditions during active switches (local or another IDE window) or hot-syncing
+    if (
+      this.ctx.isSwitching?.() ||
+      this.ctx.isAutoSwitching?.() ||
+      this.ctx.isHotSyncing?.() ||
+      this.storage.hasSwitchInProgress?.() ||
+      this.storage.hasRecentSwitchEvent?.(3000)
+    ) {
+      if (!fastPoll) {
+        console.log('[AccountLifecycle] Switch or hot-sync in progress. Ignoring IDE session flutter.');
+      }
       return;
     }
 
-    await new Promise((r) => setTimeout(r, 150));
+    if (!fastPoll) {
+      await new Promise((r) => setTimeout(r, 150));
+
+      // Re-check recent external switch after short settle delay to avoid clobbering another window's switch
+      if (this.storage.hasSwitchInProgress?.() || this.storage.hasRecentSwitchEvent?.(3000)) {
+        await this.ctx.reloadFromStorage?.().catch(() => {});
+        return;
+      }
+    }
+
+    const liveState = typeof this.storage.getLiveIdeAuthState === 'function'
+      ? await this.storage
+          .getLiveIdeAuthState({ skipDiskFallback: true, forceServerRefresh: false })
+          .catch(() => ({ authState: 'unknown' as const, email: undefined }))
+      : { authState: 'unknown' as const, email: undefined };
+
+    // Suppress signedIn account flutter for 15s after a manual switch, EXCEPT allow explicit signedOut after 2.5s
+    // so late IDE session rejections (showing the Login prompt) release active control and flag NOT VERIFIED.
+    const isWithinFullCooldown = msSinceSwitch < 15000 || Boolean(this.storage.hasRecentSwitchEvent?.(15000));
+    if (isWithinFullCooldown && !(liveState.authState === 'signedOut' && msSinceSwitch >= 2500)) {
+      if (!fastPoll) {
+        console.log('[AccountLifecycle] Recent switch guard active. Ignoring IDE session flutter.');
+      }
+      return;
+    }
+
+    const activeEmailBefore = this.ctx.getActiveEmail();
+    const prevIdeEmail = this.ctx.getIdeSessionEmail?.();
+    const rawProbeEmail = liveState.email?.trim().toLowerCase();
+    const validProbeEmail = rawProbeEmail && this.storage.isValidEmail(rawProbeEmail) ? rawProbeEmail : undefined;
+
+    // Zero-overhead early exit on steady-state fast polls when live IDE auth matches current extension state
+    if (fastPoll) {
+      const noChangeSignedIn =
+        liveState.authState === 'signedIn' &&
+        validProbeEmail &&
+        prevIdeEmail?.toLowerCase() === validProbeEmail &&
+        (!activeEmailBefore || activeEmailBefore.toLowerCase() === validProbeEmail);
+      const noChangeSignedOut =
+        liveState.authState === 'signedOut' &&
+        !activeEmailBefore &&
+        !prevIdeEmail;
+
+      if (liveState.authState === 'unknown' || noChangeSignedIn || noChangeSignedOut) {
+        return;
+      }
+
+      // Potential external IDE state transition detected during fast poll:
+      // Wait 150ms settle and re-check guards before mutating disk/memory state.
+      await new Promise((r) => setTimeout(r, 150));
+      if (
+        this.ctx.isSwitching?.() ||
+        this.ctx.isAutoSwitching?.() ||
+        this.ctx.isHotSyncing?.()
+      ) {
+        return;
+      }
+      if (this.storage.hasSwitchInProgress?.() || this.storage.hasRecentSwitchEvent?.(3000)) {
+        await this.ctx.reloadFromStorage?.().catch(() => {});
+        return;
+      }
+    }
 
     let liveLsEmail: string | undefined;
     try {
       liveLsEmail = await this.ctx.getLiveLanguageServerEmail?.();
     } catch {}
 
-    const currentSession = await this.storage.getCurrentAntigravityAccount().catch(() => null);
     const accounts = this.ctx.getAccounts();
     const activeEmail = this.ctx.getActiveEmail();
+    const rawEmail = liveLsEmail?.trim().toLowerCase() || validProbeEmail;
+    const validLiveEmail = rawEmail && this.storage.isValidEmail(rawEmail) ? rawEmail : undefined;
 
-    const activeSessionEmail = liveLsEmail?.trim().toLowerCase() ||
-      (currentSession?.email && this.storage.isValidEmail(currentSession.email) ? currentSession.email.trim().toLowerCase() : undefined);
+    const latestPrevIdeEmail = this.ctx.getIdeSessionEmail?.();
+    let nextIdeEmail = latestPrevIdeEmail;
+    if (liveState.authState === 'signedOut') {
+      nextIdeEmail = undefined;
+    } else if (validLiveEmail) {
+      nextIdeEmail = validLiveEmail;
+    }
 
-    // If Antigravity Swap active account differs from IDE session:
-    // If user changed accounts directly in the Antigravity IDE UI to an existing registered account, sync active state.
-    // If external report is an unregistered/unknown account or spurious flutter, ignore it to protect authoritative state.
-    if (activeEmail && activeSessionEmail && activeSessionEmail !== activeEmail.toLowerCase()) {
-      const matched = accounts.find((a) => a.email.toLowerCase() === activeSessionEmail);
-      if (matched) {
-        console.log(`[AccountLifecycle] Detected direct account change in Antigravity IDE UI to ${matched.email}. Synchronizing active account.`);
-        const updated = accounts.map((a) => ({
-          ...a,
-          isActive: a.email.toLowerCase() === matched.email.toLowerCase(),
-          lastUsedAt: a.email.toLowerCase() === matched.email.toLowerCase() ? new Date().toISOString() : a.lastUsedAt
-        }));
-        this.ctx.setActiveEmail(matched.email);
-        this.ctx.setAccounts(updated);
-        await this.storage.setActiveAccountEmail(matched.email);
-        await this.storage.saveAccounts(updated);
+    const ideEmailChanged = nextIdeEmail !== latestPrevIdeEmail;
+    if (ideEmailChanged) {
+      this.ctx.setIdeSessionEmail?.(nextIdeEmail);
+    }
 
-        // Synchronize fresh session tokens if present
-        if (currentSession?.accessToken || currentSession?.refreshToken) {
-          const storedTokens = await this.storage.getAccountTokens(matched.email);
-          const freshTokens: OAuthTokens = {
-            accessToken: currentSession.accessToken || storedTokens?.accessToken || '',
-            refreshToken: currentSession.refreshToken || storedTokens?.refreshToken || '',
-            expiresAt: storedTokens?.expiresAt || (Date.now() + 3600 * 1000),
-            tokenType: 'Bearer'
-          };
-          await this.storage.saveAccountTokens(matched.email, freshTokens);
-          await this.storage.syncToIdeStateDb(matched, freshTokens);
-        }
-
-        this.ctx.notifyStateChange();
-        this.ctx.refreshAccountQuota(matched.email).catch(() => {});
-        return;
-      }
-
-      console.log(`[AccountLifecycle] Active account is authoritative (${activeEmail}). External session ${activeSessionEmail} is not in account list. Ignoring.`);
+    // Before mutating active state, verify disk accounts haven't already shifted via another IDE window
+    const diskAccounts = this.storage.getAccounts();
+    const diskActiveEmail = diskAccounts.find((a) => a.isActive)?.email;
+    if ((diskActiveEmail || undefined) !== activeEmail) {
+      await this.ctx.reloadFromStorage?.().catch(() => {});
       return;
     }
 
-    if (!activeSessionEmail) {
-      // If we already have an active account established in Antigravity Swap, do NOT immediately clear it
-      // on a single undefined signal, because Language Server restart, new window cold-boot, or transient
-      // auth re-validation causes activeSessionEmail to be temporarily null/unreachable.
-      if (activeEmail !== undefined) {
-        console.log(`[AccountLifecycle] activeSessionEmail is undefined, but active account (${activeEmail}) is established. Self-healing window session.`);
-        const activeAcc = accounts.find((a) => a.email.toLowerCase() === activeEmail.toLowerCase());
-        if (activeAcc && !activeAcc.needsReauth && activeAcc.status !== 'auth_failed' && !activeAcc.isBanned && activeAcc.status !== 'banned') {
-          const tokens = await this.storage.getAccountTokens(activeAcc.email);
-          if (tokens?.accessToken && tokens.hasRequiredScopes !== false && tokens.hasAiCode !== false) {
-            await this.storage.liveSwitchOAuthToken(activeAcc, tokens, true, false).catch(() => {});
-          }
-        }
-        return;
-      }
-
-      // If storage already has an active account selected, do NOT clear active state during cold window startup
-      const savedActive = this.storage.getActiveAccountEmail();
-      if (savedActive || accounts.some((a) => a.isActive)) {
-        console.log('[AccountLifecycle] activeSessionEmail is undefined, but saved active account exists. Retaining active state.');
-        return;
-      }
-
-      // IDE is genuinely logged out and no active account is selected
-      if (accounts.some((a) => a.isActive)) {
-        console.log('[Antigravity Swap] Detected genuine IDE logout: clearing active account selection.');
-        this.ctx.setActiveEmail(undefined);
-        const updated = accounts.map((a) => ({ ...a, isActive: false }));
-        this.ctx.setAccounts(updated);
-        await this.storage.setActiveAccountEmail(undefined);
-        await this.storage.saveAccounts(updated);
+    // 1. If extension does NOT own an active account yet, never auto-activate from IDE.
+    //    Simply notify UI so the IN IDE badge reflects the latest IDE login state.
+    if (!activeEmail) {
+      if (ideEmailChanged) {
         this.ctx.notifyStateChange();
       }
       return;
     }
 
-    // IDE is logged in to a valid account!
-    const email = activeSessionEmail;
-    const existingAcc = accounts.find((a) => a.email.toLowerCase() === email);
+    // 2. Extension already owns an active account: detect manual IDE sign-out, delayed IDE rejection, or manual IDE account switch.
+    if (liveState.authState === 'signedOut') {
+      const explicitRejectionMsg = liveState.rejectionMessage?.trim();
+      const wasRecentlySwitchedTarget =
+        Boolean(explicitRejectionMsg) &&
+        this.lastSwitchTargetEmail === activeEmail.toLowerCase() &&
+        Date.now() - this.lastManualSwitchTime < 15000;
 
-    if (existingAcc) {
-      const existingTokens = await this.storage.getAccountTokens(existingAcc.email);
-      const sessionAccessToken = currentSession?.accessToken;
-      const sessionRefreshToken = currentSession?.refreshToken;
-      const isTokenDifferent = !existingTokens ||
-        (sessionAccessToken && sessionAccessToken !== existingTokens.accessToken) ||
-        (sessionRefreshToken && sessionRefreshToken !== existingTokens.refreshToken);
-      const isAlreadyActive = activeEmail?.toLowerCase() === email && existingAcc.isActive;
-
-      // Update tokens if a new session access or refresh token is present
-      if ((sessionAccessToken || sessionRefreshToken) && isTokenDifferent) {
-        const tokens: OAuthTokens = {
-          accessToken: sessionAccessToken || existingTokens?.accessToken || '',
-          refreshToken: sessionRefreshToken || existingTokens?.refreshToken || '',
-          expiresAt: Date.now() + 3600 * 1000,
-          tokenType: 'Bearer'
-        };
-        await this.storage.saveAccountTokens(existingAcc.email, tokens);
-        await this.storage.syncToIdeStateDb(existingAcc, tokens);
-        console.log(`[AccountLifecycle] Synchronized refreshed session tokens to storage and state.vscdb for ${existingAcc.email}`);
+      if (wasRecentlySwitchedTarget) {
+        console.warn(`[AccountLifecycle] IDE rejected session shortly after switching to ${activeEmail}: ${explicitRejectionMsg}`);
+      } else {
+        console.log(`[AccountLifecycle] Detected manual IDE sign-out while ${activeEmail} was active. Releasing active selection.`);
       }
 
-      if (!isAlreadyActive) {
-        // Set active only if there was previously no active account selected in Antigravity Swap
-        if (!activeEmail) {
-          this.ctx.setActiveEmail(existingAcc.email);
-          const updated = accounts.map((a) => ({
+      this.lastSwitchTargetEmail = undefined;
+      this.ctx.setActiveEmail(undefined);
+      const updated = accounts.map((a) => {
+        if (wasRecentlySwitchedTarget && a.email.toLowerCase() === activeEmail.toLowerCase()) {
+          return {
             ...a,
-            isActive: a.email.toLowerCase() === email,
-            status: a.email.toLowerCase() === email ? 'healthy' : a.status,
-            statusMessage: a.email.toLowerCase() === email ? undefined : a.statusMessage,
-            name: (a.email.toLowerCase() === email && currentSession?.name) ? currentSession.name : a.name,
-            avatarUrl: (a.email.toLowerCase() === email && currentSession?.avatarUrl) ? currentSession.avatarUrl : a.avatarUrl
-          }));
-          this.ctx.setAccounts(updated);
-          await this.storage.setActiveAccountEmail(existingAcc.email);
-          await this.storage.saveAccounts(updated);
-          this.ctx.notifyStateChange();
-          console.log(`[Antigravity Swap] Synchronized initial active account to ${existingAcc.email} following IDE login.`);
+            isActive: false,
+            status: 'auth_failed' as const,
+            needsReauth: true,
+            hasRequiredScopes: false,
+            statusMessage: explicitRejectionMsg || 'IDE rejected account session (not verified). Click Re-login to verify.'
+          };
         }
-      }
-    } else {
-      // Current IDE session is not in extension: clear active flag on extension accounts
-      if (activeEmail !== undefined) {
-        this.ctx.setActiveEmail(undefined);
-        const updated = accounts.map((a) => ({ ...a, isActive: false }));
-        this.ctx.setAccounts(updated);
-        await this.storage.setActiveAccountEmail(undefined);
-        await this.storage.saveAccounts(updated);
-        this.ctx.notifyStateChange();
-      }
+        return { ...a, isActive: false };
+      });
+      this.ctx.setAccounts(updated);
+      await this.storage.setActiveAccountEmail(undefined);
+      await this.storage.saveAccounts(updated);
+      this.ctx.notifyStateChange();
+      return;
+    }
+
+    if (validLiveEmail && validLiveEmail !== activeEmail.toLowerCase()) {
+      console.log(
+        `[AccountLifecycle] Detected manual IDE account change (${activeEmail} -> ${validLiveEmail}). Releasing extension active control.`
+      );
+      this.ctx.setActiveEmail(undefined);
+      const updated = accounts.map((a) => ({ ...a, isActive: false }));
+      this.ctx.setAccounts(updated);
+      await this.storage.setActiveAccountEmail(undefined);
+      await this.storage.saveAccounts(updated);
+      this.ctx.notifyStateChange();
+      return;
+    }
+
+    if (ideEmailChanged) {
+      this.ctx.notifyStateChange();
     }
   }
 
@@ -229,6 +291,7 @@ export class AccountLifecycle {
 
       const accounts = this.ctx.getAccounts();
       const existingIdx = accounts.findIndex((a) => a.email === userInfo.email || a.email === email);
+
       if (existingIdx >= 0) {
         accounts[existingIdx] = {
           ...accounts[existingIdx],
@@ -278,7 +341,7 @@ export class AccountLifecycle {
 
       const activeEmail = this.ctx.getActiveEmail();
       if (activeEmail === userInfo.email || activeEmail === email) {
-        await this.ctx.switchAccount(userInfo.email);
+        await this.ctx.switchAccount(userInfo.email, false, isSilent, true);
       }
 
       return true;
@@ -290,96 +353,6 @@ export class AccountLifecycle {
         }
       }
       return false;
-    }
-  }
-
-  /**
-   * Imports or updates the account currently logged into Antigravity IDE.
-   */
-  public async importCurrentAntigravityAccount(): Promise<AccountInfo | null> {
-    const now = Date.now();
-    if (this.isImporting || (now - this.lastImportTime < AccountLifecycle.IMPORT_COOLDOWN_MS)) {
-      return null;
-    }
-    this.isImporting = true;
-    this.lastImportTime = now;
-
-    try {
-      const current = await this.storage.getCurrentAntigravityAccount();
-      if (!current || !current.email || !this.storage.isValidEmail(current.email) || !current.accessToken) {
-        vscode.window.showWarningMessage('No active Antigravity session with valid access token found in IDE.');
-        return null;
-      }
-
-      const existingTokens = await this.storage.getAccountTokens(current.email);
-      const tokens: OAuthTokens = {
-        accessToken: current.accessToken,
-        refreshToken: current.refreshToken || existingTokens?.refreshToken,
-        expiresAt: Date.now() + 3600 * 1000
-      };
-
-      await this.storage.saveAccountTokens(current.email, tokens);
-
-      const accounts = this.ctx.getAccounts();
-      const existingIdx = accounts.findIndex((a) => a.email === current.email);
-      let account: AccountInfo;
-
-      if (existingIdx >= 0) {
-        account = {
-          ...accounts[existingIdx],
-          name: current.name || accounts[existingIdx].name,
-          avatarUrl: current.avatarUrl || accounts[existingIdx].avatarUrl,
-          status: 'healthy',
-          needsReauth: false,
-          hasRequiredScopes: true,
-          missingScopes: undefined,
-          isBanned: false,
-          statusMessage: undefined,
-          isActive: true,
-          lastUsedAt: new Date().toISOString()
-        };
-        accounts[existingIdx] = account;
-      } else {
-        account = {
-          id: Buffer.from(current.email).toString('base64').substring(0, 16),
-          email: current.email,
-          name: current.name,
-          avatarUrl: current.avatarUrl,
-          isActive: true,
-          addedAt: new Date().toISOString(),
-          status: 'healthy',
-          isBanned: false,
-          statusMessage: undefined,
-          quotas: [],
-          averageQuotaPercentage: undefined,
-          hasWeeklyQuota: false,
-          has5HourQuota: false,
-          accountType: 'Standard Free',
-          tierBadge: 'STANDARD FREE'
-        };
-        accounts.push(account);
-      }
-
-      // Set other accounts isActive = false
-      const updated = accounts.map((a) => ({
-        ...a,
-        isActive: a.email === current.email
-      }));
-      this.ctx.setAccounts(updated);
-      this.ctx.setActiveEmail(current.email);
-
-      await this.storage.saveAccounts(updated);
-      if (existingIdx >= 0) {
-        vscode.window.showInformationMessage(`Account ${current.email} is already in the list.`);
-      } else {
-        vscode.window.showInformationMessage(`Successfully imported new account ${current.email} from Antigravity IDE!`);
-      }
-      this.ctx.notifyStateChange();
-
-      await this.ctx.refreshAccountQuota(current.email, true).catch(() => {});
-      return account;
-    } finally {
-      this.isImporting = false;
     }
   }
 
@@ -436,7 +409,7 @@ export class AccountLifecycle {
           email: userInfo.email,
           name: userInfo.name,
           avatarUrl: userInfo.avatarUrl,
-          isActive: accounts.length === 0,
+          isActive: false,
           addedAt: new Date().toISOString(),
           status: 'healthy',
           needsReauth: false,
@@ -456,9 +429,7 @@ export class AccountLifecycle {
 
       await this.storage.saveAccounts(accounts);
       this.storage.broadcastOAuthCompleted(userInfo.email);
-      if (account.isActive) {
-        await this.ctx.switchAccount(account.email);
-      }
+      await this.refreshIdeHintFromLiveState();
 
       vscode.window.showInformationMessage(`Added account ${userInfo.email} to Antigravity Swap!`);
       this.ctx.notifyStateChange();
@@ -503,7 +474,7 @@ export class AccountLifecycle {
         id: Buffer.from(email).toString('base64').substring(0, 16),
         email,
         name: name || email.split('@')[0],
-        isActive: accounts.length === 0,
+        isActive: false,
         addedAt: new Date().toISOString(),
         status: 'healthy',
         isBanned: false,
@@ -517,6 +488,7 @@ export class AccountLifecycle {
     }
 
     await this.storage.saveAccounts(accounts);
+    await this.refreshIdeHintFromLiveState();
     vscode.window.showInformationMessage(`Account ${email} saved successfully!`);
     this.ctx.notifyStateChange();
     await this.ctx.refreshAccountQuota(email, true).catch(() => {});
@@ -586,61 +558,5 @@ export class AccountLifecycle {
       vscode.window.showInformationMessage(`Removed ${emails.length} account(s).`);
     }
     this.ctx.notifyStateChange();
-  }
-
-  /**
-   * Auto-discovers existing accounts on local machine and adds them.
-   */
-  public async importDetectedAccounts(): Promise<number> {
-    const discovered = await this.storage.discoverExistingAccounts();
-    let addedCount = 0;
-
-    const currentSession = await this.storage.getCurrentAntigravityAccount();
-    const accounts = this.ctx.getAccounts();
-
-    for (const disc of discovered) {
-      const exists = accounts.find((a) => a.email === disc.email);
-      const isCurrentSession = currentSession?.email === disc.email;
-      const hasToken = !!disc.accessToken;
-
-      if (!exists) {
-        accounts.push({
-          id: Buffer.from(disc.email).toString('base64').substring(0, 16),
-          email: disc.email,
-          name: disc.name,
-          avatarUrl: disc.avatarUrl,
-          isActive: isCurrentSession,
-          addedAt: new Date().toISOString(),
-          status: hasToken ? 'healthy' : 'auth_failed',
-          statusMessage: hasToken ? 'Discovered' : 'Click Re-login to authenticate',
-          isBanned: false,
-          quotas: [],
-          averageQuotaPercentage: undefined,
-          hasWeeklyQuota: false,
-          has5HourQuota: false,
-          accountType: 'Standard Free',
-          tierBadge: 'STANDARD FREE'
-        });
-        addedCount++;
-
-        if (disc.accessToken) {
-          await this.storage.saveAccountTokens(disc.email, {
-            accessToken: disc.accessToken,
-            refreshToken: disc.refreshToken
-          });
-        }
-      }
-    }
-
-    if (addedCount > 0) {
-      if (currentSession?.email) {
-        this.ctx.setActiveEmail(currentSession.email);
-        await this.storage.setActiveAccountEmail(currentSession.email);
-      }
-      await this.storage.saveAccounts(accounts);
-      this.ctx.notifyStateChange();
-    }
-
-    return addedCount;
   }
 }

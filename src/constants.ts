@@ -19,6 +19,13 @@ export const OAUTH_CONFIG = {
     'https://www.googleapis.com/auth/cclog',
     'https://www.googleapis.com/auth/experimentsandconfigs',
     'https://www.googleapis.com/auth/aicode'
+  ],
+  IDE_REQUIRED_SCOPES: [
+    'https://www.googleapis.com/auth/cloud-platform',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/cclog',
+    'https://www.googleapis.com/auth/experimentsandconfigs'
   ]
 } as const;
 
@@ -96,6 +103,9 @@ export const CONFIG_KEYS = {
  */
 export const EXTENSION_DEFAULTS = {
   DEFAULT_HEARTBEAT_SECONDS: 30,
+  IDE_SESSION_POLL_INTERVAL_MS: 2500,
+  IDE_PASSIVE_QUOTA_POLL_MS: 5000,
+  ACTIVE_FORCE_REFRESH_THRESHOLD_MS: 20000,
   DEFAULT_AUTO_SWITCH_ENABLED: false,
   DEFAULT_LOW_QUOTA_THRESHOLD_PERCENT: 5,
   DEFAULT_AUTO_SWITCH_TARGET: 'gemini',

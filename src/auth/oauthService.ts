@@ -25,7 +25,7 @@ export interface ScopeVerificationResult {
 
 export function checkMissingScopes(
   grantedScopes: string[],
-  requiredScopes: readonly string[] = OAUTH_CONFIG.SCOPES
+  requiredScopes: readonly string[] = OAUTH_CONFIG.IDE_REQUIRED_SCOPES
 ): string[] {
   if (!grantedScopes || grantedScopes.length === 0) {
     return [...requiredScopes];
@@ -550,7 +550,7 @@ export class OAuthService {
               resolve({
                 valid: false,
                 scopes: [],
-                missingScopes: [...OAUTH_CONFIG.SCOPES],
+                missingScopes: [...OAUTH_CONFIG.IDE_REQUIRED_SCOPES],
                 hasRequiredScopes: false,
                 hasAiCode: false
               });
@@ -559,7 +559,7 @@ export class OAuthService {
             resolve({
               valid: false,
               scopes: [],
-              missingScopes: [...OAUTH_CONFIG.SCOPES],
+              missingScopes: [...OAUTH_CONFIG.IDE_REQUIRED_SCOPES],
               hasRequiredScopes: false,
               hasAiCode: false
             });
@@ -570,7 +570,7 @@ export class OAuthService {
       req.on('error', () => resolve({
         valid: false,
         scopes: [],
-        missingScopes: [...OAUTH_CONFIG.SCOPES],
+        missingScopes: [...OAUTH_CONFIG.IDE_REQUIRED_SCOPES],
         hasRequiredScopes: false,
         hasAiCode: false
       }));
@@ -579,7 +579,7 @@ export class OAuthService {
         resolve({
           valid: false,
           scopes: [],
-          missingScopes: [...OAUTH_CONFIG.SCOPES],
+          missingScopes: [...OAUTH_CONFIG.IDE_REQUIRED_SCOPES],
           hasRequiredScopes: false,
           hasAiCode: false
         });

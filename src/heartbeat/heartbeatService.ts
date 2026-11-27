@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import { AccountService } from '../account';
 import { HeartbeatInfo } from '../types';
+import { EXTENSION_DEFAULTS } from '../constants';
 
 export class HeartbeatService implements vscode.Disposable {
   private timer?: NodeJS.Timeout;
+  private ideSessionTimer?: NodeJS.Timeout;
+  private idePollInFlight = false;
   private intervalSeconds = 30;
   private isRunning = false;
   private lastTick: string = new Date().toISOString();
@@ -12,7 +15,10 @@ export class HeartbeatService implements vscode.Disposable {
 
   constructor(private readonly accountService: AccountService) {}
 
-  public start(intervalSeconds = 30): void {
+  public start(
+    intervalSeconds = 30,
+    ideSessionPollMs = EXTENSION_DEFAULTS.IDE_SESSION_POLL_INTERVAL_MS
+  ): void {
     this.intervalSeconds = intervalSeconds;
     this.stop();
     this.isRunning = true;
@@ -25,6 +31,21 @@ export class HeartbeatService implements vscode.Disposable {
     this.timer = setInterval(() => {
       this.tick();
     }, this.intervalSeconds * 1000);
+
+    // Lightweight local RPC poll (~6ms, zero network/Powershell overhead) to catch IDE sign-out / external login within ~2.5s
+    if (ideSessionPollMs > 0) {
+      this.ideSessionTimer = setInterval(async () => {
+        if (this.idePollInFlight) return;
+        this.idePollInFlight = true;
+        try {
+          await this.accountService.pollIdeSessionFast();
+        } catch {
+          // Silently ignore transient local RPC errors during fast poll
+        } finally {
+          this.idePollInFlight = false;
+        }
+      }, ideSessionPollMs);
+    }
   }
 
   public stop(): void {
@@ -32,6 +53,11 @@ export class HeartbeatService implements vscode.Disposable {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    if (this.ideSessionTimer) {
+      clearInterval(this.ideSessionTimer);
+      this.ideSessionTimer = undefined;
+    }
+    this.idePollInFlight = false;
     this.isRunning = false;
   }
 

@@ -150,7 +150,8 @@ export async function writeAntigravityKeyringToken(email: string, tokens: OAuthT
       expires_in: expiresInSec
     },
     auth_method: 'consumer',
-    id_token_email: email
+    id_token_email: email,
+    writer_id: `antigravity-swap-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   };
 
   const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64');
@@ -160,16 +161,7 @@ export async function writeAntigravityKeyringToken(email: string, tokens: OAuthT
       $ErrorActionPreference = 'Stop'
       try {
         Add-Type -TypeDefinition $env:AGY_CSHARP_CODE
-        $existing = [AgyCredManager]::ReadGeneric('${KEYRING_TARGET}')
         $newObj = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:AGY_CRED_B64)) | ConvertFrom-Json
-        if ($existing) {
-          try {
-            $oldObj = $existing | ConvertFrom-Json
-            if ($oldObj.writer_id -and -not $newObj.writer_id) {
-              $newObj | Add-Member -NotePropertyName 'writer_id' -NotePropertyValue $oldObj.writer_id -Force
-            }
-          } catch {}
-        }
         if ($newObj.PSObject.Properties['aicode_scope_sign_out_attempted_at']) {
           $newObj.PSObject.Properties.Remove('aicode_scope_sign_out_attempted_at')
         }

@@ -250,19 +250,6 @@ export async function activate(context: vscode.ExtensionContext) {
       );
     }),
 
-    vscode.commands.registerCommand('antigravitySwap.importExistingAccounts', async () => {
-      const count = await accountService.importDetectedAccounts();
-      if (count > 0) {
-        vscode.window.showInformationMessage(`Imported ${count} previously active account(s)!`);
-      } else {
-        vscode.window.showInformationMessage('No new accounts detected on local machine.');
-      }
-    }),
-
-    vscode.commands.registerCommand('antigravitySwap.importCurrentAntigravity', async () => {
-      await accountService.importCurrentAntigravityAccount();
-    }),
-
     vscode.commands.registerCommand('antigravitySwap.popOutDashboard', () => {
       webviewProvider.openDetachedPanel();
     }),

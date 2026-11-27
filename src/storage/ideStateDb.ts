@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as cp from 'child_process';
 import { AccountInfo, OAuthTokens } from '../types';
 import { createUnifiedOAuthToken, patchUnifiedStateSyncTopicUserStatus } from './protoUtils';
+import { getAntigravityStateDbPath, isGcpTosEmail } from './accountDiscovery';
 
 export class IdeStateDbService {
   public getSqliteDb(dbPath: string): any {
@@ -69,15 +70,7 @@ export class IdeStateDbService {
     tokens: OAuthTokens,
     allAccounts: AccountInfo[]
   ): Promise<boolean> {
-    const stateDbPath = path.join(
-      os.homedir(),
-      'AppData',
-      'Roaming',
-      'Antigravity IDE',
-      'User',
-      'globalStorage',
-      'state.vscdb'
-    );
+    const stateDbPath = getAntigravityStateDbPath();
 
     if (!fs.existsSync(stateDbPath)) {
       vscode.window.showErrorMessage('Antigravity IDE state database not found.');
@@ -363,15 +356,7 @@ main().catch(() => process.exit(1));
    * to guarantee that cold-boot / window-reloads retain the switched account.
    */
   public async syncToIdeStateDb(account: AccountInfo, tokens: OAuthTokens, _skipUssKeys = false): Promise<boolean> {
-    const stateDbPath = path.join(
-      os.homedir(),
-      'AppData',
-      'Roaming',
-      'Antigravity IDE',
-      'User',
-      'globalStorage',
-      'state.vscdb'
-    );
+    const stateDbPath = getAntigravityStateDbPath();
 
     if (!fs.existsSync(stateDbPath)) {
       return false;
@@ -379,12 +364,14 @@ main().catch(() => process.exit(1));
 
     try {
       if (tokens.accessToken) {
+        const isGcpTos = isGcpTosEmail(account.email);
+
         // 1. Sync antigravityUnifiedStateSync.oauthToken with both token and signedIn state
         const unifiedOAuth = createUnifiedOAuthToken(
           tokens.accessToken,
           tokens.refreshToken || '',
           Math.floor((tokens.expiresAt || Date.now() + 3600000) / 1000),
-          false,
+          isGcpTos,
           undefined,
           account.email
         );
@@ -398,7 +385,7 @@ main().catch(() => process.exit(1));
             if (existingRow && existingRow.value) {
               if (existingRow.value.length > 250) {
                 const topicBuf = Buffer.from(existingRow.value, 'base64');
-                const patchedTopic = patchUnifiedStateSyncTopicUserStatus(topicBuf, account.email, account.name, account.avatarUrl);
+                const patchedTopic = patchUnifiedStateSyncTopicUserStatus(topicBuf, account.email, account.name, account.avatarUrl, 2);
                 if (patchedTopic) {
                   nativeDb.prepare('UPDATE ItemTable SET value = ? WHERE key = ?').run(patchedTopic, 'antigravityUnifiedStateSync.userStatus');
                   console.log(`[Antigravity Swap] Patched state.vscdb userStatus for ${account.email} preserving models`);
@@ -422,38 +409,40 @@ main().catch(() => process.exit(1));
         });
         await this.execSqliteUpsert(stateDbPath, 'antigravityAuthStatus', authStatus);
 
-        // 4. Update Antigravity IDE v2.6+ core extension state ('google.google-antigravity')
+        // 4. Update Antigravity IDE core extension onboarding state across known extension IDs
         try {
           const nativeDb = this.getSqliteDb(stateDbPath);
           if (nativeDb) {
-            const row = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get('google.google-antigravity');
-            let agyState: any = {};
-            if (row?.value) {
-              try {
-                agyState = JSON.parse(row.value);
-              } catch {}
-            }
-            if (!agyState['antigravity-storage'] || typeof agyState['antigravity-storage'] !== 'object') {
-              agyState['antigravity-storage'] = {};
-            }
-            const isGcpTos =
-              !account.email.toLowerCase().endsWith('@gmail.com') &&
-              !account.email.toLowerCase().endsWith('@googlemail.com') &&
-              !account.email.toLowerCase().endsWith('@example.com');
             const gcpTosStr = isGcpTos ? 'true' : 'false';
-            agyState['antigravity-storage']['agy.onboarding.lastLoginUsername'] = account.email;
-            agyState['antigravity-storage']['agy.onboarding.lastLoginIsGcpTos'] = gcpTosStr;
-            agyState['antigravity-storage']['agy.onboarding.lastLoginStrategy'] = 'google';
-            agyState['antigravity-storage']['jetski.onboarding.lastLoginUsername'] = account.email;
-            agyState['antigravity-storage']['jetski.onboarding.lastLoginIsGcpTos'] = gcpTosStr;
-            agyState['antigravity-storage']['jetski.onboarding.lastLoginStrategy'] = 'google';
-            nativeDb.prepare(
+            const upsertStmt = nativeDb.prepare(
               'INSERT INTO ItemTable (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
-            ).run('google.google-antigravity', JSON.stringify(agyState));
+            );
+            for (const extId of ['google.google-antigravity', 'google.antigravity']) {
+              const row = nativeDb.prepare('SELECT value FROM ItemTable WHERE key = ?').get(extId);
+              if (extId === 'google.antigravity' && !row) {
+                continue;
+              }
+              let agyState: any = {};
+              if (row?.value) {
+                try {
+                  agyState = JSON.parse(row.value);
+                } catch {}
+              }
+              if (!agyState['antigravity-storage'] || typeof agyState['antigravity-storage'] !== 'object') {
+                agyState['antigravity-storage'] = {};
+              }
+              agyState['antigravity-storage']['agy.onboarding.lastLoginUsername'] = account.email;
+              agyState['antigravity-storage']['agy.onboarding.lastLoginIsGcpTos'] = gcpTosStr;
+              agyState['antigravity-storage']['agy.onboarding.lastLoginStrategy'] = 'google';
+              agyState['antigravity-storage']['jetski.onboarding.lastLoginUsername'] = account.email;
+              agyState['antigravity-storage']['jetski.onboarding.lastLoginIsGcpTos'] = gcpTosStr;
+              agyState['antigravity-storage']['jetski.onboarding.lastLoginStrategy'] = 'google';
+              upsertStmt.run(extId, JSON.stringify(agyState));
+            }
             nativeDb.close();
           }
         } catch (agyDbErr) {
-          console.warn('[Antigravity Swap] google.google-antigravity sync warning:', agyDbErr);
+          console.warn('[Antigravity Swap] core extension state sync warning:', agyDbErr);
         }
       }
 

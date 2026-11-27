@@ -1,2 +1,2 @@
 export { StorageService } from './storageService';
-export type { DiscoveredAccount } from './accountDiscovery';
+export type { DiscoveredAccount, LiveIdeAuthState } from './accountDiscovery';

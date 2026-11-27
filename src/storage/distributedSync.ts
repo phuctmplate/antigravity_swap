@@ -38,6 +38,67 @@ export class DistributedSyncManager {
     return path.join(dir, '.switch-event.json');
   }
 
+  public getSwitchLockFilePath(): string {
+    const dir = path.join(os.homedir(), '.antigravity-swap');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, '.switch-lock.json');
+  }
+
+  /**
+   * Signals to other open IDE instances that a switch mutation + IDE verification
+   * is currently in flight, preventing fast session polls from clobbering transitional IDE states.
+   */
+  public broadcastSwitchStarted(email: string): void {
+    try {
+      const lockFile = this.getSwitchLockFilePath();
+      const payload = {
+        email,
+        pid: process.pid,
+        timestamp: Date.now()
+      };
+      fs.writeFileSync(lockFile, JSON.stringify(payload), 'utf-8');
+    } catch {}
+  }
+
+  /**
+   * Clears the cross-window switch-in-progress lock if owned by the current process.
+   */
+  public clearSwitchInProgress(): void {
+    try {
+      const lockFile = this.getSwitchLockFilePath();
+      if (!fs.existsSync(lockFile)) return;
+      const raw = fs.readFileSync(lockFile, 'utf-8');
+      const data = JSON.parse(raw);
+      if (!data || data.pid === process.pid) {
+        fs.unlinkSync(lockFile);
+      }
+    } catch {}
+  }
+
+  /**
+   * Returns true if any IDE instance is currently executing a switch within windowMs.
+   */
+  public hasSwitchInProgress(windowMs = 15000): boolean {
+    try {
+      const lockFile = this.getSwitchLockFilePath();
+      if (!fs.existsSync(lockFile)) return false;
+      const raw = fs.readFileSync(lockFile, 'utf-8');
+      const data = JSON.parse(raw);
+      return Boolean(
+        data &&
+        typeof data === 'object' &&
+        typeof data.timestamp === 'number' &&
+        Date.now() - data.timestamp < windowMs
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Broadcasts to other IDE windows/instances that an OAuth login completed.
    */
@@ -89,6 +150,26 @@ export class DistributedSyncManager {
         }
       }
     } catch {}
+  }
+
+  /**
+   * Returns true if any IDE instance broadcast a switch event within the given time window.
+   */
+  public hasRecentSwitchEvent(windowMs = 15000): boolean {
+    try {
+      const eventFile = this.getSwitchEventFilePath();
+      if (!fs.existsSync(eventFile)) return false;
+      const raw = fs.readFileSync(eventFile, 'utf-8');
+      const data = JSON.parse(raw);
+      return Boolean(
+        data &&
+        typeof data === 'object' &&
+        typeof data.timestamp === 'number' &&
+        Date.now() - data.timestamp < windowMs
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**

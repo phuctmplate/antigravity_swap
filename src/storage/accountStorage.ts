@@ -162,7 +162,10 @@ export class AccountStorage {
         }
 
         const isHealthy = (gWk === undefined || gWk > 0) && (cWk === undefined || cWk > 0) && (g5h === undefined || g5h > 0) && (c5h === undefined || c5h > 0);
-        if (isHealthy && (statusMessage || '').includes('depleted')) {
+        if (
+          statusMessage &&
+          (statusMessage.includes('depleted') || statusMessage.toLowerCase().includes('available'))
+        ) {
           statusMessage = undefined;
         }
 
