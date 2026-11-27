@@ -3,7 +3,7 @@ import { getVsCodeApi } from "../vscode";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import { toast } from "sonner";
-import { Zap, RotateCw, Plus, ChevronDown } from "lucide-react";
+import { RotateCw, Plus, ChevronDown } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -17,7 +17,6 @@ import {
   DEFAULT_AUTO_SWITCH_TARGET,
   GLOBAL_REFRESH_COOLDOWN_MS,
   OAUTH_COOLDOWN_MS,
-  IMPORT_COOLDOWN_MS,
 } from "../constants";
 
 interface ControllerBarProps {
@@ -110,16 +109,6 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
     }
   };
 
-  const lastImportRef = useRef<number>(0);
-  const handleImport = () => {
-    const now = Date.now();
-    if (now - lastImportRef.current < IMPORT_COOLDOWN_MS) {
-      return;
-    }
-    lastImportRef.current = now;
-    vscode.postMessage({ command: "importCurrentAntigravity" });
-  };
-
   const handleRefresh = () => {
     const now = Date.now();
     const elapsed = now - lastRefreshRef.current;
@@ -166,19 +155,6 @@ export const ControllerBar: React.FC<ControllerBarProps> = ({
       >
         <Plus className="w-3.5 h-3.5 shrink-0" />
         <span className="hidden min-[610px]:inline">Google Sign In</span>
-      </Button>
-
-      {/* Import Antigravity Button */}
-      <Button
-        onClick={handleImport}
-        size="sm"
-        variant="secondary"
-        title="Import account from active Antigravity IDE session"
-        aria-label="Import account from active IDE"
-        className="px-2 min-[610px]:px-2.5 shrink-0"
-      >
-        <Zap className="w-3.5 h-3.5 shrink-0" />
-        <span className="hidden min-[610px]:inline">Import</span>
       </Button>
 
       {/* Refresh Quotas Button */}

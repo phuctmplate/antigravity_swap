@@ -57,12 +57,16 @@ export class StatusBarService implements vscode.Disposable {
         this.cachedIdeQuota = null;
         return;
       }
+      if (this.cachedIdeQuota && this.cachedIdeQuota.email.toLowerCase() !== active.email.toLowerCase()) {
+        this.cachedIdeQuota = null;
+      }
       // Focused window refreshes every 25s; unfocused windows wait up to 35s so they naturally reuse focused cache
       const isFocused = vscode.window.state?.focused !== false;
       const cacheTtlMs = isFocused ? 25000 : 35000;
       const ideRes = await this.accountService.getActiveAccountIdeQuota(2500, {
         expectedEmail: active.email,
-        cacheTtlMs
+        cacheTtlMs,
+        forceRefresh: false
       });
       if (ideRes && ideRes.email.toLowerCase() === active.email.toLowerCase()) {
         const changed =
@@ -91,9 +95,12 @@ export class StatusBarService implements vscode.Disposable {
     const overallPct = overall.overallPercentage ?? 0;
 
     if (accounts.length === 0 || !active) {
+      const ideEmail = this.accountService.getIdeSessionEmail()?.toLowerCase();
+      const ideMatch = ideEmail ? accounts.find((a) => a.email.toLowerCase() === ideEmail) : undefined;
       this.statusBarItem.text = "$(account) AGY Swap";
-      this.statusBarItem.tooltip =
-        "Antigravity Swap: No active account. Click to connect or switch.";
+      this.statusBarItem.tooltip = ideMatch
+        ? `Antigravity Swap: Detected ${ideMatch.email} signed in on IDE. Click to switch & take control.`
+        : "Antigravity Swap: No active account. Click to connect or switch.";
       this.statusBarItem.backgroundColor = undefined;
       return;
     }
@@ -102,18 +109,23 @@ export class StatusBarService implements vscode.Disposable {
       ? active.name.split(" ")[0]
       : active.email.split("@")[0];
 
-    if (active.status === "auth_failed") {
-      this.statusBarItem.text = `$(warning) ${displayName}: Auth Failed | Pool Instant: ${instantPct}%`;
-      this.statusBarItem.tooltip = `Antigravity Swap: Authentication failed for ${active.email}. Click to re-login or switch.`;
+    if (active.status === "auth_failed" || active.needsReauth) {
+      this.statusBarItem.text = `$(warning) ${displayName}: Not Verified | Pool Instant: ${instantPct}%`;
+      this.statusBarItem.tooltip = `Antigravity Swap: Session not verified for ${active.email}. Click to re-login or switch.`;
       this.statusBarItem.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.warningBackground",
       );
       return;
     }
 
+    const activeRefreshedMs = active.lastRefreshedAt ? new Date(active.lastRefreshedAt).getTime() : 0;
+    const ideFetchedMs = this.cachedIdeQuota?.fetchedAt ?? 0;
     const hasIdeQuota =
-      Boolean(this.cachedIdeQuota &&
-      this.cachedIdeQuota.email.toLowerCase() === active.email.toLowerCase());
+      Boolean(
+        this.cachedIdeQuota &&
+        this.cachedIdeQuota.email.toLowerCase() === active.email.toLowerCase() &&
+        (ideFetchedMs === 0 || ideFetchedMs >= activeRefreshedMs)
+      );
 
     const geminiPct = hasIdeQuota
       ? this.cachedIdeQuota!.geminiInstantPercentage
@@ -322,8 +334,7 @@ export class StatusBarService implements vscode.Disposable {
           geminiWeekly?.percentage ?? 100,
         );
         const gIcon = gMin < 20 ? "$(warning)" : "$(check)";
-        const gLabel = isUltra ? "Gemini (incl. Argon)" : "Gemini";
-        md.appendMarkdown(`* ${gIcon} **${gLabel}:** ${parts.join(" · ")}\n\n`);
+        md.appendMarkdown(`* ${gIcon} **Gemini:** ${parts.join(" · ")}\n\n`);
       }
 
       if (isPro && argonWeekly && !argonWeekly.disabled && typeof argonWeekly.percentage === "number") {
@@ -404,26 +415,30 @@ export class StatusBarService implements vscode.Disposable {
       kind: vscode.QuickPickItemKind.Separator,
     });
 
+    const ideEmail = this.accountService.getIdeSessionEmail()?.toLowerCase();
     for (const acc of accounts) {
       const isAct = acc.email === active?.email && acc.isActive;
+      const isIdeSession = !active && Boolean(ideEmail && acc.email.toLowerCase() === ideEmail);
       let statusIcon = isAct ? "$(check)" : "$(account)";
-      let statusExtra = "";
+      let statusExtra = isIdeSession ? " [IN IDE]" : "";
       if (acc.isBanned) {
         statusIcon = "$(error)";
         statusExtra = " [BANNED]";
-      } else if (acc.status === "auth_failed") {
+      } else if (acc.status === "auth_failed" || acc.needsReauth) {
         statusIcon = "$(warning)";
-        statusExtra = " [AUTH FAILED]";
+        statusExtra = " [NOT VERIFIED]";
       }
 
       const quotaPct = acc.averageQuotaPercentage ?? 0;
       const detailText = acc.isBanned
         ? "Account banned/disabled by Google TOS"
-        : acc.status === "auth_failed"
-          ? "Credentials expired. Click to re-login."
+        : (acc.status === "auth_failed" || acc.needsReauth)
+          ? "Session not verified or expired. Click to re-login."
           : isAct
             ? "CURRENTLY ACTIVE"
-            : "Click to switch without reloading";
+            : isIdeSession
+              ? "Detected IDE session. Click to switch & take control."
+              : "Click to switch without reloading";
 
       const accInstant = this.accountService.getAccountTargetQuota(acc, "instant");
       items.push({
@@ -431,7 +446,7 @@ export class StatusBarService implements vscode.Disposable {
         description: `${acc.email} — Account Instant Quota: ${acc.isBanned ? "0%" : accInstant + "%"} · Total: ${acc.isBanned ? "0%" : quotaPct + "%"}`,
         detail: detailText,
         buttons: [
-          ...(acc.isBanned || acc.status === "auth_failed"
+          ...(acc.isBanned || acc.status === "auth_failed" || acc.needsReauth
             ? [
                 {
                   iconPath: new vscode.ThemeIcon("key"),
@@ -455,11 +470,6 @@ export class StatusBarService implements vscode.Disposable {
     items.push({
       label: "Actions",
       kind: vscode.QuickPickItemKind.Separator,
-    });
-
-    items.push({
-      label: "$(cloud-download) Import Current Antigravity Session",
-      description: "Import the active logged-in account from Antigravity IDE",
     });
 
     items.push({
@@ -512,9 +522,7 @@ export class StatusBarService implements vscode.Disposable {
       quickPick.hide();
       const chosen = selection[0];
 
-      if (chosen.label.includes("Import Current Antigravity Session")) {
-        await this.accountService.importCurrentAntigravityAccount();
-      } else if (chosen.label.includes("Add Account (Google OAuth)")) {
+      if (chosen.label.includes("Add Account (Google OAuth)")) {
         await this.accountService.addAccountViaOAuth();
       } else if (chosen.label.includes("Add Account (Manual Token)")) {
         await vscode.commands.executeCommand(

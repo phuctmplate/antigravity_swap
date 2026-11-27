@@ -102,6 +102,8 @@ export type AutoSwitchTarget = 'instant' | 'gemini' | 'claude';
 export interface WebviewState {
   accounts: Account[];
   activeAccount: Account | null;
+  ideSessionEmail?: string | null;
+  switchingEmail?: string | null;
   overall: OverallQuotaSummary;
   heartbeat?: {
     lastHeartbeat: string;

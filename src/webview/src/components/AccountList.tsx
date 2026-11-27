@@ -36,12 +36,12 @@ import { cn } from "../lib/utils";
 import {
   ACCOUNT_REFRESH_COOLDOWN_MS,
   OAUTH_COOLDOWN_MS,
-  IMPORT_COOLDOWN_MS,
 } from "../constants";
 
 interface AccountListProps {
   accounts: Account[];
   activeAccount: Account | null;
+  ideSessionEmail?: string | null;
   selectedEmail: string | null;
   onSelectAccount: (email: string) => void;
   switchingEmail?: string | null;
@@ -52,6 +52,7 @@ interface AccountListProps {
 export const AccountList: React.FC<AccountListProps> = ({
   accounts,
   activeAccount,
+  ideSessionEmail,
   selectedEmail,
   onSelectAccount,
   switchingEmail,
@@ -115,16 +116,6 @@ export const AccountList: React.FC<AccountListProps> = ({
       setIsBulkRefreshing(false);
     }
   }, [accounts]);
-
-  const lastImportRef = useRef<number>(0);
-  const handleImport = () => {
-    const now = Date.now();
-    if (now - lastImportRef.current < IMPORT_COOLDOWN_MS) {
-      return;
-    }
-    lastImportRef.current = now;
-    vscode.postMessage({ command: "importCurrentAntigravity" });
-  };
 
   const lastSignInRef = useRef<number>(0);
   const handleSignIn = () => {
@@ -218,17 +209,30 @@ export const AccountList: React.FC<AccountListProps> = ({
     return acc.isActive || (!!activeAccount && activeAccount.email === acc.email);
   };
 
+  const isAccIdeSession = (acc: Account): boolean => {
+    return (
+      !activeAccount &&
+      !isAccActive(acc) &&
+      Boolean(ideSessionEmail && acc.email.toLowerCase() === ideSessionEmail.toLowerCase())
+    );
+  };
+
   const filteredAccounts = accounts.filter((acc) => {
     if (filterType === "all") return true;
     return getAccountCategory(acc) === filterType;
   });
 
   const sortedAccounts = [...filteredAccounts].sort((a, b) => {
-    // Automatically sort active account to the very top without breaking existing sort logic
+    // Automatically sort active account (or detected IDE session when unlinked) to the very top
     const aActive = isAccActive(a);
     const bActive = isAccActive(b);
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
+
+    const aIde = isAccIdeSession(a);
+    const bIde = isAccIdeSession(b);
+    if (aIde && !bIde) return -1;
+    if (!aIde && bIde) return 1;
 
     if (sortMode === "name-asc") {
       const nameA = a.name || a.email;
@@ -822,7 +826,7 @@ export const AccountList: React.FC<AccountListProps> = ({
           <CardContent className="flex flex-col items-center justify-center p-6 text-center">
             <Zap className="w-8 h-8 text-primary mb-2" />
             <div className="text-xs text-foreground font-medium mb-3">
-              No accounts connected. Import from current Antigravity or sign in!
+              No accounts connected. Sign in with Google to add an account!
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
               {/* Google Sign In Button */}
@@ -834,17 +838,6 @@ export const AccountList: React.FC<AccountListProps> = ({
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Google Sign In</span>
-              </Button>
-
-              {/* Import Antigravity Button */}
-              <Button
-                onClick={handleImport}
-                size="sm"
-                variant="secondary"
-                title="Import account from active Antigravity IDE session"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Import</span>
               </Button>
             </div>
           </CardContent>
@@ -876,6 +869,7 @@ export const AccountList: React.FC<AccountListProps> = ({
                 key={acc.email}
                 account={acc}
                 isActive={!!activeAccount && activeAccount.email === acc.email}
+                isIdeSession={isAccIdeSession(acc)}
                 isSelected={selectedEmail === acc.email}
                 isMultiSelectMode={isMultiSelectMode}
                 isChecked={checkedEmails.has(acc.email)}

@@ -109,8 +109,13 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'switchAccount': {
-          const ok = await this.accountService.switchAccount(data.email, data.isManual === true, true);
-          this.updateWebview();
+          let ok = false;
+          try {
+            ok = await this.accountService.switchAccount(data.email, data.isManual === true, true);
+          } finally {
+            this.postMessageToAll({ type: 'switchComplete', email: data.email });
+            this.updateWebview();
+          }
           if (ok) {
             this.showToast(`Switched to: ${data.email}!`, 'success');
           } else {
@@ -125,7 +130,17 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
           const ok = await this.accountService.reloginAccount(data.email, true);
           this.updateWebview();
           if (ok) {
-            this.showToast(`Re-authenticated ${data.email} successfully!`, 'success');
+            const acc = this.accountService.getAccounts().find((a) => a.email === data.email);
+            if (acc?.isActive) {
+              this.showToast(`Re-authenticated and switched to ${data.email}!`, 'success');
+            } else if (acc?.status === 'auth_failed' || acc?.needsReauth) {
+              this.showToast(
+                acc.statusMessage || `Re-authenticated ${data.email}, but IDE rejected the session.`,
+                'error'
+              );
+            } else {
+              this.showToast(`Re-authenticated ${data.email}. Verified and ready in pool.`, 'success');
+            }
           } else {
             this.showToast(`Re-authentication cancelled or failed for ${data.email}.`, 'warning');
           }
@@ -175,9 +190,6 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
         }
         case 'addOAuth':
           await vscode.commands.executeCommand('antigravitySwap.addAccount');
-          break;
-        case 'importCurrentAntigravity':
-          await this.accountService.importCurrentAntigravityAccount();
           break;
         case 'addManual':
           await vscode.commands.executeCommand('antigravitySwap.addAccountManual');
@@ -244,18 +256,21 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private postMessageToAll(message: any): void {
+    if (this._view) {
+      this._view.webview.postMessage(message);
+    }
+    if (this._panel) {
+      this._panel.webview.postMessage(message);
+    }
+  }
+
   public showToast(message: string, level: 'info' | 'success' | 'warning' | 'error' = 'info'): void {
-    const toastMessage = {
+    this.postMessageToAll({
       type: 'toast',
       message,
       level
-    };
-    if (this._view) {
-      this._view.webview.postMessage(toastMessage);
-    }
-    if (this._panel) {
-      this._panel.webview.postMessage(toastMessage);
-    }
+    });
   }
 
   public updateWebview(): void {
@@ -272,6 +287,8 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       type: 'stateUpdate',
       accounts,
       activeAccount,
+      ideSessionEmail: this.accountService.getIdeSessionEmail() ?? null,
+      switchingEmail: this.accountService.getSwitchingEmail() ?? null,
       overall,
       heartbeat,
       isBackgroundRefreshing: this.accountService.isBackgroundRefreshingState(),
@@ -282,12 +299,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       isLight
     };
 
-    if (this._view) {
-      this._view.webview.postMessage(stateMessage);
-    }
-    if (this._panel) {
-      this._panel.webview.postMessage(stateMessage);
-    }
+    this.postMessageToAll(stateMessage);
   }
 
   public toggleSimulation(): void {
@@ -342,6 +354,8 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
       const initialState = {
         accounts,
         activeAccount,
+        ideSessionEmail: this.accountService.getIdeSessionEmail() ?? null,
+        switchingEmail: this.accountService.getSwitchingEmail() ?? null,
         overall,
         heartbeat,
         autoSwitchEnabled: this.accountService.isAutoSwitchEnabled(),

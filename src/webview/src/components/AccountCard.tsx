@@ -14,6 +14,7 @@ import { toast } from './ui/sonner';
 interface AccountCardProps {
   account: Account;
   isActive: boolean;
+  isIdeSession?: boolean;
   isSelected: boolean;
   isMultiSelectMode?: boolean;
   isChecked?: boolean;
@@ -30,6 +31,7 @@ interface AccountCardProps {
 export const AccountCard: React.FC<AccountCardProps> = ({
   account,
   isActive,
+  isIdeSession = false,
   isSelected,
   isMultiSelectMode = false,
   isChecked = false,
@@ -428,6 +430,11 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                     ACTIVE
                   </Badge>
                 )}
+                {!isActive && isIdeSession && (
+                  <Badge variant="info" className="text-[8px] px-1 py-0 font-bold bg-sky-500/15 text-sky-400 border-sky-500/30">
+                    IN IDE
+                  </Badge>
+                )}
                 {isBanned && (
                   <Badge variant="destructive" className="text-[8px] px-1 py-0 gap-0.5 font-bold">
                     <ShieldAlert className="w-2.5 h-2.5" />
@@ -437,18 +444,26 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 {isAuthFailed && (
                   <Badge variant="warning" className="text-[8px] px-1 py-0 gap-0.5 font-bold bg-amber-500/15 text-amber-400 border-amber-500/30">
                     <AlertTriangle className="w-2.5 h-2.5" />
-                    <span>{account.needsReauth ? 'UNAUTHORIZED' : 'AUTH FAILED'}</span>
+                    <span>NOT VERIFIED</span>
                   </Badge>
                 )}
               </div>
               <div className="text-[10px] text-muted-foreground truncate">{account.email}</div>
               {(() => {
                 if (isBanned || isAuthFailed) return null;
-                const isGeminiHealthy = (geminiInstant != null && geminiInstant > 0) || (geminiWeekly?.percentage != null && geminiWeekly.percentage > 0);
-                const isClaudeHealthy = (claudeInstant != null && claudeInstant > 0) || (claudeWeekly?.percentage != null && claudeWeekly.percentage > 0);
-                const isStaleDepletionMsg = (isGeminiHealthy && isClaudeHealthy) && (account.statusMessage || '').includes('depleted');
-                if (account.statusMessage && !isStaleDepletionMsg) {
+                const msgLower = (account.statusMessage || '').toLowerCase();
+                const isRedundantQuotaMsg =
+                  msgLower.includes('depleted') ||
+                  msgLower.includes('available');
+                if (account.statusMessage && !isRedundantQuotaMsg) {
                   return <div className="text-[10px] text-amber-400 mt-0.5">{account.statusMessage}</div>;
+                }
+                if (!isActive && isIdeSession) {
+                  return (
+                    <div className="text-[10px] text-sky-400 font-medium mt-0.5">
+                      Detected IDE session. Click Switch to take control.
+                    </div>
+                  );
                 }
                 return null;
               })()}
@@ -467,14 +482,12 @@ export const AccountCard: React.FC<AccountCardProps> = ({
             <div className="text-[10px] font-medium text-amber-400 py-1 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
               <span>
-                {account.needsReauth
-                  ? 'Re-authorization required. Click Re-login to continue.'
-                  : 'Authentication required. Click Re-login to authenticate.'}
+                {account.statusMessage || 'Session not verified or expired. Click Re-login to verify.'}
               </span>
             </div>
           ) : (
             <>
-              {/* Group 1: Gemini Models (merged with Argon on Ultra) */}
+              {/* Group 1: Gemini Models */}
               <div className="flex flex-col gap-1 rounded-md bg-accent/25 p-1.5 border border-border/40">
                 <div className="flex items-center justify-between text-[10px]">
                   <span className="font-semibold text-foreground flex items-center gap-1">
@@ -483,11 +496,6 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                   </span>
                   {isFree && (
                     <span className="text-[9px] text-muted-foreground font-medium">Free Tier</span>
-                  )}
-                  {isUltra && (
-                    <span className="text-[9px] text-purple-400/90 font-medium" title="On Ultra plan, Gemini 4 Argon is merged into the Gemini Models bucket">
-                      incl. Argon
-                    </span>
                   )}
                 </div>
 

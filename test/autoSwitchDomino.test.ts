@@ -40,11 +40,21 @@ function createMockAccount(
   id: string,
   email: string,
   name: string,
-  tier: 'PRO' | 'STANDARD FREE',
+  tier: 'PRO' | 'ULTRA' | 'ENTERPRISE' | 'STANDARD FREE',
   geminiQuota: number,
-  isActive = false
+  isActive = false,
+  weeklyQuotaOverride?: number
 ): AccountInfo {
   const isFree = tier === 'STANDARD FREE';
+  const weeklyPct = weeklyQuotaOverride ?? geminiQuota;
+  const accountType =
+    tier === 'ENTERPRISE'
+      ? 'Antigravity Enterprise'
+      : tier === 'ULTRA'
+      ? 'Google AI Ultra'
+      : tier === 'PRO'
+      ? 'Google AI Pro'
+      : 'Standard Free';
   return {
     id,
     email,
@@ -52,12 +62,12 @@ function createMockAccount(
     addedAt: '2026-10-20T00:00:00.000Z',
     isActive,
     status: 'healthy',
-    accountType: isFree ? 'Standard Free' : 'Google AI Pro',
+    accountType,
     tierBadge: tier,
     has5HourQuota: !isFree,
     hasWeeklyQuota: true,
     fiveHourQuotaPercentage: isFree ? undefined : geminiQuota,
-    weeklyQuotaPercentage: geminiQuota,
+    weeklyQuotaPercentage: weeklyPct,
     averageQuotaPercentage: geminiQuota,
     lastRefreshedAt: new Date().toISOString(),
     geminiGroup: {
@@ -74,16 +84,16 @@ function createMockAccount(
         bucketId: 'gemini-weekly',
         displayName: 'Weekly Limit Remaining',
         window: 'weekly',
-        percentage: geminiQuota,
-        remainingFraction: geminiQuota / 100
+        percentage: weeklyPct,
+        remainingFraction: weeklyPct / 100
       },
       buckets: [
         {
           bucketId: 'gemini-weekly',
           displayName: 'Weekly Limit Remaining',
           window: 'weekly',
-          percentage: geminiQuota,
-          remainingFraction: geminiQuota / 100
+          percentage: weeklyPct,
+          remainingFraction: weeklyPct / 100
         }
       ]
     },
@@ -92,8 +102,8 @@ function createMockAccount(
         id: `${id}-pro`,
         displayName: 'Gemini 3.1 Pro',
         groupName: 'Gemini Models',
-        percentage: geminiQuota,
-        remainingFraction: geminiQuota / 100,
+        percentage: weeklyPct,
+        remainingFraction: weeklyPct / 100,
         windowType: 'weekly',
         windowLabel: 'Weekly Plan Quota',
         disabled: false
@@ -300,6 +310,20 @@ test('Candidate Switch Failure Fallback (Max 2 Attempts)', async (t) => {
     const active = mockCtx.getActiveAccount();
     assert.strictEqual(active?.email, 'active@example.com', 'Must stay on current account after 2 failed attempts');
     assert.ok(leaseRenewCalls >= 2, `Expected distributed lease to be renewed at least twice, got ${leaseRenewCalls}`);
+
+    // Subsequent checkAutoSwitch before cooldown or relogin recovery must remain paused and NOT creep onto cand3
+    await autoSwitcher.checkAutoSwitch();
+    assert.deepStrictEqual(attemptsHistory, ['cand1@example.com', 'cand2@example.com'], 'Cycle pause must stop retrying after 2 candidate failures');
+
+    // Recover cand1 (simulating user completing Re-login on cand1): lifts pause and retries cand1
+    autoSwitcher.clearFailedCandidate('cand1@example.com');
+    mockCtx.switchAccount = async (email: string) => {
+      attemptsHistory.push(email);
+      accounts = accounts.map((a) => ({ ...a, isActive: a.email.toLowerCase() === email.toLowerCase() }));
+      return true;
+    };
+    await autoSwitcher.checkAutoSwitch();
+    assert.strictEqual(mockCtx.getActiveAccount()?.email, 'cand1@example.com', 'Recovering cand1 via relogin clears 2-failure pause and allows auto-switch to resume onto cand1');
   });
 
   await t.test('Scenario 3: Secondary IDE Quota Guard protects against stale/misleading API responses', async () => {
@@ -359,4 +383,115 @@ test('Candidate Switch Failure Fallback (Max 2 Attempts)', async (t) => {
     assert.strictEqual(switchedTo, 'cand1@example.com', 'Must switch when BOTH API and IDE confirm low quota');
   });
 });
+
+test('Capacity-Weighted Candidate Selection prioritizes Paid plans over 100% Free plans', async (t) => {
+  const mockStorage: any = {
+    getAutoSwitchEnabled: () => true,
+    getAutoSwitchThreshold: () => 5,
+    getAutoSwitchTarget: () => 'gemini'
+  };
+
+  await t.test('PRO at 25% beats STANDARD FREE at 100% (25.0 vs 10.0 score)', async () => {
+    let accounts: AccountInfo[] = [
+      createMockAccount('active', 'active@example.com', 'Active', 'PRO', 2, true),
+      createMockAccount('free-100', 'free.full@example.com', 'Free Full', 'STANDARD FREE', 100, false),
+      createMockAccount('pro-25', 'pro.quarter@example.com', 'Pro 25%', 'PRO', 25, false, 60)
+    ];
+
+    let switchedTo: string | null = null;
+    const autoSwitcher = new AccountAutoSwitcher(mockStorage, {
+      getAccounts: () => accounts,
+      getActiveAccount: () => accounts.find((a) => a.isActive),
+      switchAccount: async (email: string) => {
+        switchedTo = email;
+        return true;
+      },
+      addAccountViaOAuth: async () => null
+    });
+
+    await autoSwitcher.checkAutoSwitch();
+    assert.strictEqual(switchedTo, 'pro.quarter@example.com', 'Must prefer PRO (25%) over STANDARD FREE (100%) due to paid capacity weight');
+  });
+
+  await t.test('ULTRA at 25% beats PRO at 80% and FREE at 100% (100.0 vs 80.0 vs 10.0)', async () => {
+    let accounts: AccountInfo[] = [
+      createMockAccount('active', 'active@example.com', 'Active', 'PRO', 2, true),
+      createMockAccount('free-100', 'free@example.com', 'Free', 'STANDARD FREE', 100, false),
+      createMockAccount('pro-80', 'pro@example.com', 'Pro 80%', 'PRO', 80, false, 80),
+      createMockAccount('ultra-25', 'ultra@example.com', 'Ultra 25%', 'ULTRA', 25, false, 70)
+    ];
+
+    let switchedTo: string | null = null;
+    const autoSwitcher = new AccountAutoSwitcher(mockStorage, {
+      getAccounts: () => accounts,
+      getActiveAccount: () => accounts.find((a) => a.isActive),
+      switchAccount: async (email: string) => {
+        switchedTo = email;
+        return true;
+      },
+      addAccountViaOAuth: async () => null
+    });
+
+    await autoSwitcher.checkAutoSwitch();
+    assert.strictEqual(switchedTo, 'ultra@example.com', 'Must prefer ULTRA (25%) over PRO (80%) and FREE (100%)');
+  });
+
+  await t.test('Tie-breaker prefers higher weekly reserve when weighted instant score is equal', async () => {
+    let accounts: AccountInfo[] = [
+      createMockAccount('active', 'active@example.com', 'Active', 'PRO', 2, true),
+      createMockAccount('pro-low-wk', 'pro.low.weekly@example.com', 'Pro Low Wk', 'PRO', 25, false, 30),
+      createMockAccount('pro-high-wk', 'pro.high.weekly@example.com', 'Pro High Wk', 'PRO', 25, false, 90)
+    ];
+
+    let switchedTo: string | null = null;
+    const autoSwitcher = new AccountAutoSwitcher(mockStorage, {
+      getAccounts: () => accounts,
+      getActiveAccount: () => accounts.find((a) => a.isActive),
+      switchAccount: async (email: string) => {
+        switchedTo = email;
+        return true;
+      },
+      addAccountViaOAuth: async () => null
+    });
+
+    await autoSwitcher.checkAutoSwitch();
+    assert.strictEqual(switchedTo, 'pro.high.weekly@example.com', 'Tie-breaker must select the candidate with deeper weekly reserve (90% > 30%)');
+  });
+
+  await t.test('JIT Dynamic Demotion does NOT demote PRO (probed 25%) below FREE (100%)', async () => {
+    let accounts: AccountInfo[] = [
+      createMockAccount('active', 'active@example.com', 'Active', 'PRO', 2, true),
+      createMockAccount('pro-cand', 'pro.probed@example.com', 'Pro Probed', 'PRO', 80, false, 80),
+      createMockAccount('free-cand', 'free.full@example.com', 'Free 100%', 'STANDARD FREE', 100, false)
+    ];
+
+    let switchedTo: string | null = null;
+    const autoSwitcher = new AccountAutoSwitcher(mockStorage, {
+      getAccounts: () => accounts,
+      getActiveAccount: () => accounts.find((a) => a.isActive),
+      switchAccount: async (email: string) => {
+        switchedTo = email;
+        return true;
+      },
+      addAccountViaOAuth: async () => null,
+      probeCandidate: async (email: string) => {
+        if (email === 'pro.probed@example.com') {
+          return { ok: true, isDepleted: false, fiveHourPercentage: 25, weeklyPercentage: 80 };
+        }
+        return { ok: true, isDepleted: false, fiveHourPercentage: 100, weeklyPercentage: 100 };
+      },
+      onCandidateProbed: async (email: string, res: any) => {
+        const acc = accounts.find((a) => a.email === email);
+        if (acc && acc.geminiGroup?.fiveHour) {
+          acc.geminiGroup.fiveHour.percentage = res.fiveHourPercentage;
+          acc.fiveHourQuotaPercentage = res.fiveHourPercentage;
+        }
+      }
+    });
+
+    await autoSwitcher.checkAutoSwitch();
+    assert.strictEqual(switchedTo, 'pro.probed@example.com', 'Must NOT demote PRO (25%) below FREE (100%) after live JIT probe');
+  });
+});
+
 

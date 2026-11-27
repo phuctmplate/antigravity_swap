@@ -44,16 +44,16 @@ test('Pro account quota parsing (Google AI Pro)', async (t) => {
     assert.strictEqual(result.status, 'healthy');
   });
 
-  await t.test('Pro account with Gemini depleted (proto3 0.0 omission) sets Gemini depleted · Claude available', () => {
+  await t.test('Pro account with Gemini depleted (proto3 0.0 omission) reports 0% without redundant statusMessage', () => {
     const raw = MOCK_RAW_RESPONSES.proGeminiDepletedProto3;
     const result = quotaService.processQuotaData(raw, MOCK_PRO_HEALTHY);
 
     assert.strictEqual(result.geminiGroup?.fiveHour?.percentage, 0, 'Gemini 5h should be 0%');
     assert.strictEqual(result.claudeGptGroup?.fiveHour?.percentage, 100, 'Claude 5h should be 100%');
-    assert.strictEqual(result.statusMessage, 'Gemini depleted · Claude available');
+    assert.strictEqual(result.statusMessage, undefined);
   });
 
-  await t.test('Pro account with Claude depleted sets Claude depleted · Gemini available', () => {
+  await t.test('Pro account with Claude depleted reports 0% without redundant statusMessage', () => {
     const raw = {
       cloudaicompanionProject: 'project-pro-123',
       currentTier: { id: 'pro', name: 'Google AI Pro' },
@@ -77,10 +77,10 @@ test('Pro account quota parsing (Google AI Pro)', async (t) => {
 
     assert.strictEqual(result.geminiGroup?.fiveHour?.percentage, 100);
     assert.strictEqual(result.claudeGptGroup?.fiveHour?.percentage, 0);
-    assert.strictEqual(result.statusMessage, 'Claude depleted · Gemini available');
+    assert.strictEqual(result.statusMessage, undefined);
   });
 
-  await t.test('Pro account with both depleted sets All model quotas depleted', () => {
+  await t.test('Pro account with both depleted sets low_balance without redundant statusMessage', () => {
     const raw = {
       cloudaicompanionProject: 'project-pro-123',
       currentTier: { id: 'pro', name: 'Google AI Pro' },
@@ -103,7 +103,7 @@ test('Pro account quota parsing (Google AI Pro)', async (t) => {
     const result = quotaService.processQuotaData(raw, MOCK_PRO_HEALTHY);
 
     assert.strictEqual(result.status, 'low_balance');
-    assert.strictEqual(result.statusMessage, 'All model quotas depleted');
+    assert.strictEqual(result.statusMessage, undefined);
   });
 
   await t.test('has5hBucket guard prevents false Standard Free classification even if paidTier claims free-tier', () => {
@@ -165,7 +165,7 @@ test('Free account quota parsing (Standard Free)', async (t) => {
     assert.strictEqual(result.statusMessage, undefined);
   });
 
-  await t.test('Free account with only Gemini depleted reports Gemini quota depleted', () => {
+  await t.test('Free account with only Gemini depleted sets low_balance without redundant statusMessage', () => {
     const raw = {
       cloudaicompanionProject: 'project-free-456',
       currentTier: 'free',
@@ -184,10 +184,10 @@ test('Free account quota parsing (Standard Free)', async (t) => {
     });
 
     assert.strictEqual(result.status, 'low_balance');
-    assert.strictEqual(result.statusMessage, 'Gemini quota depleted');
+    assert.strictEqual(result.statusMessage, undefined);
   });
 
-  await t.test('Free account with both Gemini and Claude: Gemini 0% and Claude 80% shows Gemini depleted · Claude available', () => {
+  await t.test('Free account with both Gemini and Claude: Gemini 0% and Claude 80% omits redundant statusMessage', () => {
     const raw = {
       cloudaicompanionProject: 'project-free-456',
       currentTier: 'free',
@@ -207,7 +207,7 @@ test('Free account quota parsing (Standard Free)', async (t) => {
     const result = quotaService.processQuotaData(raw, MOCK_FREE_HEALTHY);
 
     assert.strictEqual(result.tierBadge, 'STANDARD FREE');
-    assert.strictEqual(result.statusMessage, 'Gemini depleted · Claude available');
+    assert.strictEqual(result.statusMessage, undefined);
   });
 });
 

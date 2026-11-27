@@ -57,7 +57,10 @@ function getInitialState(): WebviewState {
 
 export const AppContent: React.FC = () => {
   const [state, setState] = useState<WebviewState>(getInitialState);
-  const [switchingEmail, setSwitchingEmail] = useState<string | null>(null);
+  const [switchingEmail, setSwitchingEmail] = useState<string | null>(() => {
+    return getInitialState().switchingEmail ?? null;
+  });
+  const pendingSwitchEmailRef = useRef<string | null>(null);
 
   const effectiveAccounts = state.accounts;
   const effectiveOverall = state.overall;
@@ -78,8 +81,16 @@ export const AppContent: React.FC = () => {
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = event.data;
-        if (data && data.type === "toast") {
+        if (data && data.type === "switchComplete") {
+          pendingSwitchEmailRef.current = null;
           setSwitchingEmail(null);
+          return;
+        }
+
+        if (data && data.type === "toast") {
+          if (!pendingSwitchEmailRef.current) {
+            setSwitchingEmail(null);
+          }
           const msg = data.message || "";
           if (data.level === "success") {
             toast.success(msg);
@@ -94,7 +105,15 @@ export const AppContent: React.FC = () => {
         }
 
         if (data && data.type === "stateUpdate") {
-          setSwitchingEmail(null);
+          const backendSwitching =
+            typeof data.switchingEmail === "string" && data.switchingEmail
+              ? data.switchingEmail
+              : null;
+          if (backendSwitching) {
+            setSwitchingEmail(backendSwitching);
+          } else if (!pendingSwitchEmailRef.current) {
+            setSwitchingEmail(null);
+          }
           const accounts = data.accounts || [];
           const activeAccount = data.activeAccount || null;
 
@@ -109,6 +128,8 @@ export const AppContent: React.FC = () => {
           const nextState: WebviewState = {
             accounts,
             activeAccount,
+            ideSessionEmail: data.ideSessionEmail ?? null,
+            switchingEmail: backendSwitching,
             overall: data.overall,
             heartbeat: data.heartbeat,
             isBackgroundRefreshing: data.isBackgroundRefreshing === true,
@@ -152,16 +173,20 @@ export const AppContent: React.FC = () => {
   };
 
   const handleSwitchAccount = useCallback((email: string) => {
+    pendingSwitchEmailRef.current = email;
     setSwitchingEmail(email);
     getVsCodeApi().postMessage({
       command: "switchAccount",
       email,
       isManual: true,
     });
-    // Safety fallback: in case backend never responds, clear spinner after 15s
+    // Safety fallback: in case backend never responds, clear spinner after 20s
     setTimeout(() => {
+      if (pendingSwitchEmailRef.current === email) {
+        pendingSwitchEmailRef.current = null;
+      }
       setSwitchingEmail((current) => (current === email ? null : current));
-    }, 15000);
+    }, 20000);
   }, []);
 
   const selectedAcc =
@@ -214,6 +239,7 @@ export const AppContent: React.FC = () => {
             <AccountList
               accounts={effectiveAccounts}
               activeAccount={effectiveActiveAccount}
+              ideSessionEmail={state.ideSessionEmail}
               selectedEmail={selectedEmail}
               onSelectAccount={setSelectedEmail}
               switchingEmail={switchingEmail}
