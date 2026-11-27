@@ -26,12 +26,13 @@ Full dashboard view with responsive side-by-side account management, Instant quo
 
 ## Key Features
 
-- **Zero-Reload Seamless Switching**: Switch between multiple accounts instantly with zero window reload or IDE restart, fully compatible with the latest Antigravity IDE releases via Unified State Sync.
-- **Dual-Layer Real-Time Quota Tracking**: Synchronizes all accounts over secure HTTPS while pairing the Status Bar with live local IDE telemetry (with automatic cloud fallback) for unmatched accuracy.
+- **Zero-Reload Seamless Switching**: Switch between multiple accounts instantly with zero window reload or IDE restart.
+- **Explicit Account Control**: Stay in full control of your active account without unexpected automatic imports.
+- **Real-Time Quota Tracking**: Monitor live quota balances across all connected accounts directly in the sidebar dashboard and status bar.
 - **Decoupled Quota Windows**: Accurately tracks 5-hour rolling limits and 7-day weekly capacity across Gemini, Claude & GPT, and Argon model families.
-- **Instant Quota Health**: Intelligently calculates usable burst capacity (`Account Instant`, `Gemini Instant`, `Claude & GPT Instant`) modulated by weekly reserves to keep your workflow uninterrupted.
-- **Smart Auto-Switch on Low Quota**: Automatically fails over to the healthiest account with live IDE confirmation guard, JIT candidate probing, and self-healing rollback.
-- **Real-Time Multi-Instance Sync**: Synchronizes active credentials, onboarding state, and quotas across multiple open IDE windows in real time.
+- **Instant Quota Health**: Calculates usable burst capacity (`Account Instant`, `Gemini Instant`, `Claude & GPT Instant`) modulated by weekly reserves to keep your workflow uninterrupted.
+- **Smart Auto-Switch on Low Quota**: Automatically fails over to the best available healthy account when your active quota runs low.
+- **Real-Time Multi-Instance Sync**: Synchronizes active accounts and quota status across multiple open IDE windows in real time.
 - **Detachable Floating Dashboard**: Pop out the dashboard into an independent native floating window to monitor quotas alongside your workspace.
 
 ---
@@ -40,17 +41,15 @@ Full dashboard view with responsive side-by-side account management, Instant quo
 
 | Command | Description |
 | :--- | :--- |
-| **Open Quota Dashboard**<br>`antigravitySwap.openDashboard` | Open the rich dashboard in the sidebar |
-| **Pop Out Dashboard**<br>`antigravitySwap.popOutDashboard` | Detach the dashboard into a native floating window |
+| **Open Quota & Account Dashboard**<br>`antigravitySwap.openDashboard` | Open the rich dashboard in the sidebar |
+| **Pop Out Dashboard (Detach Window)**<br>`antigravitySwap.popOutDashboard` | Detach the dashboard into a native floating window |
 | **Switch Active Account**<br>`antigravitySwap.switchAccount` | Switch between accounts instantly without reloading |
-| **Import Active Antigravity Account**<br>`antigravitySwap.importCurrentAntigravity` | 1-click import of the active session from Antigravity IDE |
-| **Re-login / Reconnect Account**<br>`antigravitySwap.reloginAccount` | Re-authenticate or reconnect an expired account |
+| **Re-login / Reconnect Account**<br>`antigravitySwap.reloginAccount` | Re-authenticate or recover a session marked Not Verified |
 | **Add Account (Google OAuth)**<br>`antigravitySwap.addAccount` | Connect a new account via Google OAuth web flow |
-| **Add Account (Manual Token)**<br>`antigravitySwap.addAccountManual` | Add or update an account using an Access / Refresh Token |
+| **Add Account (Paste Refresh/Access Token)**<br>`antigravitySwap.addAccountManual` | Add or update an account using an Access / Refresh Token |
 | **Refresh All Account Quotas**<br>`antigravitySwap.refreshQuotas` | Fetch fresh quota balances from cloud services |
-| **Import Detected Accounts**<br>`antigravitySwap.importExistingAccounts` | Auto-detect accounts from local IDE database |
-| **Restore Original IDE Extension**<br>`antigravitySwap.restoreOriginalIdeExtension` | Revert IDE session bridge back to original pristine backup |
-| **Enable IDE Extension Optimization**<br>`antigravitySwap.enableIdeExtensionPatch` | Re-enable zero-reload session synchronization |
+| **Restore Original Antigravity IDE Extension**<br>`antigravitySwap.restoreOriginalIdeExtension` | Revert legacy IDE extension patch back to pristine backup |
+| **Enable Antigravity IDE Extension Patch**<br>`antigravitySwap.enableIdeExtensionPatch` | Re-enable legacy zero-reload extension patch where applicable |
 
 ---
 
@@ -74,14 +73,9 @@ Configure these options in your VS Code / Antigravity IDE `settings.json`:
 Antigravity IDE was originally designed for a single static login session. When dynamically switching accounts, the default session listener would normally require a full window reload.
 
 Antigravity Swap integrates seamlessly with Antigravity IDE:
-- **Instant Live Switching**: Automatically synchronizes account credentials and session state in real time so the Language Server and AI Agent immediately accept the new account with **zero window reload**.
-- **Fail-Safe Verification & Rollback**: Verifies the active session after switching; automatically restores the previous account if a switch encounters an unexpected issue.
-- **Zero Window Reload**: Continue editing code and chatting with the AI agent immediately with no interruption or window reloading.
-
-> [!NOTE]
-> **Top-Right Avatar & Profile Display**
-> When switching accounts without reloading the window, the active account's **display name, email, credentials, and model quotas switch immediately**.
-> The avatar icon in the top-right corner of the IDE header may retain the cached profile image of the previous session until the IDE is completely restarted — this is purely cosmetic. Your AI prompts, quota tracking, and Language Server services are 100% operating under the new account.
+- **Instant Live Switching**: Updates the active account credentials and session state in real time so the IDE immediately adopts the new account with **zero window reload**.
+- **Session Verification & Rollback**: Verifies the switched session cleanly and protects your workflow against expired or unverified credentials.
+- **No Interruption**: Continue editing code and chatting with the AI agent immediately with no IDE restart.
 
 ### Pristine Backup & Restoration Guide
 Before applying session optimization, an untouched pristine backup (`extension.js.bak`) is **always created automatically**.

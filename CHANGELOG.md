@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1.0 (2026-11-27)
+
+- **Re-switch Active Account**: Added a `Re-switch` action for the active account to re-apply the current IDE session at any time.
+- **Quota Sync & Switch Stability**: Prevented quota display flickering, eliminated duplicate post-switch triggers, and improved session stability on temporary network drops.
+
 ## 3.0.0 (2026-11-27)
 
 - **Dedicated Account Control**: Removed automatic IDE account importing so active account control stays explicit with clean IDE session sync.
